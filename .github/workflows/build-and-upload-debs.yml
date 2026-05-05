@@ -1,4 +1,4 @@
-name: Build and Upload Images
+name: Build and Upload Debs
 
 on:
 #  push:
