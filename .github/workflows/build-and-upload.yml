@@ -1,0 +1,63 @@
+name: Build and Upload Debs
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '10 13 * * *'
+
+permissions:
+  contents: write
+  actions: write # 如果未来还需要 API 操作留着无妨
+
+jobs:
+  build:
+    name: Build on Ubuntu 24.04
+    runs-on: ubuntu-24.04
+
+    steps:
+      # 1. 检出代码
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 2. 清理磁盘空间 (防止编译内核时空间不足)
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          android: true
+          dotnet: true
+          haskell: true
+          docker-images: true
+          tool-cache: true
+          swap-storage: false
+
+      # 3. 设置 QEMU (为 Armbian 跨平台编译构建环境)
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      # 4. 安装基础依赖 (加上了 gh 工具)
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git curl wget sudo qemu-user-static jq yq gh
+
+      # 5. 赋予脚本执行权限
+      - name: Make script executable
+        run: chmod +x build.sh
+
+      # 6. 执行核心构建脚本 (自带版本比对和 Release 上传逻辑)
+      - name: Run build script
+        # 必须显式传递 GITHUB_TOKEN，且使用 sudo -E 保留环境变量
+        # 这样 build.sh 里的 `gh release create` 才有权限向你的仓库推送 Tag 和文件
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: sudo -E ./build.sh
+
+      # 7. (可选) 上传 Artifacts 备份
+      # 即使 build.sh 已经把 debs 上传到了 Release，在 Actions 本地留存一份 Artifact 也是个好习惯
+      - name: Upload Artifacts Backup
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: built-images
+          path: build/output/debs/*
+          retention-days: 5
