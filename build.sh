@@ -1,5 +1,12 @@
 #!/bin/bash
 
+# ==============================================================================
+# 脚本名称: kernel_sync_build.sh
+# 脚本描述: 自动化 Armbian 内核构建与发布工具。
+#           支持从 kernel.org 获取最新版本，对比 GitHub 已发布版本，
+#           自动触发构建并上传至 GitHub Release。
+# ==============================================================================
+
 # ==========================================
 # 日志输出系统 (带颜色高亮，方便调试)
 # ==========================================
@@ -8,11 +15,14 @@ log_debug() { echo -e "\e[34m[DEBUG]\e[0m $1"; }
 log_warn()  { echo -e "\e[33m[WARN]\e[0m $1"; }
 log_error() { echo -e "\e[31m[ERROR]\e[0m $1" >&2; }
 
-# ==========================================
+# ==============================================================================
 # 函数: sync_tree
-# 参数: $1 - 源目录
-#       $2 - 目的目录
-# ==========================================
+# 描述: 递归同步两个目录的内容。
+# 参数:
+#   $1 - SRC_DIR:  源目录路径
+#   $2 - DEST_DIR: 目标目录路径
+# 返回: 0 - 成功; 1 - 失败
+# ==============================================================================
 function sync_tree() {
     if [ "$#" -ne 2 ]; then
         log_error "用法: ${FUNCNAME[0]} <源目录> <目标目录>"
@@ -22,11 +32,13 @@ function sync_tree() {
     local SRC_DIR="${1%/}"
     local DEST_DIR="${2%/}"
 
+    # 校验源目录是否存在
     if [ ! -d "$SRC_DIR" ]; then
         log_error "源目录 '$SRC_DIR' 不存在！"
         return 1
     fi
 
+    # 处理相对路径转换为绝对路径，确保子进程中路径依然有效
     local DEST_ABS
     case "$DEST_DIR" in
         /*) DEST_ABS="$DEST_DIR" ;;
@@ -35,8 +47,10 @@ function sync_tree() {
 
     log_debug "开始精确映射同步: [$SRC_DIR] => [$DEST_ABS]"
 
+    # 在子 Shell 中执行，避免 cd 影响主进程
     (
         cd "$SRC_DIR" || exit 1
+        # 使用 find 遍历，并利用 while read 确保文件名中含有空格也能处理
         find . | while read -r ITEM; do
             if [ "$ITEM" == "." ]; then continue; fi
 
@@ -44,11 +58,13 @@ function sync_tree() {
             local TARGET_ITEM="$DEST_ABS/$REL_PATH"
 
             if [ -d "$ITEM" ]; then
+                # 如果是目录且目标位置不存在，则创建
                 if [ ! -d "$TARGET_ITEM" ]; then
                     mkdir -p "$TARGET_ITEM"
                     log_debug "  [创建目录] $TARGET_ITEM"
                 fi
             elif [ -f "$ITEM" ]; then
+                # 如果是文件，确保父目录存在后执行强制拷贝
                 local TARGET_DIR="${TARGET_ITEM%/*}"
                 mkdir -p "$TARGET_DIR"
                 cp -af "$ITEM" "$TARGET_ITEM"
@@ -57,6 +73,7 @@ function sync_tree() {
         done
     )
 
+    # 检查子 Shell 退出状态
     if [ $? -eq 0 ]; then
         log_info "目录同步完成: $SRC_DIR"
         return 0
@@ -66,27 +83,41 @@ function sync_tree() {
     fi
 }
 
-# ==========================================
+# ==============================================================================
 # 函数: get_kernel_version
-# ==========================================
+# 描述: 从 Armbian 的配置文件中解析指定分支对应的内核大版本号。
+# 参数:
+#   $1 - target_branch: 分支名称 (如 'current' 或 'edge')
+#   $2 - file_path:     配置文件路径 (如 'rockchip64_common.inc')
+# 示例: get_kernel_version "current" "config.inc" -> 返回 "6.1"
+# ==============================================================================
 function get_kernel_version() {
     local target_branch="$1"
     local file_path="$2"
 
+    # 使用 awk 状态机解析 shell case 语法块
     awk -v branch="$target_branch" '
+        # 寻找匹配分支的行，例如 current)
         $0 ~ "^[ \t]*" branch "\\)" { in_block = 1; next }
+        # 在匹配的分支块内寻找 KERNEL_MAJOR_MINOR 变量
         in_block && /KERNEL_MAJOR_MINOR[ \t]*=/ {
             split($0, arr, "\"")
             print arr[2]
             exit
         }
+        # 遇到双分号意味着该分支块结束
         in_block && /;;/ { in_block = 0 }
     ' "$file_path"
 }
 
-# ==========================================
+# ==============================================================================
 # 函数: get_latest_github_tag
-# ==========================================
+# 描述: 通过 git ls-remote 获取指定仓库中符合特定前缀的最新 Git Tag。
+# 参数:
+#   $1 - repo_url: GitHub 仓库地址
+#   $2 - prefix:   Tag 前缀 (如 'current-6.1')
+# 返回: 最新的 Tag 字符串 (如 'current-6.1.50')
+# ==============================================================================
 get_latest_github_tag() {
     local repo_url="$1"
     local prefix="$2"
@@ -96,6 +127,8 @@ get_latest_github_tag() {
     fi
 
     local latest_tag
+    # 流程: 获取所有 tags -> 过滤掉 ^/ref/tags/ -> 移除 ^^{} 标记 -> 
+    #       匹配前缀 -> 版本排序 -> 取最后一个
     latest_tag=$(git ls-remote --tags "$repo_url" 2>/dev/null | \
         awk -F/ '{print $3}' | \
         sed 's/\^{}//' | \
@@ -109,9 +142,13 @@ get_latest_github_tag() {
     echo "$latest_tag"
 }
 
-# ==========================================
+# ==============================================================================
 # 函数: get_kernel_org_latest
-# ==========================================
+# 描述: 从 kernel.org 的 CDN 目录解析指定大版本下的最新小版本。
+# 参数:
+#   $1 - prefix: 大版本前缀 (如 '6.1')
+# 示例: get_kernel_org_latest "6.1" -> 返回 "6.1.102"
+# ==============================================================================
 get_kernel_org_latest() {
     local prefix="$1"
     local major_ver
@@ -119,6 +156,7 @@ get_kernel_org_latest() {
     local target_url="https://cdn.kernel.org/pub/linux/kernel/v${major_ver}.x/"
 
     local latest_version
+    # 使用 curl 获取网页 -> 正则匹配文件名 -> 提取版本号 -> 排序取最新
     latest_version=$(curl -s "$target_url" | \
         grep -oE "linux-${prefix}\.[0-9]+\.tar\.xz" | \
         sed 's/linux-//;s/\.tar\.xz//' | \
@@ -131,22 +169,27 @@ get_kernel_org_latest() {
     echo "$latest_version"
 }
 
-# ==========================================
+# ==============================================================================
 # 函数: upload_to_github_release
-# 参数: $1 - Tag 名称 (例如: current-6.18.5)
-#       $2 - 要上传的文件路径或通配符 (例如: output/debs/*current*.deb)
-# ==========================================
+# 描述: 使用 GitHub CLI (gh) 创建 Release 并上传构建生成的 .deb 文件。
+# 参数:
+#   $1 - tag_name:      发布使用的 Tag 名称 (如: current-6.12.1)
+#   $2 - files_pattern: 文件通配符路径 (如: output/*.deb)
+# 返回: 0 - 成功; 1 - 失败
+# ==============================================================================
 function upload_to_github_release() {
     local tag_name="$1"
     local files_pattern="$2"
 
+    # 环境校验: 是否安装了 gh 客户端
     if ! command -v gh &> /dev/null; then
         log_error "未安装 GitHub CLI (gh)。请检查环境依赖！"
         return 1
     fi
 
     log_info "检查是否有文件匹配: ${files_pattern}"
-    # 检查通配符是否真的匹配到了文件 (防止报错)
+    
+    # 扩展通配符并检查文件是否存在
     # shellcheck disable=SC2086
     ls -la ${files_pattern} >/dev/null 2>&1
     if [ $? -ne 0 ]; then
@@ -156,8 +199,8 @@ function upload_to_github_release() {
 
     log_info "正在创建 GitHub Release 并上传产物: ${tag_name} ..."
     
-    # 尝试创建 Release 并上传文件。如果 Tag 已存在，命令可能会失败
-    # 如果你想覆盖已存在的 release，可以加上 --clobber 参数
+    # 调用 gh 创建发布
+    # --title: 标题, --notes: 详细描述
     # shellcheck disable=SC2086
     gh release create "${tag_name}" ${files_pattern} \
         --title "Auto Build ${tag_name}" \
@@ -166,144 +209,105 @@ function upload_to_github_release() {
     if [ $? -eq 0 ]; then
         log_info "✅ 成功发布并上传产物到: ${tag_name}"
     else
-        log_error "❌ 上传 Release 失败！"
-        log_error "排查建议: "
-        log_error "1. 如果在本地运行，请确认是否执行过 'gh auth login'"
-        log_error "2. 如果在 CI/CD 运行，请确保传递了 GITHUB_TOKEN 环境变量"
-        log_error "3. 检查该 Tag 是否已经存在于远程仓库"
+        log_error "❌ 上传 Release 失败！请检查网络、权限及 Tag 是否冲突。"
     fi
 }
 
-# ==========================================
-# 主流程开始
-# ==========================================
-log_info "环境初始化中..."
-sudo apt install git lsof curl wget jq yq -y >/dev/null 2>&1
+# ==============================================================================
+# 主逻辑流程开始
+# ==============================================================================
 
+log_info "1. 环境初始化中..."
+# 默认安装必要的工具包
+sudo apt update && sudo apt install git lsof curl wget jq yq -y >/dev/null 2>&1
+
+# 下载 Armbian 的配置包含文件以解析内核版本
 ROCKCHIP64_CONFIG_FILE="./rockchip64_common.inc"
 log_debug "正在下载 ${ROCKCHIP64_CONFIG_FILE}..."
 wget -q -O ${ROCKCHIP64_CONFIG_FILE} https://raw.githubusercontent.com/armbian/build/refs/heads/main/config/sources/families/include/rockchip64_common.inc
 
-# 1. 解析基础版本号
+# ------------------------------------------------------------------------------
+# 2. 版本比对逻辑
+# ------------------------------------------------------------------------------
+# 获取配置文件中定义的分支大版本 (如 6.6)
 CONFIG_CURRENT_KERNEL_VER=$(get_kernel_version current ${ROCKCHIP64_CONFIG_FILE})
 CONFIG_EDGE_KERNEL_VER=$(get_kernel_version edge ${ROCKCHIP64_CONFIG_FILE})
-log_debug "提取到 current 分支基础版本: ${CONFIG_CURRENT_KERNEL_VER}"
-log_debug "提取到 edge 分支基础版本: ${CONFIG_EDGE_KERNEL_VER}"
 
-# 2. 获取当前 Git 仓库信息
+# 获取当前本地仓库的 Git URL
 CUR_GIT_REPO_URL=$(git remote get-url origin 2>/dev/null)
 if [[ -z "$CUR_GIT_REPO_URL" ]]; then
-    log_error "未能获取到当前 Git 的 remote url，请确保当前在 Git 目录中！"
-    # 这里如果不是必须的，可给个默认值，或者 exit 1
-    # exit 1
+    log_error "未能获取到当前 Git 的 remote url，请在 Git 仓库内执行！"
+    exit 1
 fi
-log_debug "当前 Git Repo URL: ${CUR_GIT_REPO_URL}"
 
-# 3. 获取 Github 最新发布版本
+# 获取 GitHub 上已经发布的最新的 Tag 和 版本
 RELEASE_CURRENT_KERNEL_VER=$(get_latest_github_tag "${CUR_GIT_REPO_URL}" "current-${CONFIG_CURRENT_KERNEL_VER}")
 RELEASE_CURRENT_KERNEL_VER2=$(echo "${RELEASE_CURRENT_KERNEL_VER}" | awk -F'-' '{print $2}')
-log_debug "GitHub current 最新发布标签: ${RELEASE_CURRENT_KERNEL_VER} (解析出版本: ${RELEASE_CURRENT_KERNEL_VER2})"
 
 RELEASE_EDGE_KERNEL_VER=$(get_latest_github_tag "${CUR_GIT_REPO_URL}" "edge-${CONFIG_EDGE_KERNEL_VER}")
 RELEASE_EDGE_KERNEL_VER2=$(echo "${RELEASE_EDGE_KERNEL_VER}" | awk -F'-' '{print $2}')
-log_debug "GitHub edge 最新发布标签: ${RELEASE_EDGE_KERNEL_VER} (解析出版本: ${RELEASE_EDGE_KERNEL_VER2})"
 
-# 4. 获取 Kernel.org 最新官方版本 (注意：删除了多余的 ".")
+# 获取 Kernel.org 官方目前的最新小版本 (如 6.6.15)
 KERNEL_ORG_CURRENT_VER=$(get_kernel_org_latest "${CONFIG_CURRENT_KERNEL_VER}")
 KERNEL_ORG_EDGE_VER=$(get_kernel_org_latest "${CONFIG_EDGE_KERNEL_VER}")
-log_debug "Kernel.org current 最新版本: ${KERNEL_ORG_CURRENT_VER}"
-log_debug "Kernel.org edge 最新版本: ${KERNEL_ORG_EDGE_VER}"
 
-# 5. 比较版本，决定是否更新 (修复了 Bash 的变量判断语法)
+# 决定是否需要触发更新
 NEED_UPDATE_CURRENT_KERNEL=false
 NEED_UPDATE_EDGE_KERNEL=false
 
 if [[ "${RELEASE_CURRENT_KERNEL_VER2}" != "${KERNEL_ORG_CURRENT_VER}" && -n "${KERNEL_ORG_CURRENT_VER}" ]]; then
     NEED_UPDATE_CURRENT_KERNEL=true
 fi
-
 if [[ "${RELEASE_EDGE_KERNEL_VER2}" != "${KERNEL_ORG_EDGE_VER}" && -n "${KERNEL_ORG_EDGE_VER}" ]]; then
     NEED_UPDATE_EDGE_KERNEL=true
 fi
 
-log_info "状态汇总: NEED_UPDATE_CURRENT_KERNEL=${NEED_UPDATE_CURRENT_KERNEL}"
-log_info "状态汇总: NEED_UPDATE_EDGE_KERNEL=${NEED_UPDATE_EDGE_KERNEL}"
-
-# 如果两者都不需要更新，直接退出
+# ------------------------------------------------------------------------------
+# 3. 执行构建与同步
+# ------------------------------------------------------------------------------
 if [[ "$NEED_UPDATE_CURRENT_KERNEL" == false && "$NEED_UPDATE_EDGE_KERNEL" == false ]]; then
-    log_info "内核版本已是最新，无需触发构建更新。退出(0)。"
+    log_info "内核版本已是最新，无需触发构建。退出。"
     exit 0
 fi
 
-# ==========================================
-# 准备构建环境
-# ==========================================
+# 准备 Armbian 构建环境
 if [ -d "build" ]; then
-    log_info "发现 'build' 目录，正在同步并更新..."
+    log_info "更新现有 build 目录..."
     sync_tree ./overwrite ./build
     sync_tree ./userpatches ./build/userpatches
-    cd build || exit 1
-    git pull
+    cd build && git pull && cd ..
 else
-    log_info "未发现 'build' 目录，正在克隆并同步..."
+    log_info "初始化克隆 build 目录..."
     git clone https://github.com/armbian/build
     sync_tree ./overwrite ./build
     sync_tree ./userpatches ./build/userpatches
-    cd build || exit 1
 fi
 
+# 执行构建脚本
+cd build || exit 1
 chmod +x ./build_with_diy.sh
 
-# ==========================================
-# 执行构建
-# ==========================================
 if [[ "$NEED_UPDATE_CURRENT_KERNEL" == true ]]; then
-    log_info "🚀 开始构建 current 分支内核..."
+    log_info "🚀 开始构建 current 分支内核: ${KERNEL_ORG_CURRENT_VER}"
     ./build_with_diy.sh kernel BOARD=nanopi-r5s BRANCH=current RELEASE=trixie
-    # ./build_with_diy.sh kernel BOARD=hinlink-h66k BRANCH=current RELEASE=trixie
 fi
 
 if [[ "$NEED_UPDATE_EDGE_KERNEL" == true ]]; then
-    log_info "🚀 开始构建 edge 分支内核..."
+    log_info "🚀 开始构建 edge 分支内核: ${KERNEL_ORG_EDGE_VER}"
     ./build_with_diy.sh kernel BOARD=nanopi-r5s BRANCH=edge RELEASE=trixie
-    # ./build_with_diy.sh kernel BOARD=hinlink-h66k BRANCH=edge RELEASE=trixie
 fi
 
-log_info "检查产物输出目录:"
-ls -la output/debs
+# ------------------------------------------------------------------------------
+# 4. 发布产物
+# ------------------------------------------------------------------------------
+cd ..
 
-# ==========================================
-# 执行构建与上传流程
-# ==========================================
-
-# 1. 检查并安装 gh 依赖 (如果你没在前面装的话，这里补装)
-if ! command -v gh &> /dev/null; then
-    log_info "正在安装 GitHub CLI (gh)..."
-    # 根据官方指引，较新的 Ubuntu 可以直接 apt 安装 gh
-    sudo apt install gh -y >/dev/null 2>&1
-fi
-
-log_info "构建完毕，检查产物目录:"
-ls -la output/debs/
-
-# 2. 上传 current 分支产物
 if [[ "$NEED_UPDATE_CURRENT_KERNEL" == true ]]; then
-    # 拼接出动态 Tag，例如 current-6.18.5
-    CURRENT_TAG="current-${KERNEL_ORG_CURRENT_VER}"
-    log_info "🚀 准备上传 current 产物，Tag: ${CURRENT_TAG}"
-    
-    # 注意：这里根据 Armbian 产物的命名规律使用通配符 *current*.deb
-    # 如果你的产物命名规则不同，请修改这里的通配符，例如换成 "*.deb"
-    upload_to_github_release "$CURRENT_TAG" "output/debs/*current*.deb"
+    upload_to_github_release "current-${KERNEL_ORG_CURRENT_VER}" "./build/output/debs/*current*.deb"
 fi
 
-# 3. 上传 edge 分支产物
 if [[ "$NEED_UPDATE_EDGE_KERNEL" == true ]]; then
-    # 拼接出动态 Tag，例如 edge-7.1.2
-    EDGE_TAG="edge-${KERNEL_ORG_EDGE_VER}"
-    log_info "🚀 准备上传 edge 产物，Tag: ${EDGE_TAG}"
-    
-    upload_to_github_release "$EDGE_TAG" "output/debs/*edge*.deb"
+    upload_to_github_release "edge-${KERNEL_ORG_EDGE_VER}" "./build/output/debs/*edge*.deb"
 fi
 
-log_info "🎉 所有自动化流程执行完毕！"
+log_info "🎉 所有自动化流程已成功结束。"
