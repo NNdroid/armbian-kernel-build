@@ -273,9 +273,10 @@ fi
 # 准备 Armbian 构建环境
 if [ -d "build" ]; then
     log_info "更新现有 build 目录..."
+	git -C build checkout .
+	git -C build pull
     sync_tree ./overwrite ./build
     sync_tree ./userpatches ./build/userpatches
-    cd build && git pull && cd ..
 else
     log_info "初始化克隆 build 目录..."
     git clone https://github.com/armbian/build

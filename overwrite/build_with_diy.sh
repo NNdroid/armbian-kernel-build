@@ -77,6 +77,13 @@ custom_kernel_config() {
             echo "obj-\$(CONFIG_NETFILTER_DEAF) += nf_deaf.o" >> "$nf_dir/Makefile"
         fi
     fi
+    
+    bash "${USERPATCHES_PATH}/90_patch_brutal.sh" "${PWD}"
+    # 捕获退出码，如果不是 0 (成功)，就直接结束整个大编译进程
+    if [ $? -ne 0 ]; then
+        echo "🚨 TCP Brutal 注入失败，安全阻断编译流程！"
+        exit 1
+    fi
 
     # ==========================================
     # 第二阶段：绝对强制配置 (.config 深度修补)
