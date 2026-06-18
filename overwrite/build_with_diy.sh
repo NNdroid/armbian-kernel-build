@@ -53,7 +53,7 @@ custom_kernel_config() {
         echo -e "\e[1;33m[2/3] 注入 AmneziaWG...\e[0m"
         mkdir -p "$awg_dir"
         local tmp_awg="/tmp/amneziawg-$$"
-        GIT_TRACE=0 git clone --quiet --depth 1 "${proxy}https://github.com/amnezia-vpn/amneziawg-linux-kernel-module.git" "$tmp_awg"
+        GIT_TRACE=0 git clone --quiet --depth 1 "${proxy}https://github.com/NNdroid/amneziawg-linux-kernel-module.git" "$tmp_awg"
         cp -r "$tmp_awg/src/"* "$awg_dir/"
         rm -rf "$tmp_awg"
 
