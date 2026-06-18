@@ -8,6 +8,12 @@
 # ==============================================================================
 
 # ==========================================
+# 开启严格错误处理模式 (Bash Strict Mode)
+# ==========================================
+#set -e          # 任何命令执行失败 (返回非0退出码)，脚本立即中止
+#set -o pipefail # 管道命令 (如 A | B | C) 中若有任何一步失败，整个管道也判定为失败
+
+# ==========================================
 # 日志输出系统 (带颜色高亮，方便调试)
 # ==========================================
 log_info()  { echo -e "\e[32m[INFO]\e[0m $1"; }
@@ -130,7 +136,7 @@ get_latest_github_tag() {
     # 流程: 获取所有 tags -> 过滤掉 ^/ref/tags/ -> 移除 ^^{} 标记 -> 
     #       匹配前缀 -> 版本排序 -> 取最后一个
     latest_tag=$(git ls-remote --tags "$repo_url" 2>/dev/null | \
-        awk -F/ '{print $3}' | \
+        sed 's|.*refs/tags/||' | \
         sed 's/\^{}//' | \
         grep -E "^v?${prefix}" | \
         sort -Vu | \
@@ -157,8 +163,8 @@ get_kernel_org_latest() {
 
     local latest_version
     # 使用 curl 获取网页 -> 正则匹配文件名 -> 提取版本号 -> 排序取最新
-    latest_version=$(curl -s "$target_url" | \
-        grep -oE "linux-${prefix}\.[0-9]+\.tar\.xz" | \
+    latest_version=$(curl -sL "$target_url" | \
+        grep -oE "linux-${prefix}(\.[0-9]+)?\.tar\.xz" | \
         sed 's/linux-//;s/\.tar\.xz//' | \
         sort -Vu | \
         tail -n 1)
@@ -189,24 +195,25 @@ function upload_to_github_release() {
 
     log_info "检查是否有文件匹配: ${files_pattern}"
     
-    # 扩展通配符并检查文件是否存在
-    # shellcheck disable=SC2086
-    ls -la ${files_pattern} >/dev/null 2>&1
-    if [ $? -ne 0 ]; then
+    # 开启 nullglob，如果没有匹配到文件，数组会为空，而不会变成字面量字符串
+    shopt -s nullglob
+    # 安全展开通配符为数组
+    local upload_files=($files_pattern)
+    # 关闭 nullglob，避免影响脚本其他地方
+    shopt -u nullglob
+
+    # 检查数组长度是否为 0
+    if [ ${#upload_files[@]} -eq 0 ]; then
         log_warn "未找到匹配的文件: ${files_pattern}，跳过上传。"
         return 1
     fi
 
     log_info "正在创建 GitHub Release 并上传产物: ${tag_name} ..."
     
-    # 调用 gh 创建发布
-    # --title: 标题, --notes: 详细描述
-    # shellcheck disable=SC2086
-    gh release create "${tag_name}" ${files_pattern} \
+    # 使用 "${upload_files[@]}" 安全地将文件作为多个参数传递，不再有 SC2086 警告
+    if gh release create "${tag_name}" "${upload_files[@]}" \
         --title "Auto Build ${tag_name}" \
-        --notes "Automated kernel build synced from kernel.org (Version: ${tag_name})"
-        
-    if [ $? -eq 0 ]; then
+        --notes "Automated kernel build synced from kernel.org (Version: ${tag_name})"; then
         log_info "✅ 成功发布并上传产物到: ${tag_name}"
     else
         log_error "❌ 上传 Release 失败！请检查网络、权限及 Tag 是否冲突。"
@@ -225,6 +232,10 @@ sudo apt update && sudo apt install git lsof curl wget jq yq -y >/dev/null 2>&1
 ROCKCHIP64_CONFIG_FILE="./rockchip64_common.inc"
 log_debug "正在下载 ${ROCKCHIP64_CONFIG_FILE}..."
 wget -q -O ${ROCKCHIP64_CONFIG_FILE} https://raw.githubusercontent.com/armbian/build/refs/heads/main/config/sources/families/include/rockchip64_common.inc
+if [[ ! -s "${ROCKCHIP64_CONFIG_FILE}" ]]; then
+    log_error "下载 rockchip64_common.inc 失败或文件为空，请检查网络！"
+    exit 1
+fi
 
 # ------------------------------------------------------------------------------
 # 2. 版本比对逻辑
@@ -232,6 +243,10 @@ wget -q -O ${ROCKCHIP64_CONFIG_FILE} https://raw.githubusercontent.com/armbian/b
 # 获取配置文件中定义的分支大版本 (如 6.6)
 CONFIG_CURRENT_KERNEL_VER=$(get_kernel_version current ${ROCKCHIP64_CONFIG_FILE})
 CONFIG_EDGE_KERNEL_VER=$(get_kernel_version edge ${ROCKCHIP64_CONFIG_FILE})
+CONFIG_BLEEDINGEDGE_KERNEL_VER=$(get_kernel_version bleedingedge ${ROCKCHIP64_CONFIG_FILE})
+log_info "CONFIG_CURRENT_KERNEL_VER=${CONFIG_CURRENT_KERNEL_VER}"
+log_info "CONFIG_EDGE_KERNEL_VER=${CONFIG_EDGE_KERNEL_VER}"
+log_info "CONFIG_BLEEDINGEDGE_KERNEL_VER=${CONFIG_BLEEDINGEDGE_KERNEL_VER}"
 
 # 获取当前本地仓库的 Git URL
 CUR_GIT_REPO_URL=$(git remote get-url origin 2>/dev/null)
@@ -241,19 +256,29 @@ if [[ -z "$CUR_GIT_REPO_URL" ]]; then
 fi
 
 # 获取 GitHub 上已经发布的最新的 Tag 和 版本
+# current
 RELEASE_CURRENT_KERNEL_VER=$(get_latest_github_tag "${CUR_GIT_REPO_URL}" "current-${CONFIG_CURRENT_KERNEL_VER}")
 RELEASE_CURRENT_KERNEL_VER2=$(echo "${RELEASE_CURRENT_KERNEL_VER}" | awk -F'-' '{print $2}')
-
+# edge
 RELEASE_EDGE_KERNEL_VER=$(get_latest_github_tag "${CUR_GIT_REPO_URL}" "edge-${CONFIG_EDGE_KERNEL_VER}")
 RELEASE_EDGE_KERNEL_VER2=$(echo "${RELEASE_EDGE_KERNEL_VER}" | awk -F'-' '{print $2}')
+# bleedingedge
+RELEASE_BLEEDINGEDGE_KERNEL_VER=$(get_latest_github_tag "${CUR_GIT_REPO_URL}" "bleedingedge-${CONFIG_BLEEDINGEDGE_KERNEL_VER}")
+RELEASE_BLEEDINGEDGE_KERNEL_VER2=$(echo "${RELEASE_BLEEDINGEDGE_KERNEL_VER}" | awk -F'-' '{print $2}')
+
 
 # 获取 Kernel.org 官方目前的最新小版本 (如 6.6.15)
 KERNEL_ORG_CURRENT_VER=$(get_kernel_org_latest "${CONFIG_CURRENT_KERNEL_VER}")
 KERNEL_ORG_EDGE_VER=$(get_kernel_org_latest "${CONFIG_EDGE_KERNEL_VER}")
+KERNEL_ORG_BLEEDINGEDGE_VER=$(get_kernel_org_latest "${CONFIG_BLEEDINGEDGE_KERNEL_VER}")
+log_info "KERNEL_ORG_CURRENT_VER=${KERNEL_ORG_CURRENT_VER}"
+log_info "KERNEL_ORG_EDGE_VER=${KERNEL_ORG_EDGE_VER}"
+log_info "KERNEL_ORG_BLEEDINGEDGE_VER=${KERNEL_ORG_BLEEDINGEDGE_VER}"
 
 # 决定是否需要触发更新
 NEED_UPDATE_CURRENT_KERNEL=false
 NEED_UPDATE_EDGE_KERNEL=false
+NEED_UPDATE_BLEEDINGEDGE_KERNEL=false
 
 if [[ "${RELEASE_CURRENT_KERNEL_VER2}" != "${KERNEL_ORG_CURRENT_VER}" && -n "${KERNEL_ORG_CURRENT_VER}" ]]; then
     NEED_UPDATE_CURRENT_KERNEL=true
@@ -261,11 +286,14 @@ fi
 if [[ "${RELEASE_EDGE_KERNEL_VER2}" != "${KERNEL_ORG_EDGE_VER}" && -n "${KERNEL_ORG_EDGE_VER}" ]]; then
     NEED_UPDATE_EDGE_KERNEL=true
 fi
+if [[ "${RELEASE_BLEEDINGEDGE_KERNEL_VER2}" != "${KERNEL_ORG_BLEEDINGEDGE_VER}" && -n "${KERNEL_ORG_BLEEDINGEDGE_VER}" ]]; then
+    NEED_UPDATE_BLEEDINGEDGE_KERNEL=true
+fi
 
 # ------------------------------------------------------------------------------
-# 3. 执行构建与同步
+# 执行构建与同步
 # ------------------------------------------------------------------------------
-if [[ "$NEED_UPDATE_CURRENT_KERNEL" == false && "$NEED_UPDATE_EDGE_KERNEL" == false ]]; then
+if [[ "$NEED_UPDATE_CURRENT_KERNEL" == false && "$NEED_UPDATE_EDGE_KERNEL" == false && "$NEED_UPDATE_BLEEDINGEDGE_KERNEL" == false ]]; then
     log_info "内核版本已是最新，无需触发构建。退出。"
     exit 0
 fi
@@ -274,6 +302,7 @@ fi
 if [ -d "build" ]; then
     log_info "更新现有 build 目录..."
 	git -C build checkout .
+	git -C build clean -fd
 	git -C build pull
     sync_tree ./overwrite ./build
     sync_tree ./userpatches ./build/userpatches
@@ -298,8 +327,13 @@ if [[ "$NEED_UPDATE_EDGE_KERNEL" == true ]]; then
     ./build_with_diy.sh kernel BOARD=nanopi-r5s BRANCH=edge RELEASE=trixie
 fi
 
+if [[ "$NEED_UPDATE_BLEEDINGEDGE_KERNEL" == true ]]; then
+    log_info "🚀 开始构建 bleedingedge 分支内核: ${KERNEL_ORG_BLEEDINGEDGE_VER}"
+    ./build_with_diy.sh kernel BOARD=nanopi-r5s BRANCH=bleedingedge RELEASE=trixie
+fi
+
 # ------------------------------------------------------------------------------
-# 4. 发布产物
+# 发布产物
 # ------------------------------------------------------------------------------
 cd ..
 
@@ -309,6 +343,10 @@ fi
 
 if [[ "$NEED_UPDATE_EDGE_KERNEL" == true ]]; then
     upload_to_github_release "edge-${KERNEL_ORG_EDGE_VER}" "./build/output/debs/*edge*.deb"
+fi
+
+if [[ "$NEED_UPDATE_BLEEDINGEDGE_KERNEL" == true ]]; then
+    upload_to_github_release "bleedingedge-${KERNEL_ORG_BLEEDINGEDGE_VER}" "./build/output/debs/*bleedingedge*.deb"
 fi
 
 log_info "🎉 所有自动化流程已成功结束。"
