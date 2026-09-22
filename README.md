@@ -31,6 +31,20 @@
 
 资源受限且明确不需要 BTF/CO-RE 时，可同时设置 `ENABLE_FULL_EBPF=no KERNEL_BTF=no`；默认发布构建不建议关闭。
 
+## 完整网络功能集
+
+默认 `ENABLE_FULL_NETWORKING=yes`。hook 会强制启用并在 `olddefconfig` 和编译完成后逐项检查：
+
+- MPLS 路由、LWT/IP tunnel、GSO 和 tc MPLS action；
+- SRv6 LWT、HMAC、BPF 以及 IPv4/IPv6 policy routing；
+- VXLAN、Geneve、IPv4 GRE、IPv6 GRE、FOU 与 Open vSwitch tunnel ports；
+- 原生 WireGuard、BBR 和 FQ qdisc（只保证可用，不擅自修改系统默认拥塞算法）；
+- nftables 全协议族和常用 expressions、TPROXY、SYNPROXY、NPTv6 以及 xtables 兼容路径；
+- Linux bridge、VLAN filtering、MRP/CFM、bridge netfilter/ebtables 和 Bluetooth BNEP；
+- USB Gadget dual-role 基础设施，以及 ConfigFS/FunctionFS 的串口、网络、存储、HID、音频、MIDI、UVC、打印和 target functions。
+
+这里的“支持”表示内核及模块配置已通过最终 `.config` 校验；具体 USB device role、原生 XDP 或硬件卸载能力仍取决于开发板控制器、设备树和网卡驱动。
+
 可以通过环境变量调整来源或构建模式：
 
 ```bash
@@ -51,6 +65,7 @@ NF_DEAF_MODE=m
 
 WIREGUARD_MODE=y
 ENABLE_FULL_EBPF=yes
+ENABLE_FULL_NETWORKING=yes
 KERNEL_BTF=yes
 ```
 
@@ -72,6 +87,7 @@ bash tests/test_kernel_injection.sh
 - 内核 release、Armbian 分支、板型、架构和 userspace release；
 - TCP-Brutal v2、AmneziaWG、nf_deaf 与原生 WireGuard 的最终构建模式和源码提交；
 - eBPF/BTF/CO-RE 最终校验状态；
+- MPLS/SRv6、隧道、netfilter、BBR、bridge/BNEP 和 USB Gadget 的最终配置摘要；
 - 与同一份 Armbian 补丁后源码树生成的标准 `arm64 defconfig` 之间的配置差异数量；
 - 每个 `.deb` 的大小和 SHA256，以及仓库提交和 UTC 构建时间。
 

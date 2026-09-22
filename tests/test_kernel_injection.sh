@@ -148,6 +148,24 @@ assert_array_contains opts_y XDP_SOCKETS
 assert_array_contains opts_y FUNCTION_TRACER
 assert_array_contains opts_m NET_CLS_BPF
 assert_array_contains opts_m NET_ACT_BPF
+assert_array_contains opts_y MPLS
+assert_array_contains opts_m MPLS_ROUTING
+assert_array_contains opts_y IPV6_SEG6_LWTUNNEL
+assert_array_contains opts_m VXLAN
+assert_array_contains opts_m GENEVE
+assert_array_contains opts_m NET_IPGRE
+assert_array_contains opts_m IPV6_GRE
+assert_array_contains opts_m NET_FOU
+assert_array_contains opts_y WIREGUARD
+assert_array_contains opts_m NFT_TPROXY
+assert_array_contains opts_m NFT_SYNPROXY
+assert_array_contains opts_m IP6_NF_TARGET_NPT
+assert_array_contains opts_m TCP_CONG_BBR
+assert_array_contains opts_y BRIDGE
+assert_array_contains opts_m BT_BNEP
+assert_array_contains opts_y USB_GADGET
+assert_array_contains opts_m USB_CONFIGFS
+assert_array_contains opts_y USB_CONFIGFS_F_MIDI2
 assert_contains "${KERNEL_ROOT}/.config" \
 	'CONFIG_LSM="lockdown,yama,integrity,apparmor,bpf"'
 
@@ -165,12 +183,19 @@ EFFECTIVE_CONFIG="${TEST_ROOT}/effective-ebpf.config"
 	printf 'CONFIG_LSM="lockdown,yama,integrity,apparmor,bpf"\n'
 } > "${EFFECTIVE_CONFIG}"
 _kernel_inject_verify_full_ebpf_config "${EFFECTIVE_CONFIG}"
+_kernel_inject_verify_full_network_config "${EFFECTIVE_CONFIG}"
 
 sed -i 's/^CONFIG_DEBUG_INFO_BTF=y$/# CONFIG_DEBUG_INFO_BTF is not set/' "${EFFECTIVE_CONFIG}"
 if _kernel_inject_verify_full_ebpf_config "${EFFECTIVE_CONFIG}"; then
 	fail "eBPF verifier accepted a config without DEBUG_INFO_BTF"
 fi
 sed -i 's/^# CONFIG_DEBUG_INFO_BTF is not set$/CONFIG_DEBUG_INFO_BTF=y/' "${EFFECTIVE_CONFIG}"
+
+sed -i 's/^CONFIG_VXLAN=m$/# CONFIG_VXLAN is not set/' "${EFFECTIVE_CONFIG}"
+if _kernel_inject_verify_full_network_config "${EFFECTIVE_CONFIG}"; then
+	fail "network verifier accepted a config without VXLAN"
+fi
+sed -i 's/^# CONFIG_VXLAN is not set$/CONFIG_VXLAN=m/' "${EFFECTIVE_CONFIG}"
 
 RELEASE_TEST_ROOT="${TEST_ROOT}/release-notes"
 RELEASE_METADATA="${RELEASE_TEST_ROOT}/build/output/release-metadata/edge"
@@ -233,36 +258,112 @@ cp "${REPO_ROOT}/userpatches/lib.config" "${WRAPPER_ROOT}/userpatches/lib.config
 cat > "${WRAPPER_ROOT}/compile.sh" <<'FAKE_COMPILE'
 #!/usr/bin/env bash
 set -Eeuo pipefail
-kernel_root="cache/sources/linux-kernel-worktree/fake"
+kernel_root="cache/sources/linux-kernel-worktree/6.18__fake__arm64"
 mkdir -p "${kernel_root}/net/ipv4/tcp_brutal" \
 	"${kernel_root}/drivers/net/amneziawg" \
-	"${kernel_root}/net/netfilter/nf_deaf"
+	"${kernel_root}/net/netfilter/nf_deaf" \
+	output/debs
 cp "${EFFECTIVE_CONFIG}" "${kernel_root}/.config"
-printf 'commit=1111111111111111111111111111111111111111\n' \
+printf 'commit=%s\n' "${TCP_BRUTAL_COMMIT}" \
 	> "${kernel_root}/net/ipv4/tcp_brutal/.source-revision"
-printf 'commit=2222222222222222222222222222222222222222\n' \
+printf 'commit=%s\n' "${AMNEZIAWG_COMMIT}" \
 	> "${kernel_root}/drivers/net/amneziawg/.source-revision"
-printf 'commit=3333333333333333333333333333333333333333\n' \
+printf 'commit=%s\n' "${NF_DEAF_COMMIT}" \
 	> "${kernel_root}/net/netfilter/nf_deaf/.source-revision"
 FAKE_COMPILE
 chmod +x "${WRAPPER_ROOT}/compile.sh" "${WRAPPER_ROOT}/build_with_diy.sh"
+
+# The wrapper verifies the built artifact, not just the worktree. A real .deb
+# is needed when dpkg-deb is available (CI); a plain placeholder elsewhere.
+FAKE_DEB="${WRAPPER_ROOT}/output/debs/linux-modules-6.18.53-fake-rockchip64.deb"
+mkdir -p "${WRAPPER_ROOT}/output/debs"
+if command -v dpkg-deb >/dev/null 2>&1; then
+	DEB_STAGE="${WRAPPER_ROOT}/deb-stage"
+	rm -rf -- "${DEB_STAGE}"
+	mkdir -p "${DEB_STAGE}/usr/lib/modules/fake/kernel/net/ipv4/tcp_brutal" \
+		"${DEB_STAGE}/usr/lib/modules/fake/kernel/drivers/net/amneziawg" \
+		"${DEB_STAGE}/usr/lib/modules/fake/kernel/net/netfilter/nf_deaf" \
+		"${DEB_STAGE}/DEBIAN"
+	: > "${DEB_STAGE}/usr/lib/modules/fake/kernel/net/ipv4/tcp_brutal/tcp_brutal.ko"
+	: > "${DEB_STAGE}/usr/lib/modules/fake/kernel/drivers/net/amneziawg/amneziawg.ko"
+	: > "${DEB_STAGE}/usr/lib/modules/fake/kernel/net/netfilter/nf_deaf/nf_deaf.ko"
+	cat > "${DEB_STAGE}/DEBIAN/control" <<'CONTROL'
+Package: linux-modules-fake
+Version: 6.18.53-0-fake
+Section: kernel
+Priority: optional
+Architecture: arm64
+Description: fake modules package for wrapper verification
+CONTROL
+	dpkg-deb --build "${DEB_STAGE}" "${FAKE_DEB}" >/dev/null
+else
+	printf 'tcp_brutal amneziawg nf_deaf\n' > "${FAKE_DEB}"
+fi
+
 (
 	cd "${WRAPPER_ROOT}"
-	EFFECTIVE_CONFIG="${EFFECTIVE_CONFIG}" ./build_with_diy.sh kernel BOARD=fake
+	EFFECTIVE_CONFIG="${EFFECTIVE_CONFIG}" \
+	TCP_BRUTAL_COMMIT="${TCP_BRUTAL_COMMIT}" \
+	AMNEZIAWG_COMMIT="${AMNEZIAWG_COMMIT}" \
+	NF_DEAF_COMMIT="${NF_DEAF_COMMIT}" \
+	./build_with_diy.sh kernel BOARD=fake
 )
 assert_file "${WRAPPER_ROOT}/output/release-metadata/unknown/unknown-kernel.config"
 assert_file "${WRAPPER_ROOT}/output/release-metadata/unknown/unknown-config-vs-arm64-defconfig.txt"
 assert_contains "${WRAPPER_ROOT}/output/release-metadata/unknown/build-summary.md" \
 	'eBPF / BTF / CO-RE'
+assert_contains "${WRAPPER_ROOT}/output/release-metadata/unknown/build-summary.md" \
+	'完整网络功能集'
+assert_contains "${WRAPPER_ROOT}/output/release-metadata/unknown/build-summary.md" \
+	'MPLS / SRv6'
 
 sed -i 's/^CONFIG_DEBUG_INFO_BTF=y$/# CONFIG_DEBUG_INFO_BTF is not set/' "${EFFECTIVE_CONFIG}"
 if (
 	cd "${WRAPPER_ROOT}"
-	EFFECTIVE_CONFIG="${EFFECTIVE_CONFIG}" ./build_with_diy.sh kernel BOARD=fake
+	EFFECTIVE_CONFIG="${EFFECTIVE_CONFIG}" \
+	TCP_BRUTAL_COMMIT="${TCP_BRUTAL_COMMIT}" \
+	AMNEZIAWG_COMMIT="${AMNEZIAWG_COMMIT}" \
+	NF_DEAF_COMMIT="${NF_DEAF_COMMIT}" \
+	./build_with_diy.sh kernel BOARD=fake
 ); then
 	fail "build wrapper accepted a final config without DEBUG_INFO_BTF"
 fi
 sed -i 's/^# CONFIG_DEBUG_INFO_BTF is not set$/CONFIG_DEBUG_INFO_BTF=y/' "${EFFECTIVE_CONFIG}"
+
+# A worktree left behind by another BRANCH shares cache/sources and must not
+# satisfy this build just because it carries a .source-revision at all.
+MISMATCH_ROOT="${TEST_ROOT}/wrapper-mismatch"
+mkdir -p "${MISMATCH_ROOT}/userpatches"
+cp "${REPO_ROOT}/overwrite/build_with_diy.sh" "${MISMATCH_ROOT}/build_with_diy.sh"
+cp "${REPO_ROOT}/userpatches/lib.config" "${MISMATCH_ROOT}/userpatches/lib.config"
+cat > "${MISMATCH_ROOT}/compile.sh" <<'FAKE_COMPILE'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+kernel_root="cache/sources/linux-kernel-worktree/6.18__stale__arm64"
+mkdir -p "${kernel_root}/net/ipv4/tcp_brutal" \
+	"${kernel_root}/drivers/net/amneziawg" \
+	"${kernel_root}/net/netfilter/nf_deaf" output/debs
+cp "${EFFECTIVE_CONFIG}" "${kernel_root}/.config"
+printf 'commit=0000000000000000000000000000000000000000\n' \
+	> "${kernel_root}/net/ipv4/tcp_brutal/.source-revision"
+printf 'commit=0000000000000000000000000000000000000000\n' \
+	> "${kernel_root}/drivers/net/amneziawg/.source-revision"
+printf 'commit=0000000000000000000000000000000000000000\n' \
+	> "${kernel_root}/net/netfilter/nf_deaf/.source-revision"
+printf 'tcp_brutal amneziawg nf_deaf\n' \
+	> output/debs/linux-modules-6.18.53-stale-rockchip64.deb
+FAKE_COMPILE
+chmod +x "${MISMATCH_ROOT}/compile.sh" "${MISMATCH_ROOT}/build_with_diy.sh"
+if (
+	cd "${MISMATCH_ROOT}"
+	EFFECTIVE_CONFIG="${EFFECTIVE_CONFIG}" \
+	TCP_BRUTAL_COMMIT="${TCP_BRUTAL_COMMIT}" \
+	AMNEZIAWG_COMMIT="${AMNEZIAWG_COMMIT}" \
+	NF_DEAF_COMMIT="${NF_DEAF_COMMIT}" \
+	./build_with_diy.sh kernel BOARD=fake
+); then
+	fail "build wrapper accepted a worktree whose TCP-Brutal commit is not the pinned one"
+fi
 
 assert_file "${KERNEL_ROOT}/net/ipv4/tcp_brutal/brutal_cc.c"
 assert_file "${KERNEL_ROOT}/net/ipv4/tcp_brutal/brutal_sockopt.c"
@@ -324,4 +425,9 @@ if AMNEZIAWG_MODE=y WIREGUARD_MODE=y custom_kernel_config; then
 	fail "unsafe built-in AmneziaWG/WireGuard combination was accepted"
 fi
 
-printf '[PASS] kernel injection is pinned/idempotent and full eBPF is enforced\n'
+reset_hook_arrays
+if ENABLE_FULL_NETWORKING=invalid custom_kernel_config; then
+	fail "invalid ENABLE_FULL_NETWORKING value was accepted"
+fi
+
+printf '[PASS] kernel injection is pinned/idempotent; full eBPF and networking are enforced\n'
