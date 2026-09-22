@@ -49,11 +49,11 @@ jobs:
 
       # 6. 执行核心构建脚本 (自带版本比对和 Release 上传逻辑)
       - name: Run build script
-        # 必须显式传递 GITHUB_TOKEN，且使用 sudo -E 保留环境变量
-        # 这样 build.sh 里的 `gh release create` 才有权限向你的仓库推送 Tag 和文件
+        # Armbian 明确要求不要以 root/sudo 运行 compile.sh。build.sh 只在
+        # 安装宿主依赖时自行 sudo；GITHUB_TOKEN 直接传给 runner 用户。
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: sudo -E ./build.sh
+        run: ./build.sh
 
       # 7. (可选) 上传 Artifacts 备份
       # 即使 build.sh 已经把 debs 上传到了 Release，在 Actions 本地留存一份 Artifact 也是个好习惯

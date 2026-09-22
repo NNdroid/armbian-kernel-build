@@ -127,7 +127,16 @@ touch "${KERNEL_ROOT}/net/netfilter/nf_deaf.c"
 reset_hook_arrays
 original_pwd="$(pwd -P)"
 cd "${KERNEL_ROOT}"
+# Reproduce Armbian's nounset-unsafe display_alert contract. The injector must
+# not turn on nounset while calling framework-owned helpers.
+unset ANSI_COLOR
+display_alert() {
+	: "${ANSI_COLOR}" "$1" "$2" "$3"
+}
+set +u
 custom_kernel_config
+set -u
+unset -f display_alert
 cd "${original_pwd}"
 
 assert_array_contains opts_y BPF_SYSCALL
