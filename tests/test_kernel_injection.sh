@@ -293,6 +293,7 @@ Version: 6.18.53-0-fake
 Section: kernel
 Priority: optional
 Architecture: arm64
+Maintainer: NNdroid <nn@users.noreply.github.com>
 Description: fake modules package for wrapper verification
 CONTROL
 	dpkg-deb --build "${DEB_STAGE}" "${FAKE_DEB}" >/dev/null
