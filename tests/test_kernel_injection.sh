@@ -181,6 +181,16 @@ printf 'must not upload\n' > \
 		GITHUB_REPOSITORY=owner/kernel-build resolve_repository_url "${PWD}")"
 	[[ "${resolved_url}" == 'https://github.example/owner/kernel-build.git' ]] || \
 		fail "GitHub Actions repository URL fallback is incorrect: ${resolved_url}"
+	kernel_index_fixture='<a href="linux-7.2.tar.xz">base</a>
+<a href="linux-7.2.6.tar.xz">old</a>
+<a href="linux-7.2.7.tar.xz">latest</a>'
+	parsed_kernel_version="$(printf '%s\n' "${kernel_index_fixture}" | \
+		parse_kernel_org_index 7.2)"
+	[[ "${parsed_kernel_version}" == 7.2.7 ]] || \
+		fail "kernel.org index parser returned ${parsed_kernel_version}"
+	if printf '%s\n' "${kernel_index_fixture}" | parse_kernel_org_index 7.3 >/dev/null; then
+		fail "kernel.org index parser invented an unreleased 7.3 version"
+	fi
 	CAPTURED_NOTES="${RELEASE_TEST_ROOT}/captured-notes.md"
 	CAPTURED_ARGS="${RELEASE_TEST_ROOT}/captured-gh-args.txt"
 	gh() {

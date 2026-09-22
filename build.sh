@@ -179,21 +179,53 @@ get_latest_github_tag() {
 get_kernel_org_latest() {
     local prefix="$1"
     local major_ver
-    major_ver=$(echo "$prefix" | cut -d. -f1)
+    local index_html
+    local latest_version
+
+	[[ "${prefix}" =~ ^[0-9]+\.[0-9]+$ ]] || return 2
+    major_ver="${prefix%%.*}"
     local target_url="https://cdn.kernel.org/pub/linux/kernel/v${major_ver}.x/"
 
-    local latest_version
-    # 使用 curl 获取网页 -> 正则匹配文件名 -> 提取版本号 -> 排序取最新
-	latest_version=$(curl -fsSL "$target_url" | \
-        grep -oE "linux-${prefix}(\.[0-9]+)?\.tar\.xz" | \
-        sed 's/linux-//;s/\.tar\.xz//' | \
-        sort -Vu | \
-		tail -n 1) || return 1
+	# 网络错误与“该版本尚未发布”必须区分：前者应终止流水线，
+	# 后者是 bleedingedge 提前指向下一开发版本时的正常状态。
+	index_html="$(curl -fsSL --retry 3 --retry-all-errors --connect-timeout 20 \
+		"${target_url}")" || return 1
+	latest_version="$(printf '%s\n' "${index_html}" | parse_kernel_org_index "${prefix}" || true)"
 
-    if [[ -z "$latest_version" ]]; then
-        return 1
-    fi
+	[[ -n "${latest_version}" ]] || return 2
     echo "$latest_version"
+}
+
+parse_kernel_org_index() {
+	local prefix="$1"
+	local escaped_prefix="${prefix//./\\.}"
+
+	grep -oE "linux-${escaped_prefix}(\.[0-9]+)?\.tar\.xz" | \
+		sed 's/linux-//;s/\.tar\.xz//' | \
+		sort -Vu | \
+		tail -n 1
+}
+
+load_kernel_org_version() {
+	local branch="$1"
+	local configured_version="$2"
+	local latest_version
+	local status
+
+	if latest_version="$(get_kernel_org_latest "${configured_version}")"; then
+		printf '%s\n' "${latest_version}"
+		return 0
+	else
+		status=$?
+	fi
+
+	if ((status == 2)); then
+		log_warn "kernel.org 尚未发布 ${configured_version}.x；跳过 ${branch} 分支。" >&2
+		return 0
+	fi
+
+	log_error "查询 kernel.org 的 ${configured_version}.x 版本失败；这不是未发布状态。"
+	return 1
 }
 
 # ==============================================================================
@@ -337,10 +369,14 @@ RELEASE_BLEEDINGEDGE_KERNEL_VER=$(get_latest_github_tag "${CUR_GIT_REPO_URL}" "b
 RELEASE_BLEEDINGEDGE_KERNEL_VER2=$(echo "${RELEASE_BLEEDINGEDGE_KERNEL_VER}" | awk -F'-' '{print $2}')
 
 
-# 获取 Kernel.org 官方目前的最新小版本 (如 6.6.15)
-KERNEL_ORG_CURRENT_VER=$(get_kernel_org_latest "${CONFIG_CURRENT_KERNEL_VER}")
-KERNEL_ORG_EDGE_VER=$(get_kernel_org_latest "${CONFIG_EDGE_KERNEL_VER}")
-KERNEL_ORG_BLEEDINGEDGE_VER=$(get_kernel_org_latest "${CONFIG_BLEEDINGEDGE_KERNEL_VER}")
+# 获取 Kernel.org 官方目前的最新小版本 (如 6.6.15)。未发布的
+# bleedingedge 版本会被跳过；真实网络/服务器错误仍会终止流水线。
+KERNEL_ORG_CURRENT_VER="$(load_kernel_org_version current \
+	"${CONFIG_CURRENT_KERNEL_VER}")" || exit 1
+KERNEL_ORG_EDGE_VER="$(load_kernel_org_version edge \
+	"${CONFIG_EDGE_KERNEL_VER}")" || exit 1
+KERNEL_ORG_BLEEDINGEDGE_VER="$(load_kernel_org_version bleedingedge \
+	"${CONFIG_BLEEDINGEDGE_KERNEL_VER}")" || exit 1
 log_info "KERNEL_ORG_CURRENT_VER=${KERNEL_ORG_CURRENT_VER}"
 log_info "KERNEL_ORG_EDGE_VER=${KERNEL_ORG_EDGE_VER}"
 log_info "KERNEL_ORG_BLEEDINGEDGE_VER=${KERNEL_ORG_BLEEDINGEDGE_VER}"
