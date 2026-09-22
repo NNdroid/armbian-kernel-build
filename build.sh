@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC2016
 
 # ==============================================================================
 # 脚本名称: kernel_sync_build.sh
@@ -10,8 +11,7 @@
 # ==========================================
 # 开启严格错误处理模式 (Bash Strict Mode)
 # ==========================================
-#set -e          # 任何命令执行失败 (返回非0退出码)，脚本立即中止
-#set -o pipefail # 管道命令 (如 A | B | C) 中若有任何一步失败，整个管道也判定为失败
+set -Eeuo pipefail # 任一命令、未定义变量或管道失败时立即中止
 
 # ==========================================
 # 日志输出系统 (带颜色高亮，方便调试)
@@ -54,11 +54,10 @@ function sync_tree() {
     log_debug "开始精确映射同步: [$SRC_DIR] => [$DEST_ABS]"
 
     # 在子 Shell 中执行，避免 cd 影响主进程
-    (
+    if (
         cd "$SRC_DIR" || exit 1
-        # 使用 find 遍历，并利用 while read 确保文件名中含有空格也能处理
-        find . | while read -r ITEM; do
-            if [ "$ITEM" == "." ]; then continue; fi
+		# NUL 分隔，兼容空格、反斜杠和换行符文件名；避免管道子 Shell 吞错。
+		while IFS= read -r -d '' ITEM; do
 
             local REL_PATH="${ITEM#./}"
             local TARGET_ITEM="$DEST_ABS/$REL_PATH"
@@ -76,11 +75,8 @@ function sync_tree() {
                 cp -af "$ITEM" "$TARGET_ITEM"
                 log_debug "  [覆盖文件] $TARGET_ITEM"
             fi
-        done
-    )
-
-    # 检查子 Shell 退出状态
-    if [ $? -eq 0 ]; then
+		done < <(find . -mindepth 1 -print0)
+    ); then
         log_info "目录同步完成: $SRC_DIR"
         return 0
     else
@@ -135,12 +131,12 @@ get_latest_github_tag() {
     local latest_tag
     # 流程: 获取所有 tags -> 过滤掉 ^/ref/tags/ -> 移除 ^^{} 标记 -> 
     #       匹配前缀 -> 版本排序 -> 取最后一个
-    latest_tag=$(git ls-remote --tags "$repo_url" 2>/dev/null | \
+	latest_tag=$(git ls-remote --tags "$repo_url" 2>/dev/null | \
         sed 's|.*refs/tags/||' | \
         sed 's/\^{}//' | \
         grep -E "^v?${prefix}" | \
         sort -Vu | \
-        tail -n 1)
+		tail -n 1) || return 1
 
     if [[ -z "$latest_tag" ]]; then
         return 1
@@ -163,11 +159,11 @@ get_kernel_org_latest() {
 
     local latest_version
     # 使用 curl 获取网页 -> 正则匹配文件名 -> 提取版本号 -> 排序取最新
-    latest_version=$(curl -sL "$target_url" | \
+	latest_version=$(curl -fsSL "$target_url" | \
         grep -oE "linux-${prefix}(\.[0-9]+)?\.tar\.xz" | \
         sed 's/linux-//;s/\.tar\.xz//' | \
         sort -Vu | \
-        tail -n 1)
+		tail -n 1) || return 1
 
     if [[ -z "$latest_version" ]]; then
         return 1
@@ -185,7 +181,16 @@ get_kernel_org_latest() {
 # ==============================================================================
 function upload_to_github_release() {
     local tag_name="$1"
-    local files_pattern="$2"
+	local branch="$2"
+	local kernel_version="$3"
+	local files_pattern="$4"
+	local metadata_dir="./build/output/release-metadata/${branch}"
+	local notes_file="${metadata_dir}/release-notes.md"
+	local summary_file="${metadata_dir}/build-summary.md"
+	local file
+	local file_name
+	local file_size
+	local file_sha256
 
     # 环境校验: 是否安装了 gh 客户端
     if ! command -v gh &> /dev/null; then
@@ -195,30 +200,61 @@ function upload_to_github_release() {
 
     log_info "检查是否有文件匹配: ${files_pattern}"
     
-    # 开启 nullglob，如果没有匹配到文件，数组会为空，而不会变成字面量字符串
-    shopt -s nullglob
-    # 安全展开通配符为数组
-    local upload_files=($files_pattern)
-    # 关闭 nullglob，避免影响脚本其他地方
-    shopt -u nullglob
+    # 使用 compgen 展开调用方传入的通配符；无匹配时保留空数组。
+    local -a upload_files=()
+    mapfile -t upload_files < <(compgen -G "${files_pattern}" || true)
+	local -a metadata_files=()
+	mapfile -d '' -t metadata_files < <(find "${metadata_dir}" -maxdepth 1 -type f \
+		\( -name '*.config' -o -name '*config-vs-arm64-defconfig.txt' \) -print0 2>/dev/null)
 
     # 检查数组长度是否为 0
     if [ ${#upload_files[@]} -eq 0 ]; then
         log_warn "未找到匹配的文件: ${files_pattern}，跳过上传。"
         return 1
     fi
+	if [[ ! -s "${summary_file}" || ${#metadata_files[@]} -eq 0 ]]; then
+		log_error "缺少 ${branch} 的构建元数据，拒绝发布信息不完整的 Release。"
+		return 1
+	fi
+
+	cp -- "${summary_file}" "${notes_file}"
+	{
+		printf '\n## 构建产物\n\n'
+		printf '| 文件 | 大小 | SHA256 |\n|---|---:|---|\n'
+		for file in "${upload_files[@]}"; do
+			file_name="$(basename "${file}")"
+			file_size="$(du -h "${file}" | awk '{print $1}')"
+			file_sha256="$(sha256sum "${file}" | awk '{print $1}')"
+			printf '| `%s` | %s | `%s` |\n' "${file_name}" "${file_size}" "${file_sha256}"
+		done
+		printf '\n## 构建来源\n\n'
+		printf -- '- 发布标签：`%s`\n' "${tag_name}"
+		printf -- '- Kernel.org 版本：`%s`\n' "${kernel_version}"
+		printf -- '- 仓库提交：`%s`\n' "${GITHUB_SHA:-$(git rev-parse HEAD)}"
+		printf -- '- 构建时间：`%s`\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+	} >> "${notes_file}"
 
     log_info "正在创建 GitHub Release 并上传产物: ${tag_name} ..."
     
     # 使用 "${upload_files[@]}" 安全地将文件作为多个参数传递，不再有 SC2086 警告
-    if gh release create "${tag_name}" "${upload_files[@]}" \
+	if gh release create "${tag_name}" "${upload_files[@]}" "${metadata_files[@]}" \
         --title "Auto Build ${tag_name}" \
-        --notes "Automated kernel build synced from kernel.org (Version: ${tag_name})"; then
+        --notes-file "${notes_file}"; then
         log_info "✅ 成功发布并上传产物到: ${tag_name}"
-    else
-        log_error "❌ 上传 Release 失败！请检查网络、权限及 Tag 是否冲突。"
-    fi
+	else
+		log_error "❌ 上传 Release 失败！请检查网络、权限及 Tag 是否冲突。"
+		return 1
+	fi
+	return 0
 }
+
+# Allow regression tests to load the functions without installing packages,
+# cloning Armbian or contacting GitHub.
+if [[ "${BUILD_SCRIPT_LIB_ONLY:-no}" == yes ]]; then
+	# exit is the direct-execution fallback.
+	# shellcheck disable=SC2317
+	return 0 2>/dev/null || exit 0
+fi
 
 # ==============================================================================
 # 主逻辑流程开始
@@ -231,7 +267,7 @@ sudo apt update && sudo apt install git lsof curl wget jq yq -y >/dev/null 2>&1
 # 下载 Armbian 的配置包含文件以解析内核版本
 ROCKCHIP64_CONFIG_FILE="./rockchip64_common.inc"
 log_debug "正在下载 ${ROCKCHIP64_CONFIG_FILE}..."
-wget -q -O ${ROCKCHIP64_CONFIG_FILE} https://raw.githubusercontent.com/armbian/build/refs/heads/main/config/sources/families/include/rockchip64_common.inc
+wget -q -O "${ROCKCHIP64_CONFIG_FILE}" https://raw.githubusercontent.com/armbian/build/refs/heads/main/config/sources/families/include/rockchip64_common.inc
 if [[ ! -s "${ROCKCHIP64_CONFIG_FILE}" ]]; then
     log_error "下载 rockchip64_common.inc 失败或文件为空，请检查网络！"
     exit 1
@@ -244,6 +280,10 @@ fi
 CONFIG_CURRENT_KERNEL_VER=$(get_kernel_version current ${ROCKCHIP64_CONFIG_FILE})
 CONFIG_EDGE_KERNEL_VER=$(get_kernel_version edge ${ROCKCHIP64_CONFIG_FILE})
 CONFIG_BLEEDINGEDGE_KERNEL_VER=$(get_kernel_version bleedingedge ${ROCKCHIP64_CONFIG_FILE})
+if [[ -z "${CONFIG_CURRENT_KERNEL_VER}" || -z "${CONFIG_EDGE_KERNEL_VER}" || -z "${CONFIG_BLEEDINGEDGE_KERNEL_VER}" ]]; then
+	log_error "未能从 ${ROCKCHIP64_CONFIG_FILE} 解析全部内核分支版本"
+	exit 1
+fi
 log_info "CONFIG_CURRENT_KERNEL_VER=${CONFIG_CURRENT_KERNEL_VER}"
 log_info "CONFIG_EDGE_KERNEL_VER=${CONFIG_EDGE_KERNEL_VER}"
 log_info "CONFIG_BLEEDINGEDGE_KERNEL_VER=${CONFIG_BLEEDINGEDGE_KERNEL_VER}"
@@ -257,13 +297,13 @@ fi
 
 # 获取 GitHub 上已经发布的最新的 Tag 和 版本
 # current
-RELEASE_CURRENT_KERNEL_VER=$(get_latest_github_tag "${CUR_GIT_REPO_URL}" "current-${CONFIG_CURRENT_KERNEL_VER}")
+RELEASE_CURRENT_KERNEL_VER=$(get_latest_github_tag "${CUR_GIT_REPO_URL}" "current-${CONFIG_CURRENT_KERNEL_VER}" || true)
 RELEASE_CURRENT_KERNEL_VER2=$(echo "${RELEASE_CURRENT_KERNEL_VER}" | awk -F'-' '{print $2}')
 # edge
-RELEASE_EDGE_KERNEL_VER=$(get_latest_github_tag "${CUR_GIT_REPO_URL}" "edge-${CONFIG_EDGE_KERNEL_VER}")
+RELEASE_EDGE_KERNEL_VER=$(get_latest_github_tag "${CUR_GIT_REPO_URL}" "edge-${CONFIG_EDGE_KERNEL_VER}" || true)
 RELEASE_EDGE_KERNEL_VER2=$(echo "${RELEASE_EDGE_KERNEL_VER}" | awk -F'-' '{print $2}')
 # bleedingedge
-RELEASE_BLEEDINGEDGE_KERNEL_VER=$(get_latest_github_tag "${CUR_GIT_REPO_URL}" "bleedingedge-${CONFIG_BLEEDINGEDGE_KERNEL_VER}")
+RELEASE_BLEEDINGEDGE_KERNEL_VER=$(get_latest_github_tag "${CUR_GIT_REPO_URL}" "bleedingedge-${CONFIG_BLEEDINGEDGE_KERNEL_VER}" || true)
 RELEASE_BLEEDINGEDGE_KERNEL_VER2=$(echo "${RELEASE_BLEEDINGEDGE_KERNEL_VER}" | awk -F'-' '{print $2}')
 
 
@@ -303,7 +343,7 @@ if [ -d "build" ]; then
     log_info "更新现有 build 目录..."
 	git -C build checkout .
 	git -C build clean -fd
-	git -C build pull
+	git -C build pull --ff-only
     sync_tree ./overwrite ./build
     sync_tree ./userpatches ./build/userpatches
 else
@@ -338,15 +378,21 @@ fi
 cd ..
 
 if [[ "$NEED_UPDATE_CURRENT_KERNEL" == true ]]; then
-    upload_to_github_release "current-${KERNEL_ORG_CURRENT_VER}" "./build/output/debs/*current*.deb"
+    upload_to_github_release "current-${KERNEL_ORG_CURRENT_VER}" current \
+		"${KERNEL_ORG_CURRENT_VER}" \
+		"./build/output/debs/*-current-rockchip64_*__${KERNEL_ORG_CURRENT_VER}-*.deb"
 fi
 
 if [[ "$NEED_UPDATE_EDGE_KERNEL" == true ]]; then
-    upload_to_github_release "edge-${KERNEL_ORG_EDGE_VER}" "./build/output/debs/*edge*.deb"
+    upload_to_github_release "edge-${KERNEL_ORG_EDGE_VER}" edge \
+		"${KERNEL_ORG_EDGE_VER}" \
+		"./build/output/debs/*-edge-rockchip64_*__${KERNEL_ORG_EDGE_VER}-*.deb"
 fi
 
 if [[ "$NEED_UPDATE_BLEEDINGEDGE_KERNEL" == true ]]; then
-    upload_to_github_release "bleedingedge-${KERNEL_ORG_BLEEDINGEDGE_VER}" "./build/output/debs/*bleedingedge*.deb"
+    upload_to_github_release "bleedingedge-${KERNEL_ORG_BLEEDINGEDGE_VER}" bleedingedge \
+		"${KERNEL_ORG_BLEEDINGEDGE_VER}" \
+		"./build/output/debs/*-bleedingedge-rockchip64_*__${KERNEL_ORG_BLEEDINGEDGE_VER}-*.deb"
 fi
 
 log_info "🎉 所有自动化流程已成功结束。"

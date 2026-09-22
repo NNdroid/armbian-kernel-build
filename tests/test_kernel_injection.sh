@@ -1,0 +1,304 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# Resolved from the computed repository root.
+# shellcheck disable=SC1091
+source "${REPO_ROOT}/userpatches/lib.config"
+
+fail() {
+	printf '[FAIL] %s\n' "$*" >&2
+	exit 1
+}
+
+assert_file() {
+	[[ -f "$1" ]] || fail "missing file: $1"
+}
+
+assert_absent() {
+	[[ ! -e "$1" ]] || fail "legacy path still exists: $1"
+}
+
+assert_contains() {
+	grep -Fq -- "$2" "$1" || fail "$1 does not contain: $2"
+}
+
+assert_not_contains() {
+	if grep -Fq -- "$2" "$1"; then
+		fail "$1 unexpectedly contains: $2"
+	fi
+}
+
+assert_count() {
+	local actual
+	actual="$(grep -Fc -- "$2" "$1" || true)"
+	[[ "${actual}" == "$3" ]] || fail "$1 contains '$2' ${actual} times, expected $3"
+}
+
+assert_array_contains() {
+	local array_name="$1"
+	local expected="$2"
+	local item
+	local -n values="${array_name}"
+
+	for item in "${values[@]}"; do
+		[[ "${item}" == "${expected}" ]] && return 0
+	done
+	fail "${array_name} does not contain: ${expected}"
+}
+
+reset_hook_arrays() {
+	# These arrays are consumed dynamically by the sourced Armbian hook.
+	# shellcheck disable=SC2034
+	opts_y=()
+	# shellcheck disable=SC2034
+	opts_m=()
+	# shellcheck disable=SC2034
+	opts_n=()
+	# shellcheck disable=SC2034
+	kernel_config_modifying_hashes=()
+}
+
+TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/kernel-injection-test.XXXXXX")"
+trap 'rm -rf -- "${TEST_ROOT}"' EXIT
+KERNEL_ROOT="${TEST_ROOT}/linux"
+
+mkdir -p \
+	"${KERNEL_ROOT}/net/ipv4" \
+	"${KERNEL_ROOT}/net/netfilter" \
+	"${KERNEL_ROOT}/drivers/net"
+printf 'CONFIG_LSM="lockdown,yama,integrity,apparmor"\n' > "${KERNEL_ROOT}/.config"
+
+cat > "${KERNEL_ROOT}/net/ipv4/tcp.c" <<'LEGACY_TCP_C'
+#include <net/tcp.h>
+// --- 新增: TCP Brutal 专属宏 ---
+#define TCP_BRUTAL_PARAMS 23301
+// -------------------------------------------
+static int tcp_setsockopt_test(void)
+{
+	case TCP_BRUTAL_PARAMS: { // --- 新增: TCP Brutal 专属处理分支 ---
+		return 0;
+	} // -------------------------------------------
+}
+LEGACY_TCP_C
+
+cat > "${KERNEL_ROOT}/net/ipv4/Kconfig" <<'LEGACY_TCP_KCONFIG'
+menu "IPv4"
+endmenu
+
+config TCP_CONG_BRUTAL
+	tristate "TCP Brutal"
+config TCP_AFTER_LEGACY
+	bool "Must survive legacy cleanup"
+LEGACY_TCP_KCONFIG
+cat > "${KERNEL_ROOT}/net/ipv4/Makefile" <<'LEGACY_TCP_MAKEFILE'
+obj-y += tcp.o
+obj-$(CONFIG_TCP_CONG_BRUTAL) += tcp_brutal.o
+LEGACY_TCP_MAKEFILE
+touch "${KERNEL_ROOT}/net/ipv4/tcp_brutal.c"
+
+cat > "${KERNEL_ROOT}/drivers/net/Kconfig" <<'DRIVERS_NET_KCONFIG'
+menu "Network device support"
+endmenu
+source "drivers/net/amneziawg/Kconfig"
+DRIVERS_NET_KCONFIG
+cat > "${KERNEL_ROOT}/drivers/net/Makefile" <<'DRIVERS_NET_MAKEFILE'
+obj-y += loopback.o
+obj-$(CONFIG_AMNEZIAWG) += amneziawg/
+DRIVERS_NET_MAKEFILE
+mkdir -p "${KERNEL_ROOT}/drivers/net/amneziawg"
+printf 'stale\n' > "${KERNEL_ROOT}/drivers/net/amneziawg/stale.c"
+
+cat > "${KERNEL_ROOT}/net/netfilter/Kconfig" <<'LEGACY_NF_KCONFIG'
+menu "Netfilter"
+endmenu
+
+config NETFILTER_DEAF
+	tristate "Netfilter Deaf Module"
+config NF_AFTER_LEGACY
+	bool "Must survive legacy cleanup"
+LEGACY_NF_KCONFIG
+cat > "${KERNEL_ROOT}/net/netfilter/Makefile" <<'LEGACY_NF_MAKEFILE'
+obj-y += core.o
+obj-$(CONFIG_NETFILTER_DEAF) += nf_deaf.o
+LEGACY_NF_MAKEFILE
+touch "${KERNEL_ROOT}/net/netfilter/nf_deaf.c"
+
+reset_hook_arrays
+original_pwd="$(pwd -P)"
+cd "${KERNEL_ROOT}"
+custom_kernel_config
+cd "${original_pwd}"
+
+assert_array_contains opts_y BPF_SYSCALL
+assert_array_contains opts_y BPF_JIT_ALWAYS_ON
+assert_array_contains opts_y DEBUG_INFO_BTF_MODULES
+assert_array_contains opts_y CGROUP_BPF
+assert_array_contains opts_y BPF_LSM
+assert_array_contains opts_y XDP_SOCKETS
+assert_array_contains opts_y FUNCTION_TRACER
+assert_array_contains opts_m NET_CLS_BPF
+assert_array_contains opts_m NET_ACT_BPF
+assert_contains "${KERNEL_ROOT}/.config" \
+	'CONFIG_LSM="lockdown,yama,integrity,apparmor,bpf"'
+
+EFFECTIVE_CONFIG="${TEST_ROOT}/effective-ebpf.config"
+{
+	for symbol in "${opts_y[@]}"; do
+		printf 'CONFIG_%s=y\n' "${symbol}"
+	done
+	for symbol in "${opts_m[@]}"; do
+		printf 'CONFIG_%s=m\n' "${symbol}"
+	done
+	printf 'CONFIG_HAVE_EBPF_JIT=y\n'
+	printf '# CONFIG_DEBUG_INFO_NONE is not set\n'
+	printf '# CONFIG_DEBUG_INFO_REDUCED is not set\n'
+	printf 'CONFIG_LSM="lockdown,yama,integrity,apparmor,bpf"\n'
+} > "${EFFECTIVE_CONFIG}"
+_kernel_inject_verify_full_ebpf_config "${EFFECTIVE_CONFIG}"
+
+sed -i 's/^CONFIG_DEBUG_INFO_BTF=y$/# CONFIG_DEBUG_INFO_BTF is not set/' "${EFFECTIVE_CONFIG}"
+if _kernel_inject_verify_full_ebpf_config "${EFFECTIVE_CONFIG}"; then
+	fail "eBPF verifier accepted a config without DEBUG_INFO_BTF"
+fi
+sed -i 's/^# CONFIG_DEBUG_INFO_BTF is not set$/CONFIG_DEBUG_INFO_BTF=y/' "${EFFECTIVE_CONFIG}"
+
+RELEASE_TEST_ROOT="${TEST_ROOT}/release-notes"
+RELEASE_METADATA="${RELEASE_TEST_ROOT}/build/output/release-metadata/edge"
+RELEASE_DEBS="${RELEASE_TEST_ROOT}/build/output/debs"
+mkdir -p "${RELEASE_METADATA}" "${RELEASE_DEBS}"
+printf '# 动态构建摘要\n\neBPF 已校验。\n' > "${RELEASE_METADATA}/build-summary.md"
+printf 'CONFIG_BPF=y\n' > "${RELEASE_METADATA}/edge-kernel.config"
+printf '+BPF y\n' > "${RELEASE_METADATA}/edge-config-vs-arm64-defconfig.txt"
+printf 'edge package\n' > \
+	"${RELEASE_DEBS}/linux-image-edge-rockchip64_test__7.2.1-build.deb"
+printf 'must not upload\n' > \
+	"${RELEASE_DEBS}/linux-image-bleedingedge-rockchip64_test__7.2.1-build.deb"
+(
+	cd "${RELEASE_TEST_ROOT}"
+	BUILD_SCRIPT_LIB_ONLY=yes source "${REPO_ROOT}/build.sh"
+	CAPTURED_NOTES="${RELEASE_TEST_ROOT}/captured-notes.md"
+	CAPTURED_ARGS="${RELEASE_TEST_ROOT}/captured-gh-args.txt"
+	gh() {
+		local argument
+		local notes_next=no
+		printf '%s\n' "$@" > "${CAPTURED_ARGS}"
+		for argument in "$@"; do
+			if [[ "${notes_next}" == yes ]]; then
+				cp "${argument}" "${CAPTURED_NOTES}"
+				notes_next=no
+			elif [[ "${argument}" == --notes-file ]]; then
+				notes_next=yes
+			fi
+		done
+	}
+	export GITHUB_SHA=0123456789abcdef0123456789abcdef01234567
+	upload_to_github_release edge-7.2.1 edge 7.2.1 \
+		'./build/output/debs/*-edge-rockchip64_*__7.2.1-*.deb'
+)
+assert_contains "${RELEASE_TEST_ROOT}/captured-notes.md" '# 动态构建摘要'
+assert_contains "${RELEASE_TEST_ROOT}/captured-notes.md" 'linux-image-edge-rockchip64'
+assert_contains "${RELEASE_TEST_ROOT}/captured-notes.md" \
+	'0123456789abcdef0123456789abcdef01234567'
+assert_not_contains "${RELEASE_TEST_ROOT}/captured-gh-args.txt" 'bleedingedge'
+assert_contains "${RELEASE_TEST_ROOT}/captured-gh-args.txt" 'edge-kernel.config'
+
+WRAPPER_ROOT="${TEST_ROOT}/wrapper-root"
+mkdir -p "${WRAPPER_ROOT}/userpatches"
+cp "${REPO_ROOT}/overwrite/build_with_diy.sh" "${WRAPPER_ROOT}/build_with_diy.sh"
+cp "${REPO_ROOT}/userpatches/lib.config" "${WRAPPER_ROOT}/userpatches/lib.config"
+cat > "${WRAPPER_ROOT}/compile.sh" <<'FAKE_COMPILE'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+kernel_root="cache/sources/linux-kernel-worktree/fake"
+mkdir -p "${kernel_root}/net/ipv4/tcp_brutal" \
+	"${kernel_root}/drivers/net/amneziawg" \
+	"${kernel_root}/net/netfilter/nf_deaf"
+cp "${EFFECTIVE_CONFIG}" "${kernel_root}/.config"
+printf 'commit=1111111111111111111111111111111111111111\n' \
+	> "${kernel_root}/net/ipv4/tcp_brutal/.source-revision"
+printf 'commit=2222222222222222222222222222222222222222\n' \
+	> "${kernel_root}/drivers/net/amneziawg/.source-revision"
+printf 'commit=3333333333333333333333333333333333333333\n' \
+	> "${kernel_root}/net/netfilter/nf_deaf/.source-revision"
+FAKE_COMPILE
+chmod +x "${WRAPPER_ROOT}/compile.sh" "${WRAPPER_ROOT}/build_with_diy.sh"
+(
+	cd "${WRAPPER_ROOT}"
+	EFFECTIVE_CONFIG="${EFFECTIVE_CONFIG}" ./build_with_diy.sh kernel BOARD=fake
+)
+assert_file "${WRAPPER_ROOT}/output/release-metadata/unknown/unknown-kernel.config"
+assert_file "${WRAPPER_ROOT}/output/release-metadata/unknown/unknown-config-vs-arm64-defconfig.txt"
+assert_contains "${WRAPPER_ROOT}/output/release-metadata/unknown/build-summary.md" \
+	'eBPF / BTF / CO-RE'
+
+sed -i 's/^CONFIG_DEBUG_INFO_BTF=y$/# CONFIG_DEBUG_INFO_BTF is not set/' "${EFFECTIVE_CONFIG}"
+if (
+	cd "${WRAPPER_ROOT}"
+	EFFECTIVE_CONFIG="${EFFECTIVE_CONFIG}" ./build_with_diy.sh kernel BOARD=fake
+); then
+	fail "build wrapper accepted a final config without DEBUG_INFO_BTF"
+fi
+sed -i 's/^# CONFIG_DEBUG_INFO_BTF is not set$/CONFIG_DEBUG_INFO_BTF=y/' "${EFFECTIVE_CONFIG}"
+
+assert_file "${KERNEL_ROOT}/net/ipv4/tcp_brutal/brutal_cc.c"
+assert_file "${KERNEL_ROOT}/net/ipv4/tcp_brutal/brutal_sockopt.c"
+assert_file "${KERNEL_ROOT}/net/ipv4/tcp_brutal/brutal_rules.c"
+assert_file "${KERNEL_ROOT}/net/ipv4/tcp_brutal/brutal.h"
+assert_contains "${KERNEL_ROOT}/net/ipv4/tcp_brutal/Makefile" 'BRUTAL_HAVE_TSO_SEGS'
+assert_contains "${KERNEL_ROOT}/net/ipv4/tcp_brutal/.source-revision" \
+	'commit=fd3e540223c8d22adbed6d1f4fc54caa623d49c0'
+assert_absent "${KERNEL_ROOT}/net/ipv4/tcp_brutal.c"
+assert_not_contains "${KERNEL_ROOT}/net/ipv4/tcp.c" 'TCP_BRUTAL_PARAMS'
+assert_contains "${KERNEL_ROOT}/net/ipv4/Kconfig" 'config TCP_AFTER_LEGACY'
+
+assert_file "${KERNEL_ROOT}/drivers/net/amneziawg/Kbuild"
+assert_file "${KERNEL_ROOT}/drivers/net/amneziawg/compat/Kbuild.include"
+assert_absent "${KERNEL_ROOT}/drivers/net/amneziawg/stale.c"
+assert_contains "${KERNEL_ROOT}/drivers/net/amneziawg/uapi/wireguard.h" \
+	'#define WG_GENL_NAME "amneziawg"'
+assert_contains "${KERNEL_ROOT}/drivers/net/amneziawg/.source-revision" \
+	'commit=85fcc17788ed8afd929e3a4ea02edafeaa1769cc'
+
+assert_file "${KERNEL_ROOT}/net/netfilter/nf_deaf/nf_deaf.c"
+assert_file "${KERNEL_ROOT}/net/netfilter/nf_deaf/Kconfig"
+assert_absent "${KERNEL_ROOT}/net/netfilter/nf_deaf.c"
+assert_contains "${KERNEL_ROOT}/net/netfilter/Kconfig" 'config NF_AFTER_LEGACY'
+assert_contains "${KERNEL_ROOT}/net/netfilter/nf_deaf/.source-revision" \
+	'commit=d600e9c7f2784137348b3bbe2c94e781177e878d'
+
+assert_count "${KERNEL_ROOT}/net/ipv4/Kconfig" 'BEGIN ARMBIAN-KERNEL-INJECT: TCP_BRUTAL_V2' 1
+assert_count "${KERNEL_ROOT}/net/ipv4/Makefile" 'BEGIN ARMBIAN-KERNEL-INJECT: TCP_BRUTAL_V2' 1
+assert_count "${KERNEL_ROOT}/drivers/net/Kconfig" 'BEGIN ARMBIAN-KERNEL-INJECT: AMNEZIAWG' 1
+assert_count "${KERNEL_ROOT}/drivers/net/Makefile" 'BEGIN ARMBIAN-KERNEL-INJECT: AMNEZIAWG' 1
+assert_count "${KERNEL_ROOT}/net/netfilter/Kconfig" 'BEGIN ARMBIAN-KERNEL-INJECT: NF_DEAF' 1
+assert_count "${KERNEL_ROOT}/net/netfilter/Makefile" 'BEGIN ARMBIAN-KERNEL-INJECT: NF_DEAF' 1
+
+before="$(sha256sum \
+	"${KERNEL_ROOT}/net/ipv4/Kconfig" \
+	"${KERNEL_ROOT}/net/ipv4/Makefile" \
+	"${KERNEL_ROOT}/drivers/net/Kconfig" \
+	"${KERNEL_ROOT}/drivers/net/Makefile" \
+	"${KERNEL_ROOT}/net/netfilter/Kconfig" \
+	"${KERNEL_ROOT}/net/netfilter/Makefile")"
+
+reset_hook_arrays
+cd "${KERNEL_ROOT}"
+custom_kernel_config
+cd "${original_pwd}"
+
+after="$(sha256sum \
+	"${KERNEL_ROOT}/net/ipv4/Kconfig" \
+	"${KERNEL_ROOT}/net/ipv4/Makefile" \
+	"${KERNEL_ROOT}/drivers/net/Kconfig" \
+	"${KERNEL_ROOT}/drivers/net/Makefile" \
+	"${KERNEL_ROOT}/net/netfilter/Kconfig" \
+	"${KERNEL_ROOT}/net/netfilter/Makefile")"
+[[ "${before}" == "${after}" ]] || fail "second injection changed parent Kconfig/Makefiles"
+
+reset_hook_arrays
+if AMNEZIAWG_MODE=y WIREGUARD_MODE=y custom_kernel_config; then
+	fail "unsafe built-in AmneziaWG/WireGuard combination was accepted"
+fi
+
+printf '[PASS] kernel injection is pinned/idempotent and full eBPF is enforced\n'

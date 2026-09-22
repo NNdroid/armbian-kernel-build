@@ -1,163 +1,218 @@
-#!/bin/bash
-# 作用: 自动将 tcp-brutal,amneziawg,nf_deaf 注入 Armbian 内核树并启动编译
+#!/usr/bin/env bash
+# shellcheck disable=SC2016
+set -Eeuo pipefail
 
-# 确保用户补丁目录存在
-mkdir -p userpatches
+if [[ ! -x ./compile.sh ]]; then
+	echo "[kernel-inject][error] compile.sh is missing or not executable" >&2
+	exit 1
+fi
 
-# 备份现有的 lib.config (如果存在)
-[ -f userpatches/lib.config ] && cp userpatches/lib.config userpatches/lib.config.bak
+if [[ ! -s userpatches/lib.config ]]; then
+	echo "[kernel-inject][error] userpatches/lib.config is missing or empty" >&2
+	exit 1
+fi
 
-# 注入动态 Hook 到 userpatches/lib.config
-cat << 'EOF' > userpatches/lib.config
-# 系统的内核配置钩子
-custom_kernel_config() {
-    # 向 Armbian 框架注册意图
-    opts_y+=("CONFIG_TCP_CONG_BRUTAL")
-    opts_y+=("CONFIG_WIREGUARD")
-    opts_y+=("CONFIG_AMNEZIAWG")
-    opts_y+=("CONFIG_NETFILTER_DEAF")
+: "${ENABLE_FULL_EBPF:=yes}"
+: "${KERNEL_BTF:=yes}"
+case "${ENABLE_FULL_EBPF}" in
+	yes)
+		if [[ "${KERNEL_BTF}" == no ]]; then
+			echo "[kernel-inject][error] ENABLE_FULL_EBPF=yes conflicts with KERNEL_BTF=no" >&2
+			exit 1
+		fi
+		;;
+	no) ;;
+	*)
+		echo "[kernel-inject][error] ENABLE_FULL_EBPF must be yes or no" >&2
+		exit 1
+		;;
+esac
+case "${KERNEL_BTF}" in
+	yes|no) ;;
+	*)
+		echo "[kernel-inject][error] KERNEL_BTF must be yes or no" >&2
+		exit 1
+		;;
+esac
+export ENABLE_FULL_EBPF KERNEL_BTF
 
-    # 确认安全环境
-    if [[ ! -d "${PWD}/net/ipv4" ]] || [[ ! -f "${PWD}/.config" ]]; then
-        return 0
-    fi
+# Runtime path is the Armbian build root.
+# shellcheck disable=SC1091
+source userpatches/lib.config
 
-    echo -e "\n\e[1;31m====================================================\e[0m"
-    echo -e "\e[1;31m[HACK] 准备就绪！正在执行【内核本体强制注入】!!!\e[0m"
-    echo -e "\e[1;31m====================================================\n\e[0m"
+validation_marker="$(mktemp)"
+trap 'rm -f -- "${validation_marker}"' EXIT
 
-    local ipv4_dir="${PWD}/net/ipv4"
-    local awg_dir="${PWD}/drivers/net/amneziawg"
-    local nf_dir="${PWD}/net/netfilter"
-    local proxy=""
+argument_value() {
+	local wanted="$1"
+	local argument
+	shift
 
-    # ==========================================
-    # 第一阶段：物理源码注入
-    # ==========================================
-
-    # --- 1. TCP Brutal ---
-    if [[ ! -f "$ipv4_dir/tcp_brutal.c" ]]; then
-        echo -e "\e[1;33m[1/3] 注入 TCP-Brutal...\e[0m"
-        local tmp_brutal="/tmp/tcp-brutal-$$"
-        GIT_TRACE=0 git clone --quiet --depth 1 "${proxy}https://github.com/apernet/tcp-brutal.git" "$tmp_brutal"
-        cp "$tmp_brutal/brutal.c" "$ipv4_dir/tcp_brutal.c"
-        rm -rf "$tmp_brutal"
-
-        # Kconfig 注入 (移除 default y，我们用脚本硬改)
-        echo -e "\nconfig TCP_CONG_BRUTAL\n\ttristate \"TCP Brutal\"\n" >> "$ipv4_dir/Kconfig"
-        echo "obj-\$(CONFIG_TCP_CONG_BRUTAL) += tcp_brutal.o" >> "$ipv4_dir/Makefile"
-    fi
-
-    # --- 2. AmneziaWG ---
-    if [[ ! -d "$awg_dir" ]]; then
-        echo -e "\e[1;33m[2/3] 注入 AmneziaWG...\e[0m"
-        mkdir -p "$awg_dir"
-        local tmp_awg="/tmp/amneziawg-$$"
-        GIT_TRACE=0 git clone --quiet --depth 1 "${proxy}https://github.com/NNdroid/amneziawg-linux-kernel-module.git" "$tmp_awg"
-        cp -r "$tmp_awg/src/"* "$awg_dir/"
-        rm -rf "$tmp_awg"
-
-        echo 'source "drivers/net/amneziawg/Kconfig"' >> "${PWD}/drivers/net/Kconfig"
-        echo "obj-\$(CONFIG_AMNEZIAWG) += amneziawg/" >> "${PWD}/drivers/net/Makefile"
-
-        display_alert "AmneziaWG" "Renaming symbols to prevent collision with native WireGuard..." "info"
-
-        find "$awg_dir" -type f -name "*.[ch]" -exec sed -i 's/\bwg_/awg_/g' {} +
-        find "$awg_dir" -type f -name "*.[ch]" -exec sed -i 's/\bWG_/AWG_/g' {} +
-        find "$awg_dir" -type f -name "*.[ch]" -exec sed -i 's/"wireguard"/"amneziawg"/g' {} +
-    fi
-
-    # --- 3. nf_deaf (NNdroid) ---
-    if [[ ! -f "$nf_dir/nf_deaf.c" ]]; then
-        echo -e "\e[1;33m[3/3] 注入 nf_deaf...\e[0m"
-        curl -sL "${proxy}https://raw.githubusercontent.com/NNdroid/nf_deaf/refs/heads/main/nf_deaf.c" -o "$nf_dir/nf_deaf.c"
-        
-        if [ -f "$nf_dir/nf_deaf.c" ] && ! grep -q "NETFILTER_DEAF" "$nf_dir/Kconfig"; then
-            echo -e "\nconfig NETFILTER_DEAF\n\ttristate \"Netfilter Deaf Module\"\n" >> "$nf_dir/Kconfig"
-            echo "obj-\$(CONFIG_NETFILTER_DEAF) += nf_deaf.o" >> "$nf_dir/Makefile"
-        fi
-    fi
-    
-    bash "${USERPATCHES_PATH}/90_patch_brutal.sh" "${PWD}"
-    # 捕获退出码，如果不是 0 (成功)，就直接结束整个大编译进程
-    if [ $? -ne 0 ]; then
-        echo "🚨 TCP Brutal 注入失败，安全阻断编译流程！"
-        exit 1
-    fi
-
-    # ==========================================
-    # 第二阶段：绝对强制配置 (.config 深度修补)
-    # ==========================================
-    echo -e "\e[1;32m[HACK] 源码就位，开始暴力修补内核配置 (.config)...\e[0m"
-
-    local cfg_file="${PWD}/.config"
-    
-    # 强力设定函数：不仅将目标设为 y，还会把任何它依赖的东西设为 y
-    force_y() {
-        local cfg="$1"
-        sed -i "s/^# ${cfg} is not set/${cfg}=y/g" "$cfg_file"
-        sed -i "s/^${cfg}=m/${cfg}=y/g" "$cfg_file"
-        if ! grep -q "^${cfg}=y" "$cfg_file"; then
-            echo "${cfg}=y" >> "$cfg_file"
-        fi
-    }
-    
-    # 强力设定函数：强制将目标设为 m (编译为独立 .ko 模块)
-    force_m() {
-        local cfg="$1"
-        # 1. 唤醒：把被注释掉的（未设置的）改成 =m
-        sed -i "s/^# ${cfg} is not set/${cfg}=m/g" "$cfg_file"
-        # 2. 降级：把被强制内置的（=y）改成 =m
-        sed -i "s/^${cfg}=y/${cfg}=m/g" "$cfg_file"
-        # 3. 兜底：如果文件里根本找不到这个 =m 的配置，直接追加到末尾
-        if ! grep -q "^${cfg}=m" "$cfg_file"; then
-            echo "${cfg}=m" >> "$cfg_file"
-        fi
-    }
-
-    # 1. 强制 Brutal 内置
-    force_y "CONFIG_TCP_CONG_BRUTAL"
-    # Brutal 依赖项强化
-    force_y "CONFIG_NET_SCHED"
-    force_y "CONFIG_NET_SCH_FQ"
-
-    # 2. 强制 WireGuard 内置
-    force_y "CONFIG_WIREGUARD"
-    # WG 依赖项强化
-    force_y "CONFIG_NET"
-    force_y "CONFIG_INET"
-    force_y "CONFIG_CRYPTO"
-
-    # 3. 强制 AmneziaWG 内置
-    force_y "CONFIG_AMNEZIAWG"
-
-    # 4. 强制 nf_deaf 内置
-    force_y "CONFIG_NETFILTER_DEAF"
-    force_y "CONFIG_NETFILTER"
-    force_y "CONFIG_NETFILTER_ADVANCED"
-    force_y "CONFIG_NF_CONNTRACK"
-    force_y "CONFIG_NF_NAT"
-
-    # ==========================================
-    # 第三阶段：核对与锁定
-    # ==========================================
-    # 使用 oldconfig 自动处理依赖（不要用 olddefconfig，有时会丢弃我们的强制配置）
-    yes "" | make ARCH=arm64 oldconfig >/dev/null 2>&1
-
-    # 最后再做一次死磕式确认（防止 oldconfig 擅自修改）
-    force_y "CONFIG_NETFILTER_DEAF"
-    force_y "CONFIG_AMNEZIAWG"
-
-    echo -e "\e[1;32m[HACK] 内置强制注入完成！\e[0m"
-    echo -e "\e[1;31m====================================================\n\e[0m"
+	for argument in "$@"; do
+		case "${argument}" in
+			"${wanted}"=*) printf '%s\n' "${argument#*=}"; return 0 ;;
+		esac
+	done
+	return 1
 }
-EOF
 
-echo "[*] Brutal 构建 Hook 注入完成！"
-echo "[*] 启动 Armbian 编译流程..."
+config_value() {
+	local config_file="$1"
+	local symbol="$2"
+	local value
 
-# 4. 透传所有命令行参数给官方编译脚本
+	value="$(sed -n "s/^CONFIG_${symbol}=//p" "${config_file}")"
+	if [[ -n "${value}" ]]; then
+		printf '%s\n' "${value}"
+	else
+		printf 'n\n'
+	fi
+}
+
+source_commit() {
+	local revision_file="$1"
+	local commit
+
+	commit="$(sed -n 's/^commit=//p' "${revision_file}" 2>/dev/null || true)"
+	printf '%s\n' "${commit:-unknown}"
+}
+
+generate_release_metadata() {
+	local kernel_root="$1"
+	local branch="$2"
+	local board="$3"
+	local userspace_release="$4"
+	local metadata_parent="output/release-metadata"
+	local metadata_dir="${metadata_parent}/${branch}"
+	local staging
+	local baseline_dir
+	local final_config="${kernel_root}/.config"
+	local config_asset
+	local diff_asset
+	local summary_file
+	local kernel_release
+	local config_sha256
+	local diff_count=0
+	local baseline_status="unavailable"
+	local tcp_commit
+	local awg_commit
+	local nf_commit
+
+	[[ "${branch}" =~ ^[A-Za-z0-9._-]+$ ]] || {
+		echo "[kernel-inject][error] unsafe BRANCH value for release metadata: ${branch}" >&2
+		return 1
+	}
+	[[ -f "${final_config}" ]] || {
+		echo "[kernel-inject][error] final kernel config is missing: ${final_config}" >&2
+		return 1
+	}
+
+	mkdir -p "${metadata_parent}"
+	staging="$(mktemp -d "${metadata_parent}/.${branch}.XXXXXX")"
+	config_asset="${staging}/${branch}-kernel.config"
+	diff_asset="${staging}/${branch}-config-vs-arm64-defconfig.txt"
+	summary_file="${staging}/build-summary.md"
+	cp -- "${final_config}" "${config_asset}"
+	config_sha256="$(sha256sum "${config_asset}" | awk '{print $1}')"
+
+	kernel_release="$(make -s -C "${kernel_root}" ARCH=arm64 kernelrelease 2>/dev/null || true)"
+	kernel_release="${kernel_release:-$(basename "${kernel_root}")}"
+	baseline_dir="$(mktemp -d "${TMPDIR:-/tmp}/arm64-defconfig.XXXXXX")"
+	if [[ -f "${kernel_root}/Makefile" ]] && {
+		make -s -C "${kernel_root}" O="${baseline_dir}" ARCH=arm64 defconfig \
+			> "${staging}/arm64-defconfig-build.log" 2>&1 ||
+		KCONFIG_CONFIG="${baseline_dir}/.config" \
+			make -s -C "${kernel_root}" ARCH=arm64 defconfig \
+				>> "${staging}/arm64-defconfig-build.log" 2>&1
+	}; then
+		if [[ -x "${kernel_root}/scripts/diffconfig" ]] && \
+			"${kernel_root}/scripts/diffconfig" "${baseline_dir}/.config" "${final_config}" \
+				> "${diff_asset}"; then
+			baseline_status="generated"
+			diff_count="$(awk 'NF { count++ } END { print count + 0 }' "${diff_asset}")"
+		else
+			printf 'Unable to run scripts/diffconfig against arm64 defconfig.\n' > "${diff_asset}"
+		fi
+	else
+		printf 'Unable to generate an arm64 defconfig baseline; see arm64-defconfig-build.log.\n' \
+			> "${diff_asset}"
+	fi
+	rm -rf -- "${baseline_dir}"
+
+	tcp_commit="$(source_commit "${kernel_root}/net/ipv4/tcp_brutal/.source-revision")"
+	awg_commit="$(source_commit "${kernel_root}/drivers/net/amneziawg/.source-revision")"
+	nf_commit="$(source_commit "${kernel_root}/net/netfilter/nf_deaf/.source-revision")"
+	if [[ ! "${tcp_commit}" =~ ^[0-9a-f]{40}$ || \
+		! "${awg_commit}" =~ ^[0-9a-f]{40}$ || \
+		! "${nf_commit}" =~ ^[0-9a-f]{40}$ ]]; then
+		echo "[kernel-inject][error] release metadata contains an invalid source commit" >&2
+		rm -rf -- "${staging}"
+		return 1
+	fi
+
+	{
+		printf '# 内核构建详情\n\n'
+		printf '| 项目 | 最终值 |\n|---|---|\n'
+		printf '| 内核 release | `%s` |\n' "${kernel_release}"
+		printf '| Armbian 分支 | `%s` |\n' "${branch}"
+		printf '| 板型 / 架构 | `%s` / `arm64` |\n' "${board}"
+		printf '| Userspace release | `%s` |\n' "${userspace_release}"
+		printf '| 最终配置 SHA256 | `%s` |\n' "${config_sha256}"
+		printf '| 完整 eBPF 强制校验 | `%s` |\n' "${ENABLE_FULL_EBPF}"
+		printf '\n## 与标准内核配置的差异\n\n'
+		printf '附件 `%s` 是经过 `olddefconfig` 解析后的最终有效配置。' "$(basename "${config_asset}")"
+		if [[ "${baseline_status}" == generated ]]; then
+			printf '与同一份 Armbian 补丁后源码树生成的 `arm64 defconfig` 相比，共有 **%s 项配置差异**。\n\n' "${diff_count}"
+		else
+			printf '本次未能生成 `arm64 defconfig` 对照，但最终配置仍已附带。\n\n'
+		fi
+		printf '> 这是配置层对比；Armbian 板级、设备树及其他补丁是相对于 kernel.org 的额外源码级差异。\n\n'
+		printf '## 额外网络组件\n\n'
+		printf '| 组件 | 构建模式 | 源码提交 |\n|---|---:|---|\n'
+		printf '| TCP-Brutal v2 | `%s` | [`%s`](https://github.com/HyNetworks/tcp-brutal/commit/%s) |\n' \
+			"$(config_value "${final_config}" TCP_CONG_BRUTAL)" "${tcp_commit:0:12}" "${tcp_commit}"
+		printf '| AmneziaWG | `%s` | [`%s`](https://github.com/NNdroid/amneziawg-linux-kernel-module/commit/%s) |\n' \
+			"$(config_value "${final_config}" AMNEZIAWG)" "${awg_commit:0:12}" "${awg_commit}"
+		printf '| nf_deaf | `%s` | [`%s`](https://github.com/NNdroid/nf_deaf/commit/%s) |\n' \
+			"$(config_value "${final_config}" NETFILTER_DEAF)" "${nf_commit:0:12}" "${nf_commit}"
+		printf '| 原生 WireGuard | `%s` | Linux 内核源码树 |\n' \
+			"$(config_value "${final_config}" WIREGUARD)"
+		printf '\n## eBPF / BTF / CO-RE\n\n'
+		if [[ "${ENABLE_FULL_EBPF}" == yes ]]; then
+			printf '最终配置已通过以下能力检查：BPF syscall/JIT、内核及模块 BTF、CO-RE、cgroup/LSM、XDP/AF_XDP、tc、netfilter、kprobe/uprobe 和 ftrace。非特权 BPF 默认关闭。\n'
+		else
+			printf '本次构建关闭了完整 eBPF 强制校验；使用 BTF/CO-RE 或追踪功能前请检查附件中的最终配置。\n'
+		fi
+		printf '\n完整配置差异见附件 `%s`。\n' "$(basename "${diff_asset}")"
+	} > "${summary_file}"
+
+	rm -rf -- "${metadata_dir}"
+	mv -- "${staging}" "${metadata_dir}"
+	echo "[kernel-inject] Release metadata written to ${metadata_dir}"
+}
+
+# Remove the obsolete v1 patch if it remains in a reused/ignored userpatches
+# directory. TCP-Brutal v2 owns its socket-option routing.
+rm -f -- userpatches/90_patch_brutal.sh
+
+echo "[kernel-inject] Starting Armbian with pinned source injection (full eBPF: ${ENABLE_FULL_EBPF})"
 ./compile.sh "$@"
 
-#./build_with_brutal.sh build BOARD=nanopi-r5s BRANCH=current BUILD_DESKTOP=no BUILD_MINIMAL=no KERNEL_CONFIGURE=yes BUILD_ONLY=kernel RELEASE=trixie KERNEL_BTF=yes 
-#./build_with_brutal.sh build BOARD=hinlink-h66k BRANCH=current BUILD_DESKTOP=no BUILD_MINIMAL=no KERNEL_CONFIGURE=no BUILD_ONLY=kernel RELEASE=trixie KERNEL_BTF=yes
+mapfile -d '' -t injected_revisions < <(find cache/sources/linux-kernel-worktree -type f \
+	-path '*/net/ipv4/tcp_brutal/.source-revision' \
+	-newer "${validation_marker}" -print0 2>/dev/null)
+if ((${#injected_revisions[@]} != 1)); then
+	echo "[kernel-inject][error] expected one freshly injected kernel tree, found ${#injected_revisions[@]}" >&2
+	exit 1
+fi
+
+kernel_root="$(cd "$(dirname "${injected_revisions[0]}")/../../.." && pwd -P)"
+if [[ "${ENABLE_FULL_EBPF}" == yes ]]; then
+	_kernel_inject_verify_full_ebpf_config "${kernel_root}/.config"
+fi
+
+branch="$(argument_value BRANCH "$@" || true)"
+board="$(argument_value BOARD "$@" || true)"
+userspace_release="$(argument_value RELEASE "$@" || true)"
+generate_release_metadata "${kernel_root}" "${branch:-unknown}" \
+	"${board:-unknown}" "${userspace_release:-unknown}"

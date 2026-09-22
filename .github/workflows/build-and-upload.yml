@@ -42,7 +42,10 @@ jobs:
 
       # 5. 赋予脚本执行权限
       - name: Make script executable
-        run: chmod +x build.sh
+        run: chmod +x build.sh overwrite/build_with_diy.sh tests/test_kernel_injection.sh
+
+      - name: Test kernel source injection
+        run: bash tests/test_kernel_injection.sh
 
       # 6. 执行核心构建脚本 (自带版本比对和 Release 上传逻辑)
       - name: Run build script
