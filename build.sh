@@ -21,6 +21,31 @@ log_debug() { echo -e "\e[34m[DEBUG]\e[0m $1"; }
 log_warn()  { echo -e "\e[33m[WARN]\e[0m $1"; }
 log_error() { echo -e "\e[31m[ERROR]\e[0m $1" >&2; }
 
+report_unhandled_error() {
+	local exit_code="$1"
+	local line_number="$2"
+	local failed_command="$3"
+
+	trap - ERR
+	log_error "命令失败：exit=${exit_code}, line=${line_number}, command=${failed_command}"
+	exit "${exit_code}"
+}
+
+resolve_repository_url() {
+	local repository_root="${1:-${PWD}}"
+	local repository_url
+
+	if [[ -n "${GITHUB_SERVER_URL:-}" && -n "${GITHUB_REPOSITORY:-}" ]]; then
+		printf '%s/%s.git\n' "${GITHUB_SERVER_URL%/}" "${GITHUB_REPOSITORY}"
+		return 0
+	fi
+
+	repository_url="$(git -c safe.directory="${repository_root}" -C "${repository_root}" \
+		remote get-url origin 2>/dev/null || true)"
+	[[ -n "${repository_url}" ]] || return 1
+	printf '%s\n' "${repository_url}"
+}
+
 # ==============================================================================
 # 函数: sync_tree
 # 描述: 递归同步两个目录的内容。
@@ -230,7 +255,8 @@ function upload_to_github_release() {
 		printf '\n## 构建来源\n\n'
 		printf -- '- 发布标签：`%s`\n' "${tag_name}"
 		printf -- '- Kernel.org 版本：`%s`\n' "${kernel_version}"
-		printf -- '- 仓库提交：`%s`\n' "${GITHUB_SHA:-$(git rev-parse HEAD)}"
+		printf -- '- 仓库提交：`%s`\n' \
+			"${GITHUB_SHA:-$(git -c safe.directory="${PWD}" rev-parse HEAD)}"
 		printf -- '- 构建时间：`%s`\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 	} >> "${notes_file}"
 
@@ -256,13 +282,15 @@ if [[ "${BUILD_SCRIPT_LIB_ONLY:-no}" == yes ]]; then
 	return 0 2>/dev/null || exit 0
 fi
 
+trap 'report_unhandled_error "$?" "$LINENO" "$BASH_COMMAND"' ERR
+
 # ==============================================================================
 # 主逻辑流程开始
 # ==============================================================================
 
 log_info "1. 环境初始化中..."
 # 默认安装必要的工具包
-sudo apt update && sudo apt install git lsof curl wget jq yq -y >/dev/null 2>&1
+sudo apt-get update && sudo apt-get install -y git lsof curl wget jq yq >/dev/null 2>&1
 
 # 下载 Armbian 的配置包含文件以解析内核版本
 ROCKCHIP64_CONFIG_FILE="./rockchip64_common.inc"
@@ -288,12 +316,14 @@ log_info "CONFIG_CURRENT_KERNEL_VER=${CONFIG_CURRENT_KERNEL_VER}"
 log_info "CONFIG_EDGE_KERNEL_VER=${CONFIG_EDGE_KERNEL_VER}"
 log_info "CONFIG_BLEEDINGEDGE_KERNEL_VER=${CONFIG_BLEEDINGEDGE_KERNEL_VER}"
 
-# 获取当前本地仓库的 Git URL
-CUR_GIT_REPO_URL=$(git remote get-url origin 2>/dev/null)
-if [[ -z "$CUR_GIT_REPO_URL" ]]; then
-    log_error "未能获取到当前 Git 的 remote url，请在 Git 仓库内执行！"
-    exit 1
+# GitHub Actions 通过 sudo 运行时，checkout 目录属于 runner 用户，root
+# 直接调用 git 会触发 dubious ownership。优先使用 Actions 自带变量；
+# 本地运行则只为当前仓库调用显式声明 safe.directory。
+if ! CUR_GIT_REPO_URL="$(resolve_repository_url "${PWD}")"; then
+	log_error "未能确定当前 GitHub 仓库地址。请检查 GITHUB_REPOSITORY 或 origin remote。"
+	exit 1
 fi
+log_debug "发布仓库：${CUR_GIT_REPO_URL}"
 
 # 获取 GitHub 上已经发布的最新的 Tag 和 版本
 # current

@@ -177,6 +177,10 @@ printf 'must not upload\n' > \
 (
 	cd "${RELEASE_TEST_ROOT}"
 	BUILD_SCRIPT_LIB_ONLY=yes source "${REPO_ROOT}/build.sh"
+	resolved_url="$(GITHUB_SERVER_URL=https://github.example \
+		GITHUB_REPOSITORY=owner/kernel-build resolve_repository_url "${PWD}")"
+	[[ "${resolved_url}" == 'https://github.example/owner/kernel-build.git' ]] || \
+		fail "GitHub Actions repository URL fallback is incorrect: ${resolved_url}"
 	CAPTURED_NOTES="${RELEASE_TEST_ROOT}/captured-notes.md"
 	CAPTURED_ARGS="${RELEASE_TEST_ROOT}/captured-gh-args.txt"
 	gh() {
