@@ -170,6 +170,8 @@ assert_array_contains opts_m NFT_TPROXY
 assert_array_contains opts_m NFT_SYNPROXY
 assert_array_contains opts_m IP6_NF_TARGET_NPT
 assert_array_contains opts_m TCP_CONG_BBR
+assert_array_contains opts_y NF_CONNTRACK
+assert_array_contains opts_y VLAN_8021Q
 assert_array_contains opts_y BRIDGE
 assert_array_contains opts_m BT_BNEP
 assert_array_contains opts_y USB_GADGET
@@ -257,8 +259,26 @@ EFFECTIVE_CONFIG="${VERIFY_TREE}/effective-ebpf.config"
 	printf '# CONFIG_DEBUG_INFO_REDUCED is not set\n'
 	printf 'CONFIG_LSM="lockdown,yama,integrity,apparmor,bpf"\n'
 } > "${EFFECTIVE_CONFIG}"
+# Armbian may retain these tristate foundations as modules even though the
+# extension requests built-ins.  Module mode still provides the complete
+# conntrack and 802.1Q feature set and must pass final package verification.
+sed -i \
+	-e 's/^CONFIG_NF_CONNTRACK=y$/CONFIG_NF_CONNTRACK=m/' \
+	-e 's/^CONFIG_VLAN_8021Q=y$/CONFIG_VLAN_8021Q=m/' \
+	"${EFFECTIVE_CONFIG}"
 _kernel_inject_verify_full_ebpf_config "${EFFECTIVE_CONFIG}"
 _kernel_inject_verify_full_network_config "${EFFECTIVE_CONFIG}"
+
+# Strict-y diagnostics must identify the actual module value instead of
+# claiming that an enabled symbol is simply missing.
+# shellcheck disable=SC2034
+strict_builtin=(NF_CONNTRACK)
+if _kernel_inject_verify_symbol_list "${EFFECTIVE_CONFIG}" y strict_builtin; then
+	fail "strict-y verifier accepted NF_CONNTRACK=m"
+fi
+printf '%s\n' "${KERNEL_INJECT_MISSING_SYMBOLS[@]}" | \
+	grep -q 'CONFIG_NF_CONNTRACK=y(actual=m)' || \
+	fail "strict-y verifier did not report the actual module value"
 
 # 清单里当前内核树并未定义的正向能力必须失败，不能发布功能缩水的内核。
 # Consumed through a nameref in _kernel_inject_verify_symbol_list.
