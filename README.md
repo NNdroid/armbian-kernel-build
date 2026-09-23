@@ -17,7 +17,7 @@
 - 由 Armbian 统一执行 `scripts/config` 和 `olddefconfig`，不硬编码 CPU 架构；
 - 最终 `.config` 校验前会扫描内核树实际定义的 Kconfig 符号；完整功能清单中的
   任何能力若不存在或被依赖关系关闭都会让构建失败，避免发布功能缩水的内核；
-- TCP-Brutal、AmneziaWG 和 nf_deaf 默认构建为模块，原生 WireGuard 默认内置。
+- TCP-Brutal、AmneziaWG 和 nf_deaf 默认直接内建；AmneziaWG 作为 WireGuard-compatible 实现时，原生 WireGuard 默认关闭以避免静态链接冲突。
 
 ## 完整 eBPF / BTF / CO-RE
 
@@ -40,7 +40,7 @@
 - MPLS 路由、LWT/IP tunnel、GSO 和 tc MPLS action；
 - SRv6 LWT、HMAC、BPF 以及 IPv4/IPv6 policy routing；
 - VXLAN、Geneve、IPv4 GRE、IPv6 GRE、FOU 与 Open vSwitch tunnel ports；
-- 原生 WireGuard、BBR 和 FQ qdisc（只保证可用，不擅自修改系统默认拥塞算法）；
+- 内建 AmneziaWG（原生 WireGuard 默认关闭）、BBR 和 FQ qdisc（只保证可用，不擅自修改系统默认拥塞算法）；
 - nftables 全协议族和常用 expressions、TPROXY、SYNPROXY、NPTv6 以及 xtables 兼容路径；
 - Linux bridge、VLAN filtering、MRP/CFM、bridge netfilter/ebtables 和 Bluetooth BNEP；
 - USB Gadget dual-role 基础设施，以及 ConfigFS/FunctionFS 的串口、网络、存储、HID、音频、MIDI、UVC、打印和 target functions。
@@ -55,25 +55,27 @@
 TCP_BRUTAL_REPOSITORY=https://github.com/HyNetworks/tcp-brutal.git
 TCP_BRUTAL_REF=<commit-or-ref>
 TCP_BRUTAL_COMMIT=<expected-full-sha>
-TCP_BRUTAL_MODE=m
+TCP_BRUTAL_MODE=y
 
 AMNEZIAWG_REPOSITORY=https://github.com/NNdroid/amneziawg-linux-kernel-module.git
 AMNEZIAWG_REF=<commit-or-ref>
 AMNEZIAWG_COMMIT=<expected-full-sha>
-AMNEZIAWG_MODE=m
+AMNEZIAWG_MODE=y
 
 NF_DEAF_REPOSITORY=https://github.com/NNdroid/nf_deaf.git
 NF_DEAF_REF=<commit-or-ref>
 NF_DEAF_COMMIT=<expected-full-sha>
-NF_DEAF_MODE=m
+NF_DEAF_MODE=y
 
-WIREGUARD_MODE=y
+WIREGUARD_MODE=n
 ENABLE_FULL_EBPF=yes
 ENABLE_FULL_NETWORKING=yes
 KERNEL_BTF=yes
 ```
 
-更新上游版本时只设置不可变的 `*_COMMIT` 即可，未显式设置的 `*_REF` 会自动采用同一提交；只有特殊 Git 服务需要 fetch hint 时才同时设置 `*_REF`。不建议把可移动分支当作期望提交。AmneziaWG 与原生 WireGuard 不能同时设置为 `y`；hook 会拒绝该组合，避免静态链接符号冲突。
+构建模式支持 `y`（直接内建）、`m`（可加载模块）和 `n`（关闭）。默认组合不需要在系统启动后执行 `modprobe brutal`、`modprobe amneziawg` 或 `modprobe nf_deaf`；三项能力随内核启动直接就绪。
+
+更新上游版本时只设置不可变的 `*_COMMIT` 即可，未显式设置的 `*_REF` 会自动采用同一提交；只有特殊 Git 服务需要 fetch hint 时才同时设置 `*_REF`。不建议把可移动分支当作期望提交。默认以 AmneziaWG 取代原生 WireGuard；如果重新启用原生 WireGuard，不能让二者同时为 `y`，hook 会拒绝该组合以避免静态链接符号冲突。
 
 ## 验证
 

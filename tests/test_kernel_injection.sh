@@ -165,7 +165,10 @@ assert_array_contains opts_m GENEVE
 assert_array_contains opts_m NET_IPGRE
 assert_array_contains opts_m IPV6_GRE
 assert_array_contains opts_m NET_FOU
-assert_array_contains opts_y WIREGUARD
+assert_array_contains opts_y TCP_CONG_BRUTAL
+assert_array_contains opts_y AMNEZIAWG
+assert_array_contains opts_y NETFILTER_DEAF
+assert_array_contains opts_n WIREGUARD
 assert_array_contains opts_m NFT_TPROXY
 assert_array_contains opts_m NFT_SYNPROXY
 assert_array_contains opts_m IP6_NF_TARGET_NPT
@@ -179,6 +182,12 @@ assert_array_contains opts_m USB_CONFIGFS
 assert_array_contains opts_y USB_CONFIGFS_F_MIDI2
 assert_contains "${KERNEL_ROOT}/.config" \
 	'CONFIG_LSM="lockdown,yama,integrity,apparmor,bpf"'
+
+CURRENT_KERNEL_CONFIG="${REPO_ROOT}/userpatches/config/kernel/linux-rockchip64-current.config"
+assert_contains "${CURRENT_KERNEL_CONFIG}" 'CONFIG_TCP_CONG_BRUTAL=y'
+assert_contains "${CURRENT_KERNEL_CONFIG}" 'CONFIG_AMNEZIAWG=y'
+assert_contains "${CURRENT_KERNEL_CONFIG}" 'CONFIG_NETFILTER_DEAF=y'
+assert_contains "${CURRENT_KERNEL_CONFIG}" '# CONFIG_WIREGUARD is not set'
 
 # Armbian calls this hook while the compiled source tree and final .config are
 # still available. Its evidence must be embedded in the package staging tree,
@@ -239,7 +248,7 @@ fi
 VERIFY_TREE="${TEST_ROOT}/verify-tree"
 mkdir -p "${VERIFY_TREE}"
 : > "${VERIFY_TREE}/Kconfig"
-for symbol in "${opts_y[@]}" "${opts_m[@]}"; do
+for symbol in "${opts_y[@]}" "${opts_m[@]}" "${opts_n[@]}"; do
 	printf 'config %s\n\tbool "synthetic"\n' "${symbol}" >> "${VERIFY_TREE}/Kconfig"
 done
 printf 'config HAVE_EBPF_JIT\n\tbool "synthetic"\n' >> "${VERIFY_TREE}/Kconfig"
@@ -253,6 +262,9 @@ EFFECTIVE_CONFIG="${VERIFY_TREE}/effective-ebpf.config"
 	done
 	for symbol in "${opts_m[@]}"; do
 		printf 'CONFIG_%s=m\n' "${symbol}"
+	done
+	for symbol in "${opts_n[@]}"; do
+		printf '# CONFIG_%s is not set\n' "${symbol}"
 	done
 	printf 'CONFIG_HAVE_EBPF_JIT=y\n'
 	printf '# CONFIG_DEBUG_INFO_NONE is not set\n'
@@ -477,13 +489,13 @@ mkdir -p "${WRAPPER_ROOT}/output/debs"
 DEB_STAGE="${WRAPPER_ROOT}/deb-stage"
 DEB_EVIDENCE="${DEB_STAGE}/usr/lib/armbian-kernel-build/6.18.53-fake"
 rm -rf -- "${DEB_STAGE}"
-mkdir -p "${DEB_STAGE}/usr/lib/modules/fake/kernel/net/ipv4/tcp_brutal" \
-	"${DEB_STAGE}/usr/lib/modules/fake/kernel/drivers/net/amneziawg" \
-	"${DEB_STAGE}/usr/lib/modules/fake/kernel/net/netfilter/nf_deaf" \
+mkdir -p "${DEB_STAGE}/usr/lib/modules/fake" \
 	"${DEB_EVIDENCE}" "${DEB_STAGE}/DEBIAN"
-: > "${DEB_STAGE}/usr/lib/modules/fake/kernel/net/ipv4/tcp_brutal/brutal.ko"
-: > "${DEB_STAGE}/usr/lib/modules/fake/kernel/drivers/net/amneziawg/amneziawg.ko"
-: > "${DEB_STAGE}/usr/lib/modules/fake/kernel/net/netfilter/nf_deaf/nf_deaf.ko"
+cat > "${DEB_STAGE}/usr/lib/modules/fake/modules.builtin" <<'BUILTIN_MODULES'
+kernel/net/ipv4/tcp_brutal/brutal.ko
+kernel/drivers/net/amneziawg/amneziawg.ko
+kernel/net/netfilter/nf_deaf/nf_deaf.ko
+BUILTIN_MODULES
 cp "${EFFECTIVE_CONFIG}" "${DEB_EVIDENCE}/kernel.config"
 awk '/^(config|menuconfig) / { print $2 }' "${VERIFY_TREE}/Kconfig" | sort -u \
 	> "${DEB_EVIDENCE}/defined-symbols.txt"
@@ -557,13 +569,21 @@ assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" 
 	'Armbian/build 基线提交'
 assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
 	'内核源码基线提交'
+assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
+	'| TCP-Brutal v2 | `y` |'
+assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
+	'| AmneziaWG | `y` |'
+assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
+	'| nf_deaf | `y` |'
+assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
+	'| 原生 WireGuard（默认由 AmneziaWG 取代） | `n` |'
 
-# TCP-Brutal v2's Kbuild output is brutal.ko. A package containing only the old
-# tcp_brutal.ko name must not pass merely because its directory contains the
-# text "tcp_brutal".
+# TCP-Brutal v2's built-in inventory name is brutal.ko. An inventory containing
+# only the old tcp_brutal.ko name must not pass merely because its directory
+# contains the text "tcp_brutal".
 if command -v dpkg-deb >/dev/null 2>&1; then
-	rm -f -- "${DEB_STAGE}/usr/lib/modules/fake/kernel/net/ipv4/tcp_brutal/brutal.ko"
-	: > "${DEB_STAGE}/usr/lib/modules/fake/kernel/net/ipv4/tcp_brutal/tcp_brutal.ko"
+	sed -i 's#/brutal\.ko$#/tcp_brutal.ko#' \
+		"${DEB_STAGE}/usr/lib/modules/fake/modules.builtin"
 	build_fake_image_deb
 	if (
 		cd "${WRAPPER_ROOT}"
@@ -574,10 +594,10 @@ if command -v dpkg-deb >/dev/null 2>&1; then
 		NF_DEAF_COMMIT="${NF_DEAF_COMMIT}" \
 		./build_with_diy.sh kernel BOARD=fake
 	); then
-		fail "build wrapper accepted tcp_brutal.ko instead of TCP-Brutal v2 brutal.ko"
+		fail "build wrapper accepted tcp_brutal.ko instead of built-in TCP-Brutal v2 brutal.ko"
 	fi
-	rm -f -- "${DEB_STAGE}/usr/lib/modules/fake/kernel/net/ipv4/tcp_brutal/tcp_brutal.ko"
-	: > "${DEB_STAGE}/usr/lib/modules/fake/kernel/net/ipv4/tcp_brutal/brutal.ko"
+	sed -i 's#/tcp_brutal\.ko$#/brutal.ko#' \
+		"${DEB_STAGE}/usr/lib/modules/fake/modules.builtin"
 	build_fake_image_deb
 fi
 
@@ -708,6 +728,11 @@ after="$(sha256sum \
 reset_hook_arrays
 if AMNEZIAWG_MODE=y WIREGUARD_MODE=y custom_kernel_config; then
 	fail "unsafe built-in AmneziaWG/WireGuard combination was accepted"
+fi
+
+reset_hook_arrays
+if WIREGUARD_MODE=invalid custom_kernel_config; then
+	fail "invalid WIREGUARD_MODE value was accepted"
 fi
 
 reset_hook_arrays

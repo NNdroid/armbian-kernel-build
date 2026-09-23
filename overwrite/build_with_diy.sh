@@ -47,16 +47,33 @@ export ENABLE_FULL_EBPF ENABLE_FULL_NETWORKING KERNEL_BTF
 # Runtime path is the Armbian build root.
 # shellcheck disable=SC1091
 source userpatches/lib.config
+for mode_name in TCP_BRUTAL_MODE AMNEZIAWG_MODE NF_DEAF_MODE WIREGUARD_MODE; do
+	mode_value="${!mode_name}"
+	case "${mode_value}" in
+		y|m|n) ;;
+		*)
+			echo "[kernel-inject][error] ${mode_name} must be y, m or n" >&2
+			exit 1
+			;;
+	esac
+done
+if [[ "${AMNEZIAWG_MODE}" == y && "${WIREGUARD_MODE}" == y ]]; then
+	echo "[kernel-inject][error] AMNEZIAWG_MODE=y conflicts with WIREGUARD_MODE=y" >&2
+	exit 1
+fi
+export TCP_BRUTAL_MODE AMNEZIAWG_MODE NF_DEAF_MODE WIREGUARD_MODE
 
 # 兼容性检查中允许不存在的旧负向符号会记录到这里，并写进 release notes。
 _kernel_inject_skipped_symbols=()
 artifact_marker=""
 module_manifest=""
+builtin_manifest=""
 package_extract_root=""
 
 cleanup_wrapper() {
 	[[ -z "${artifact_marker:-}" ]] || rm -f -- "${artifact_marker}"
 	[[ -z "${module_manifest:-}" ]] || rm -f -- "${module_manifest}"
+	[[ -z "${builtin_manifest:-}" ]] || rm -f -- "${builtin_manifest}"
 	[[ -z "${package_extract_root:-}" ]] || rm -rf -- "${package_extract_root}"
 	if declare -F _kernel_inject_cleanup_symbol_cache >/dev/null 2>&1; then
 		_kernel_inject_cleanup_symbol_cache
@@ -267,11 +284,11 @@ generate_release_metadata() {
 			"$(config_value "${final_config}" AMNEZIAWG)" "${awg_commit:0:12}" "${awg_commit}"
 		printf '| nf_deaf | `%s` | [`%s`](https://github.com/NNdroid/nf_deaf/commit/%s) |\n' \
 			"$(config_value "${final_config}" NETFILTER_DEAF)" "${nf_commit:0:12}" "${nf_commit}"
-		printf '| 原生 WireGuard | `%s` | Linux 内核源码树 |\n' \
+		printf '| 原生 WireGuard（默认由 AmneziaWG 取代） | `%s` | Linux 内核源码树 |\n' \
 			"$(config_value "${final_config}" WIREGUARD)"
 		printf '\n## 完整网络功能集\n\n'
 		if [[ "${ENABLE_FULL_NETWORKING}" == yes ]]; then
-			printf '最终配置已逐项校验：MPLS 路由/隧道、SRv6（LWT/HMAC/BPF）、VXLAN、Geneve、IPv4/IPv6 GRE、FOU、WireGuard、TPROXY、SYNPROXY、nftables、BBR+FQ、NPTv6、Linux bridge/bridge netfilter、Bluetooth BNEP，以及 ConfigFS/FunctionFS USB Gadget。\n\n'
+			printf '最终配置已逐项校验：MPLS 路由/隧道、SRv6（LWT/HMAC/BPF）、VXLAN、Geneve、IPv4/IPv6 GRE、FOU、内建 AmneziaWG（原生 WireGuard 默认关闭）、TPROXY、SYNPROXY、nftables、BBR+FQ、NPTv6、Linux bridge/bridge netfilter、Bluetooth BNEP，以及 ConfigFS/FunctionFS USB Gadget。\n\n'
 			printf '| 能力 | 关键最终配置 |\n|---|---|\n'
 			printf '| MPLS / SRv6 | `MPLS_ROUTING=%s`, `IPV6_SEG6_LWTUNNEL=%s` |\n' \
 				"$(config_value "${final_config}" MPLS_ROUTING)" \
@@ -421,9 +438,10 @@ if [[ -z "${kernel_major_minor}" ]]; then
 fi
 _kernel_inject_log info "产物定位" "实际构建内核大版本: ${kernel_major_minor}"
 
-# All three modules default to =m, so they ship in the kernel image package.
-# The package is the durable build result; Docker may discard its source
-# worktree before this wrapper regains control.
+# Validate loadable-module files before extraction. Built-in components are
+# verified later against both the packaged final config and modules.builtin.
+# The package is the durable build result; Docker may discard its source tree
+# before this wrapper regains control.
 if ! command -v dpkg-deb >/dev/null 2>&1; then
 	_kernel_inject_log err "产物校验失败" "dpkg-deb is required to verify $(basename "${image_deb}")"
 	exit 1
@@ -433,16 +451,36 @@ if ! dpkg-deb -c "${image_deb}" > "${module_manifest}" 2>/dev/null; then
 	_kernel_inject_log err "模块产物校验" "无法读取 $(basename "${image_deb}") 的文件清单"
 	exit 1
 fi
-for module in brutal amneziawg nf_deaf; do
+component_specs=(
+	"brutal:TCP_CONG_BRUTAL:${TCP_BRUTAL_MODE}"
+	"amneziawg:AMNEZIAWG:${AMNEZIAWG_MODE}"
+	"nf_deaf:NETFILTER_DEAF:${NF_DEAF_MODE}"
+	"wireguard:WIREGUARD:${WIREGUARD_MODE}"
+)
+for component_spec in "${component_specs[@]}"; do
+	IFS=: read -r module config_symbol expected_mode <<< "${component_spec}"
+	module_present=no
 	if grep -Eq "/${module}\.ko(\.(gz|xz|zst))?$" "${module_manifest}"; then
-		_kernel_inject_log debug "模块产物校验" "${module}: 存在于 $(basename "${image_deb}")"
-	else
-		_kernel_inject_log err "模块产物校验" "module '${module}' missing from $(basename "${image_deb}")"
-		_kernel_inject_log err "模块产物校验" "source was injected but did not compile into the package"
-		exit 1
+		module_present=yes
 	fi
+	case "${expected_mode}" in
+		m)
+			if [[ "${module_present}" != yes ]]; then
+				_kernel_inject_log err "模块产物校验" \
+					"${module}: requested =m but .ko is missing from $(basename "${image_deb}")"
+				exit 1
+			fi
+			_kernel_inject_log debug "模块产物校验" "${module}=m: .ko 存在"
+			;;
+		y|n)
+			if [[ "${module_present}" == yes ]]; then
+				_kernel_inject_log err "模块产物校验" \
+					"${module}: requested =${expected_mode} but package unexpectedly contains a loadable .ko"
+				exit 1
+			fi
+			;;
+	esac
 done
-_kernel_inject_log info "模块产物校验" "brutal / amneziawg / nf_deaf 均已编译进内核包"
 
 package_extract_root="$(mktemp -d "${TMPDIR:-/tmp}/kernel-image-evidence.XXXXXX")"
 if ! dpkg-deb -x "${image_deb}" "${package_extract_root}"; then
@@ -468,6 +506,29 @@ if [[ ! -s "${final_config}" || ! -s "${defined_symbols}" ]]; then
 	_kernel_inject_log err "构建证据损坏" "最终配置或 Kconfig 符号清单缺失"
 	exit 1
 fi
+
+builtin_manifest="$(mktemp "${TMPDIR:-/tmp}/kernel-image-builtins.XXXXXX")"
+find "${package_extract_root}" -type f -name modules.builtin -exec cat {} + \
+	> "${builtin_manifest}" 2>/dev/null || true
+for component_spec in "${component_specs[@]}"; do
+	IFS=: read -r module config_symbol expected_mode <<< "${component_spec}"
+	actual_mode="$(config_value "${final_config}" "${config_symbol}")"
+	if [[ "${actual_mode}" != "${expected_mode}" ]]; then
+		_kernel_inject_log err "构建模式校验" \
+			"CONFIG_${config_symbol}: requested ${expected_mode}, packaged config has ${actual_mode}"
+		exit 1
+	fi
+	if [[ "${expected_mode}" == y ]]; then
+		if ! grep -Eq "/${module}\.ko$" "${builtin_manifest}"; then
+			_kernel_inject_log err "内建产物校验" \
+				"${module}: CONFIG_${config_symbol}=y but modules.builtin has no matching entry"
+			exit 1
+		fi
+		_kernel_inject_log debug "内建产物校验" "${module}=y: modules.builtin 已确认"
+	fi
+done
+_kernel_inject_log info "构建模式校验" \
+	"brutal=${TCP_BRUTAL_MODE}, amneziawg=${AMNEZIAWG_MODE}, nf_deaf=${NF_DEAF_MODE}, native-wireguard=${WIREGUARD_MODE} 均与内核包一致"
 
 manifest_format="$(require_manifest_value "${evidence_manifest}" evidence_format)" || exit 1
 manifest_branch="$(require_manifest_value "${evidence_manifest}" branch)" || exit 1
