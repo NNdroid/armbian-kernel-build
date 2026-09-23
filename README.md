@@ -35,7 +35,7 @@
 
 ## 完整网络功能集
 
-默认 `ENABLE_FULL_NETWORKING=yes`。hook 会强制启用并在 `olddefconfig` 和编译完成后逐项检查：
+默认 `ENABLE_FULL_NETWORKING=yes`。hook 会把完整网络功能集及其 tristate 依赖全部强制为内建（`=y`），并在 `olddefconfig` 和编译完成后逐项检查：
 
 - MPLS 路由、LWT/IP tunnel、GSO 和 tc MPLS action；
 - SRv6 LWT、HMAC、BPF 以及 IPv4/IPv6 policy routing；
@@ -45,9 +45,9 @@
 - Linux bridge、VLAN filtering、MRP/CFM、bridge netfilter/ebtables 和 Bluetooth BNEP；
 - USB Gadget dual-role 基础设施，以及 ConfigFS/FunctionFS 的串口、网络、存储、HID、音频、MIDI、UVC、打印和 target functions。
 
-这里的“支持”表示内核及模块配置已通过最终 `.config` 校验；具体 USB device role、原生 XDP 或硬件卸载能力仍取决于开发板控制器、设备树和网卡驱动。
+这里的“支持”表示上述网络功能已经通过最终 `.config` 的严格 `=y` 校验，不依赖启动后的 `modprobe`；具体 USB device role、原生 XDP 或硬件卸载能力仍取决于开发板控制器、设备树和网卡驱动。
 
-`NF_CONNTRACK` 与 `VLAN_8021Q` 在配置阶段仍优先请求内建，但它们是可模块化的基础能力；若目标 Armbian 内核最终保留为 `m`，验收会接受，关闭或缺失仍会导致构建失败。
+`NF_CONNTRACK`、`VLAN_8021Q`、Bluetooth、nftables/NAT、tunnel、BBR、bridge netfilter 与 USB composite/function 依赖也必须保持 `=y`；任何一项被目标内核依赖关系降为 `m` 或关闭，验收都会失败，避免 Release notes 把模块化能力误报成内建能力。
 
 可以通过环境变量调整来源或构建模式：
 

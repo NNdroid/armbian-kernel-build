@@ -437,7 +437,7 @@ generate_release_metadata() {
 		fi
 		printf '\n## 完整网络功能集\n\n'
 		if [[ "${ENABLE_FULL_NETWORKING}" == yes ]]; then
-			printf '最终配置已逐项校验：MPLS 路由/隧道、SRv6（LWT/HMAC/BPF）、VXLAN、Geneve、IPv4/IPv6 GRE、FOU、内建 AmneziaWG（原生 WireGuard 默认关闭）、TPROXY、SYNPROXY、nftables、BBR+FQ、NPTv6、Linux bridge/bridge netfilter、Bluetooth BNEP，以及 ConfigFS/FunctionFS USB Gadget。\n\n'
+			printf '最终配置已逐项校验并强制内建：MPLS 路由/隧道、SRv6（LWT/HMAC/BPF）、VXLAN、Geneve、IPv4/IPv6 GRE、FOU、AmneziaWG（原生 WireGuard 默认关闭）、TPROXY、SYNPROXY、nftables、BBR+FQ、NPTv6、Linux bridge/bridge netfilter、Bluetooth BNEP，以及 ConfigFS/FunctionFS USB Gadget。\n\n'
 			printf '| 能力 | 关键最终配置 |\n|---|---|\n'
 			printf '| MPLS / SRv6 | `MPLS_ROUTING=%s`, `IPV6_SEG6_LWTUNNEL=%s` |\n' \
 				"$(config_value "${final_config}" MPLS_ROUTING)" \

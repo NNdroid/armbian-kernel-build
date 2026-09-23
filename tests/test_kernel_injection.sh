@@ -56,6 +56,18 @@ assert_array_contains() {
 	fail "${array_name} does not contain: ${expected}"
 }
 
+assert_array_not_contains() {
+	local array_name="$1"
+	local unexpected="$2"
+	local item
+	local -n values="${array_name}"
+
+	for item in "${values[@]}"; do
+		[[ "${item}" != "${unexpected}" ]] || \
+			fail "${array_name} unexpectedly contains: ${unexpected}"
+	done
+}
+
 reset_hook_arrays() {
 	# These arrays are consumed dynamically by the sourced Armbian hook.
 	# shellcheck disable=SC2034
@@ -158,28 +170,35 @@ assert_array_contains opts_y FUNCTION_TRACER
 assert_array_contains opts_m NET_CLS_BPF
 assert_array_contains opts_m NET_ACT_BPF
 assert_array_contains opts_y MPLS
-assert_array_contains opts_m MPLS_ROUTING
+assert_array_contains opts_y MPLS_ROUTING
 assert_array_contains opts_y IPV6_SEG6_LWTUNNEL
-assert_array_contains opts_m VXLAN
-assert_array_contains opts_m GENEVE
-assert_array_contains opts_m NET_IPGRE
-assert_array_contains opts_m IPV6_GRE
-assert_array_contains opts_m NET_FOU
+assert_array_contains opts_y VXLAN
+assert_array_contains opts_y GENEVE
+assert_array_contains opts_y NET_IPGRE
+assert_array_contains opts_y IPV6_GRE
+assert_array_contains opts_y NET_FOU
 assert_array_contains opts_y TCP_CONG_BRUTAL
 assert_array_contains opts_y AMNEZIAWG
 assert_array_contains opts_y NETFILTER_DEAF
 assert_array_contains opts_n WIREGUARD
-assert_array_contains opts_m NFT_TPROXY
-assert_array_contains opts_m NFT_SYNPROXY
-assert_array_contains opts_m IP6_NF_TARGET_NPT
-assert_array_contains opts_m TCP_CONG_BBR
+assert_array_contains opts_y NF_TABLES
+assert_array_contains opts_y NFT_TPROXY
+assert_array_contains opts_y NFT_SYNPROXY
+assert_array_contains opts_y IP6_NF_TARGET_NPT
+assert_array_contains opts_y TCP_CONG_BBR
 assert_array_contains opts_y NF_CONNTRACK
 assert_array_contains opts_y VLAN_8021Q
 assert_array_contains opts_y BRIDGE
-assert_array_contains opts_m BT_BNEP
+assert_array_contains opts_y BT_BNEP
 assert_array_contains opts_y USB_GADGET
-assert_array_contains opts_m USB_CONFIGFS
+assert_array_contains opts_y USB_CONFIGFS
+assert_array_contains opts_y USB_FUNCTIONFS
 assert_array_contains opts_y USB_CONFIGFS_F_MIDI2
+for builtin_symbol in MPLS_ROUTING VXLAN GENEVE NET_IPGRE IPV6_GRE NET_FOU \
+	NF_TABLES NFT_TPROXY NFT_SYNPROXY IP6_NF_TARGET_NPT TCP_CONG_BBR \
+	BT_BNEP USB_CONFIGFS USB_FUNCTIONFS; do
+	assert_array_not_contains opts_m "${builtin_symbol}"
+done
 assert_contains "${KERNEL_ROOT}/.config" \
 	'CONFIG_LSM="lockdown,yama,integrity,apparmor,bpf"'
 
@@ -188,6 +207,11 @@ assert_contains "${CURRENT_KERNEL_CONFIG}" 'CONFIG_TCP_CONG_BRUTAL=y'
 assert_contains "${CURRENT_KERNEL_CONFIG}" 'CONFIG_AMNEZIAWG=y'
 assert_contains "${CURRENT_KERNEL_CONFIG}" 'CONFIG_NETFILTER_DEAF=y'
 assert_contains "${CURRENT_KERNEL_CONFIG}" '# CONFIG_WIREGUARD is not set'
+for builtin_config in MPLS_ROUTING VXLAN GENEVE NET_IPGRE IPV6_GRE NET_FOU \
+	NF_TABLES NFT_TPROXY NFT_SYNPROXY IP6_NF_TARGET_NPT TCP_CONG_BBR BRIDGE \
+	BT_BNEP USB_GADGET USB_CONFIGFS USB_FUNCTIONFS; do
+	assert_contains "${CURRENT_KERNEL_CONFIG}" "CONFIG_${builtin_config}=y"
+done
 
 # Armbian calls this hook while the compiled source tree and final .config are
 # still available. Its evidence must be embedded in the package staging tree,
@@ -271,26 +295,32 @@ EFFECTIVE_CONFIG="${VERIFY_TREE}/effective-ebpf.config"
 	printf '# CONFIG_DEBUG_INFO_REDUCED is not set\n'
 	printf 'CONFIG_LSM="lockdown,yama,integrity,apparmor,bpf"\n'
 } > "${EFFECTIVE_CONFIG}"
-# Armbian may retain these tristate foundations as modules even though the
-# extension requests built-ins.  Module mode still provides the complete
-# conntrack and 802.1Q feature set and must pass final package verification.
-sed -i \
-	-e 's/^CONFIG_NF_CONNTRACK=y$/CONFIG_NF_CONNTRACK=m/' \
-	-e 's/^CONFIG_VLAN_8021Q=y$/CONFIG_VLAN_8021Q=m/' \
-	"${EFFECTIVE_CONFIG}"
 _kernel_inject_verify_full_ebpf_config "${EFFECTIVE_CONFIG}"
 _kernel_inject_verify_full_network_config "${EFFECTIVE_CONFIG}"
+
+# Complete networking is a built-in contract: a feature that survives merely
+# as a loadable module must be rejected before a release is uploaded.
+sed -i 's/^CONFIG_VXLAN=y$/CONFIG_VXLAN=m/' "${EFFECTIVE_CONFIG}"
+if _kernel_inject_verify_full_network_config "${EFFECTIVE_CONFIG}"; then
+	fail "network verifier accepted CONFIG_VXLAN=m for an all-built-in release"
+fi
+printf '%s\n' "${KERNEL_INJECT_MISSING_SYMBOLS[@]}" | \
+	grep -q 'CONFIG_VXLAN=y(actual=m)' || \
+	fail "built-in verifier did not report CONFIG_VXLAN=m precisely"
+sed -i 's/^CONFIG_VXLAN=m$/CONFIG_VXLAN=y/' "${EFFECTIVE_CONFIG}"
 
 # Strict-y diagnostics must identify the actual module value instead of
 # claiming that an enabled symbol is simply missing.
 # shellcheck disable=SC2034
 strict_builtin=(NF_CONNTRACK)
+sed -i 's/^CONFIG_NF_CONNTRACK=y$/CONFIG_NF_CONNTRACK=m/' "${EFFECTIVE_CONFIG}"
 if _kernel_inject_verify_symbol_list "${EFFECTIVE_CONFIG}" y strict_builtin; then
 	fail "strict-y verifier accepted NF_CONNTRACK=m"
 fi
 printf '%s\n' "${KERNEL_INJECT_MISSING_SYMBOLS[@]}" | \
 	grep -q 'CONFIG_NF_CONNTRACK=y(actual=m)' || \
 	fail "strict-y verifier did not report the actual module value"
+sed -i 's/^CONFIG_NF_CONNTRACK=m$/CONFIG_NF_CONNTRACK=y/' "${EFFECTIVE_CONFIG}"
 
 # 清单里当前内核树并未定义的正向能力必须失败，不能发布功能缩水的内核。
 # Consumed through a nameref in _kernel_inject_verify_symbol_list.
@@ -323,7 +353,7 @@ _kernel_inject_verify_symbol_list "${SELECT_ONLY_TREE}/.config" y select_require
 NO_KCONFIG_TREE="${TEST_ROOT}/no-kconfig-tree"
 mkdir -p "${NO_KCONFIG_TREE}"
 cp "${EFFECTIVE_CONFIG}" "${NO_KCONFIG_TREE}/.config"
-sed -i 's/^CONFIG_VXLAN=m$/# CONFIG_VXLAN is not set/' "${NO_KCONFIG_TREE}/.config"
+sed -i 's/^CONFIG_VXLAN=y$/# CONFIG_VXLAN is not set/' "${NO_KCONFIG_TREE}/.config"
 if _kernel_inject_verify_full_network_config "${NO_KCONFIG_TREE}/.config"; then
 	fail "verifier must fall back to strict checking when no Kconfig file is present"
 fi
@@ -334,11 +364,11 @@ if _kernel_inject_verify_full_ebpf_config "${EFFECTIVE_CONFIG}"; then
 fi
 sed -i 's/^# CONFIG_DEBUG_INFO_BTF is not set$/CONFIG_DEBUG_INFO_BTF=y/' "${EFFECTIVE_CONFIG}"
 
-sed -i 's/^CONFIG_VXLAN=m$/# CONFIG_VXLAN is not set/' "${EFFECTIVE_CONFIG}"
+sed -i 's/^CONFIG_VXLAN=y$/# CONFIG_VXLAN is not set/' "${EFFECTIVE_CONFIG}"
 if _kernel_inject_verify_full_network_config "${EFFECTIVE_CONFIG}"; then
 	fail "network verifier accepted a config without VXLAN"
 fi
-sed -i 's/^# CONFIG_VXLAN is not set$/CONFIG_VXLAN=m/' "${EFFECTIVE_CONFIG}"
+sed -i 's/^# CONFIG_VXLAN is not set$/CONFIG_VXLAN=y/' "${EFFECTIVE_CONFIG}"
 
 RELEASE_TEST_ROOT="${TEST_ROOT}/release-notes"
 RELEASE_METADATA="${RELEASE_TEST_ROOT}/build/output/release-metadata/edge"
