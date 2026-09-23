@@ -63,11 +63,11 @@ resolve_repository_url() {
 
 # ==============================================================================
 # 函数: ensure_host_dependencies
-# 描述: 检查必需的宿主工具，缺失时尝试通过 apt 安装；安装失败仅告警不终止，
-#       让后续步骤以明确的报错暴露真正缺什么。不再安装未使用的 lsof/yq。
+# 描述: 检查必需的宿主工具，缺失时尝试通过 apt 安装，并在继续耗时构建前
+#       再次确认全部工具可用。不再安装未使用的 wget/lsof/yq。
 # ==============================================================================
 ensure_host_dependencies() {
-	local required=(git curl wget jq)
+	local required=(git curl jq gh)
 	local -a missing=()
 	local tool
 
@@ -86,7 +86,16 @@ ensure_host_dependencies() {
 	if sudo apt-get update -qq && sudo apt-get install -y -qq "${missing[@]}"; then
 		log_info "宿主依赖安装完成"
 	else
-		log_warn "apt 安装失败 (${missing[*]})；继续执行，后续步骤若失败请手动安装"
+		log_warn "apt 安装失败 (${missing[*]})"
+	fi
+
+	missing=()
+	for tool in "${required[@]}"; do
+		command -v "${tool}" > /dev/null 2>&1 || missing+=("${tool}")
+	done
+	if ((${#missing[@]} > 0)); then
+		log_error "缺少必需的宿主工具: ${missing[*]}"
+		return 1
 	fi
 }
 
@@ -313,14 +322,25 @@ load_kernel_org_version() {
 # ==============================================================================
 resolve_built_version() {
 	local branch="$1"
+	local build_marker="${2:-}"
 	local debs_dir="./build/output/debs"
 	local newest_deb
 	local built_version
+	local -a freshness_filter=()
 
-	newest_deb="$(find "${debs_dir}" -name "linux-image-${branch}-rockchip64_*.deb" \
+	if [[ -n "${build_marker}" ]]; then
+		[[ -f "${build_marker}" ]] || {
+			log_error "构建产物时间标记不存在: ${build_marker}"
+			return 1
+		}
+		freshness_filter=(-newer "${build_marker}")
+	fi
+
+	newest_deb="$(find "${debs_dir}" -type f \
+		-name "linux-image-${branch}-rockchip64_*.deb" "${freshness_filter[@]}" \
 		-printf '%T@ %p\n' 2>/dev/null | sort -rn | head -n 1 | cut -d' ' -f2-)"
 	if [[ -z "${newest_deb}" ]]; then
-		log_error "未找到 linux-image-${branch}-rockchip64_*.deb 构建产物。"
+		log_error "未找到本次构建产生的 linux-image-${branch}-rockchip64_*.deb。"
 		return 1
 	fi
 	log_debug "${branch}: 最新产物 $(basename "${newest_deb}")"
@@ -372,7 +392,8 @@ function upload_to_github_release() {
     mapfile -t upload_files < <(compgen -G "${files_pattern}" || true)
 	local -a metadata_files=()
 	mapfile -d '' -t metadata_files < <(find "${metadata_dir}" -maxdepth 1 -type f \
-		\( -name '*.config' -o -name '*config-vs-arm64-defconfig.txt' \) -print0 2>/dev/null)
+		\( -name '*.config' -o -name '*config-vs-arm64-defconfig.txt' \
+			-o -name 'arm64-defconfig-build.log' \) -print0 2>/dev/null)
 
     # 检查数组长度是否为 0
     if [ ${#upload_files[@]} -eq 0 ]; then
@@ -420,13 +441,28 @@ function upload_to_github_release() {
         log_info "成功发布并上传产物到: ${tag_name}"
 	else
 		if gh release view "${tag_name}" &> /dev/null; then
-			log_error "Release ${tag_name} 已存在；请检查是否重复构建或手动清理该标签。"
+			log_warn "Release ${tag_name} 已存在，更新说明并覆盖上传同名资产"
+			gh release edit "${tag_name}" \
+				--title "Auto Build ${tag_name}" --notes-file "${notes_file}" || return 1
+			gh release upload "${tag_name}" "${upload_files[@]}" "${metadata_files[@]}" \
+				--clobber || return 1
+			log_info "成功修复并更新已有 Release: ${tag_name}"
 		else
 			log_error "上传 Release 失败！请检查网络、权限及 Tag 是否冲突。"
+			return 1
 		fi
-		return 1
 	fi
 	return 0
+}
+
+run_armbian_build() {
+	local build_root="$1"
+	shift
+
+	(
+		cd "${build_root}"
+		./build_with_diy.sh "$@"
+	)
 }
 
 # Allow regression tests to load the functions without installing packages,
@@ -436,6 +472,9 @@ if [[ "${BUILD_SCRIPT_LIB_ONLY:-no}" == yes ]]; then
 	# shellcheck disable=SC2317
 	return 0 2>/dev/null || exit 0
 fi
+
+SCRIPT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+cd "${SCRIPT_ROOT}"
 
 trap 'report_unhandled_error "$?" "$LINENO" "$BASH_COMMAND"' ERR
 
@@ -448,8 +487,17 @@ ensure_host_dependencies
 
 # 下载 Armbian 的配置包含文件以解析内核版本
 ROCKCHIP64_CONFIG_FILE="./rockchip64_common.inc"
+ROCKCHIP64_CONFIG_TMP="$(mktemp "${ROCKCHIP64_CONFIG_FILE}.XXXXXX")"
 log_debug "正在下载 ${ROCKCHIP64_CONFIG_FILE}..."
-wget -q -O "${ROCKCHIP64_CONFIG_FILE}" https://raw.githubusercontent.com/armbian/build/refs/heads/main/config/sources/families/include/rockchip64_common.inc
+if curl --fail --location --silent --show-error --retry 4 --retry-all-errors \
+	--output "${ROCKCHIP64_CONFIG_TMP}" \
+	https://raw.githubusercontent.com/armbian/build/refs/heads/main/config/sources/families/include/rockchip64_common.inc; then
+	mv -- "${ROCKCHIP64_CONFIG_TMP}" "${ROCKCHIP64_CONFIG_FILE}"
+else
+	rm -f -- "${ROCKCHIP64_CONFIG_TMP}"
+	log_error "下载 rockchip64_common.inc 失败，请检查网络！"
+	exit 1
+fi
 if [[ ! -s "${ROCKCHIP64_CONFIG_FILE}" ]]; then
     log_error "下载 rockchip64_common.inc 失败或文件为空，请检查网络！"
     exit 1
@@ -541,9 +589,18 @@ end_step "3. 准备 Armbian 构建环境"
 
 for branch in "${planned_branches[@]}"; do
 	begin_step "4. 构建 ${branch} 分支内核 (目标 ${BRANCH_UPSTREAM_VER[${branch}]})"
-	./build_with_diy.sh kernel BOARD=nanopi-r5s BRANCH="${branch}" RELEASE=trixie
+	BUILD_MARKER="$(mktemp "${TMPDIR:-/tmp}/kernel-build-${branch}.XXXXXX")"
+	if ! run_armbian_build ./build kernel BOARD=nanopi-r5s BRANCH="${branch}" RELEASE=trixie; then
+		rm -f -- "${BUILD_MARKER}"
+		log_error "${branch}: Armbian 内核构建失败"
+		exit 1
+	fi
 
-	BUILT_KERNEL_VER="$(resolve_built_version "${branch}")" || exit 1
+	BUILT_KERNEL_VER="$(resolve_built_version "${branch}" "${BUILD_MARKER}")" || {
+		rm -f -- "${BUILD_MARKER}"
+		exit 1
+	}
+	rm -f -- "${BUILD_MARKER}"
 	log_info "${branch}: 从构建产物反解实际内核版本 = ${BUILT_KERNEL_VER}"
 	end_step "4. 构建 ${branch} 分支内核"
 

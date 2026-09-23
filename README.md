@@ -15,8 +15,8 @@
 - Kconfig/Makefile 使用带标记的幂等块，重复执行不会产生重复条目；
 - 自动清理旧版单文件 TCP-Brutal、旧 `tcp.c` 补丁和旧 nf_deaf 布局；
 - 由 Armbian 统一执行 `scripts/config` 和 `olddefconfig`，不硬编码 CPU 架构；
-- 最终 `.config` 校验前会先扫描内核树 Kconfig 实际定义的符号：清单中随内核版本
-  增删而消失的符号会被跳过（warn 日志 + Release notes 记录），而不是让构建失败；
+- 最终 `.config` 校验前会扫描内核树实际定义的 Kconfig 符号；完整功能清单中的
+  任何能力若不存在或被依赖关系关闭都会让构建失败，避免发布功能缩水的内核；
 - TCP-Brutal、AmneziaWG 和 nf_deaf 默认构建为模块，原生 WireGuard 默认内置。
 
 ## 完整 eBPF / BTF / CO-RE
@@ -71,7 +71,7 @@ ENABLE_FULL_NETWORKING=yes
 KERNEL_BTF=yes
 ```
 
-更新上游版本时应同时更新 `*_REF` 和 `*_COMMIT`。不建议只使用可移动分支。AmneziaWG 与原生 WireGuard 不能同时设置为 `y`；hook 会拒绝该组合，避免静态链接符号冲突。
+更新上游版本时只设置不可变的 `*_COMMIT` 即可，未显式设置的 `*_REF` 会自动采用同一提交；只有特殊 Git 服务需要 fetch hint 时才同时设置 `*_REF`。不建议把可移动分支当作期望提交。AmneziaWG 与原生 WireGuard 不能同时设置为 `y`；hook 会拒绝该组合，避免静态链接符号冲突。
 
 ## 验证
 
@@ -86,11 +86,11 @@ bash tests/test_kernel_injection.sh
 
 每次成功编译都会从最终内核树动态生成 Release notes，而不是使用固定文案。内容包括：
 
-- 内核 release、Armbian 分支、板型、架构和 userspace release；
+- 内核 release、Armbian 分支、板型、架构、userspace release、Armbian/build 与内核源码基线提交；
 - TCP-Brutal v2、AmneziaWG、nf_deaf 与原生 WireGuard 的最终构建模式和源码提交；
 - eBPF/BTF/CO-RE 最终校验状态；
 - MPLS/SRv6、隧道、netfilter、BBR、bridge/BNEP 和 USB Gadget 的最终配置摘要；
 - 与同一份 Armbian 补丁后源码树生成的标准 `arm64 defconfig` 之间的配置差异数量；
 - 每个 `.deb` 的大小和 SHA256，以及仓库提交和 UTC 构建时间。
 
-Release 还会附带最终 `<branch>-kernel.config` 和完整 `<branch>-config-vs-arm64-defconfig.txt`。该比较反映内核配置差异；Armbian 的 Rockchip64、设备树和其他源码补丁属于额外的源码级差异，不会被误写成原版 kernel.org 配置差异。
+Release 还会附带最终 `<branch>-kernel.config` 和完整 `<branch>-config-vs-arm64-defconfig.txt`；如果基线生成失败，还会附带 `arm64-defconfig-build.log` 便于诊断。该比较反映内核配置差异；Armbian 的 Rockchip64、设备树和其他源码补丁属于额外的源码级差异，不会被误写成原版 kernel.org 配置差异。

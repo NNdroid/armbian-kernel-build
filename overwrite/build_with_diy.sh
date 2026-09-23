@@ -48,9 +48,19 @@ export ENABLE_FULL_EBPF ENABLE_FULL_NETWORKING KERNEL_BTF
 # shellcheck disable=SC1091
 source userpatches/lib.config
 
-# 版本相关符号随内核增删，被强制校验跳过的符号会记录到这里，
-# 并写进 release notes，方便追溯。
+# 兼容性检查中允许不存在的旧负向符号会记录到这里，并写进 release notes。
 _kernel_inject_skipped_symbols=()
+artifact_marker=""
+module_manifest=""
+
+cleanup_wrapper() {
+	[[ -z "${artifact_marker:-}" ]] || rm -f -- "${artifact_marker}"
+	[[ -z "${module_manifest:-}" ]] || rm -f -- "${module_manifest}"
+	if declare -F _kernel_inject_cleanup_symbol_cache >/dev/null 2>&1; then
+		_kernel_inject_cleanup_symbol_cache
+	fi
+}
+trap cleanup_wrapper EXIT
 
 argument_value() {
 	local wanted="$1"
@@ -106,6 +116,8 @@ generate_release_metadata() {
 	local tcp_commit
 	local awg_commit
 	local nf_commit
+	local armbian_build_commit
+	local kernel_source_commit
 
 	_kernel_inject_log info "Release 元数据" "开始生成: branch=${branch}, board=${board}, release=${userspace_release}"
 	[[ "${branch}" =~ ^[A-Za-z0-9._-]+$ ]] || {
@@ -155,6 +167,8 @@ generate_release_metadata() {
 	tcp_commit="$(source_commit "${kernel_root}/net/ipv4/tcp_brutal/.source-revision")"
 	awg_commit="$(source_commit "${kernel_root}/drivers/net/amneziawg/.source-revision")"
 	nf_commit="$(source_commit "${kernel_root}/net/netfilter/nf_deaf/.source-revision")"
+	armbian_build_commit="$(git rev-parse HEAD 2>/dev/null || printf 'unknown')"
+	kernel_source_commit="$(git -C "${kernel_root}" rev-parse HEAD 2>/dev/null || printf 'unknown')"
 	_kernel_inject_log debug "Release 元数据" \
 		"源码提交: tcp-brutal=${tcp_commit:0:12}, amneziawg=${awg_commit:0:12}, nf_deaf=${nf_commit:0:12}"
 	if [[ ! "${tcp_commit}" =~ ^[0-9a-f]{40}$ || \
@@ -172,6 +186,8 @@ generate_release_metadata() {
 		printf '| Armbian 分支 | `%s` |\n' "${branch}"
 		printf '| 板型 / 架构 | `%s` / `arm64` |\n' "${board}"
 		printf '| Userspace release | `%s` |\n' "${userspace_release}"
+		printf '| Armbian/build 基线提交 | `%s` |\n' "${armbian_build_commit}"
+		printf '| 内核源码基线提交 | `%s` |\n' "${kernel_source_commit}"
 		printf '| 最终配置 SHA256 | `%s` |\n' "${config_sha256}"
 		printf '| 完整 eBPF 强制校验 | `%s` |\n' "${ENABLE_FULL_EBPF}"
 		printf '| 完整网络功能强制校验 | `%s` |\n' "${ENABLE_FULL_NETWORKING}"
@@ -183,8 +199,7 @@ generate_release_metadata() {
 			printf '本次未能生成 `arm64 defconfig` 对照，但最终配置仍已附带。\n\n'
 		fi
 		if ((${#_kernel_inject_skipped_symbols[@]} > 0)); then
-			# 清单里随内核版本增删的符号在本树未定义时被跳过并记录在这里。
-			printf '> 强制校验清单中有 **%s 个符号在当前内核树未定义**，已跳过: %s\n\n' \
+			printf '> 有 **%s 个旧版负向兼容符号在当前内核树未定义**，无需检查其关闭状态: %s\n\n' \
 				"${#_kernel_inject_skipped_symbols[@]}" "${_kernel_inject_skipped_symbols[*]}"
 		fi
 		printf '> 这是配置层对比；Armbian 板级、设备树及其他补丁是相对于 kernel.org 的额外源码级差异。\n\n'
@@ -254,17 +269,21 @@ _kernel_inject_log info "构建包装器" \
 _kernel_inject_log info "构建包装器" \
 	"完整 eBPF: ${ENABLE_FULL_EBPF}, 完整网络功能: ${ENABLE_FULL_NETWORKING}, KERNEL_BTF: ${KERNEL_BTF}"
 
+mkdir -p output/debs
+artifact_marker="$(mktemp "${TMPDIR:-/tmp}/kernel-build-start.XXXXXX")"
 _kernel_inject_log info "构建包装器" "启动 Armbian: ./compile.sh $*"
 ./compile.sh "$@"
 _kernel_inject_log info "构建包装器" "compile.sh 正常返回，开始校验本次构建产物"
 
 # Armbian does not ship a separate linux-modules package: the .ko files live
 # inside linux-image-<branch>-<family>. Start from the artifact this build
-# actually produced: the most recently modified kernel image package in
-# output/debs.
-image_deb_list="$(find output/debs -name 'linux-image-*.deb' -printf '%T@ %p\n' 2>/dev/null | sort -rn || true)"
+# actually produced: only kernel image packages newer than the marker created
+# immediately before compile.sh are eligible. This prevents a stale package
+# from a previous run from satisfying post-build validation.
+image_deb_list="$(find output/debs -type f -name 'linux-image-*.deb' \
+	-newer "${artifact_marker}" -printf '%T@ %p\n' 2>/dev/null | sort -rn || true)"
 if [[ -z "${image_deb_list}" ]]; then
-	_kernel_inject_log err "产物定位失败" "output/debs 下没有 linux-image-*.deb"
+	_kernel_inject_log err "产物定位失败" "本次 compile.sh 未在 output/debs 生成新的 linux-image-*.deb"
 	exit 1
 fi
 _kernel_inject_log debug "产物定位" "output/debs 中的内核包（按修改时间降序）:"
@@ -272,25 +291,35 @@ while IFS= read -r entry; do
 	_kernel_inject_log debug "产物定位" "  ${entry#* }"
 done <<< "${image_deb_list}"
 
-image_deb=""
+image_deb_entry=""
 if [[ -n "${requested_branch}" ]]; then
 	if [[ ! "${requested_branch}" =~ ^[A-Za-z0-9._-]+$ ]]; then
 		_kernel_inject_log err "不安全的 BRANCH 值" "${requested_branch}"
 		exit 1
 	fi
-	image_deb="$(printf '%s\n' "${image_deb_list}" \
-		| grep -E "linux-image-${requested_branch}-rockchip64_" \
-		| head -n 1 | cut -d' ' -f2- || true)"
-	if [[ -z "${image_deb}" ]]; then
+	while IFS= read -r entry; do
+		candidate_path="${entry#* }"
+		case "$(basename "${candidate_path}")" in
+			"linux-image-${requested_branch}-rockchip64_"*)
+				image_deb_entry="${entry}"
+				break
+				;;
+		esac
+	done <<< "${image_deb_list}"
+	if [[ -z "${image_deb_entry}" ]]; then
 		_kernel_inject_log err "产物定位失败" "output/debs 下没有 BRANCH=${requested_branch} 的 linux-image deb"
 		exit 1
 	fi
 else
-	image_deb="$(printf '%s\n' "${image_deb_list}" | head -n 1 | cut -d' ' -f2-)"
+	image_deb_entry="${image_deb_list%%$'\n'*}"
+fi
+image_deb_mtime="${image_deb_entry%% *}"
+image_deb="${image_deb_entry#* }"
+if [[ -z "${requested_branch}" ]]; then
 	_kernel_inject_log warn "产物定位" "未传入 BRANCH，按修改时间取最新: $(basename "${image_deb}")"
 fi
 _kernel_inject_log info "产物定位" \
-	"选定 $(basename "${image_deb}") ($(du -h "${image_deb}" | awk '{print $1}'), mtime $(date -u -d "@${image_deb%% *}" +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo unknown))"
+	"选定 $(basename "${image_deb}") ($(du -h "${image_deb}" | awk '{print $1}'), mtime $(date -u -d "@${image_deb_mtime}" +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo unknown))"
 
 built_branch="$(basename "${image_deb}" | sed -n 's/^linux-image-\([A-Za-z0-9._-]*\)-rockchip64_.*/\1/p')"
 if [[ -z "${built_branch}" ]]; then
@@ -364,8 +393,13 @@ done
 # The worktree can outlive a build that never compiled them; the artifact
 # cannot lie.
 if command -v dpkg-deb >/dev/null 2>&1; then
-	for module in tcp_brutal amneziawg nf_deaf; do
-		if dpkg-deb -c "${image_deb}" 2>/dev/null | grep -q "${module}"; then
+	module_manifest="$(mktemp "${TMPDIR:-/tmp}/kernel-image-modules.XXXXXX")"
+	if ! dpkg-deb -c "${image_deb}" > "${module_manifest}" 2>/dev/null; then
+		_kernel_inject_log err "模块产物校验" "无法读取 $(basename "${image_deb}") 的文件清单"
+		exit 1
+	fi
+	for module in brutal amneziawg nf_deaf; do
+		if grep -Eq "/${module}\.ko(\.(gz|xz|zst))?$" "${module_manifest}"; then
 			_kernel_inject_log debug "模块产物校验" "${module}: 存在于 $(basename "${image_deb}")"
 		else
 			_kernel_inject_log err "模块产物校验" "module '${module}' missing from $(basename "${image_deb}")"
@@ -373,7 +407,7 @@ if command -v dpkg-deb >/dev/null 2>&1; then
 			exit 1
 		fi
 	done
-	_kernel_inject_log info "模块产物校验" "tcp_brutal / amneziawg / nf_deaf 均已编译进内核包"
+	_kernel_inject_log info "模块产物校验" "brutal / amneziawg / nf_deaf 均已编译进内核包"
 else
 	_kernel_inject_log warn "模块产物校验" "dpkg-deb unavailable; skipping module contents verification of $(basename "${image_deb}")"
 fi

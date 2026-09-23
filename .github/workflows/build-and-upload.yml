@@ -20,28 +20,30 @@ jobs:
     steps:
       # 1. 检出代码
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # 2. 清理磁盘空间 (防止编译内核时空间不足)
       - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@v1.3.1
+        uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6 # v2.0.0
         with:
           android: true
           dotnet: true
           haskell: true
           docker-images: true
-          tool-cache: true
+          preinstalled-runtimes: true
           swap-storage: false
 
       # 3. 设置 QEMU (为 Armbian 跨平台编译构建环境)
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
 
-      # 4. 安装基础依赖 (加上了 gh 工具)
+      # 4. 安装基础依赖
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git curl wget sudo qemu-user-static jq yq gh
+          sudo apt-get install -y git curl sudo qemu-user-static jq gh
 
       # 5. 赋予脚本执行权限
       - name: Make script executable
@@ -53,17 +55,18 @@ jobs:
       # 6. 执行核心构建脚本 (自带版本比对和 Release 上传逻辑)
       - name: Run build script
         # Armbian 明确要求不要以 root/sudo 运行 compile.sh。build.sh 只在
-        # 安装宿主依赖时自行 sudo；GITHUB_TOKEN 直接传给 runner 用户。
+        # 安装宿主依赖时自行 sudo；GH_TOKEN 直接传给 runner 用户。
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: ./build.sh
 
       # 7. (可选) 上传 Artifacts 备份
       # 即使 build.sh 已经把 debs 上传到了 Release，在 Actions 本地留存一份 Artifact 也是个好习惯
       - name: Upload Artifacts Backup
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: built-images
           path: build/output/debs/*
+          if-no-files-found: ignore
           retention-days: 5

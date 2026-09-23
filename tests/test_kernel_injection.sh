@@ -169,7 +169,7 @@ assert_array_contains opts_y USB_CONFIGFS_F_MIDI2
 assert_contains "${KERNEL_ROOT}/.config" \
 	'CONFIG_LSM="lockdown,yama,integrity,apparmor,bpf"'
 
-# 内核树已定义符号扫描：强制校验依据它把"清单有、本树没有"的符号降级为跳过。
+# 内核树已定义符号扫描：完整功能清单必须在目标内核树中真实存在。
 KCONFIG_SCAN_ROOT="${TEST_ROOT}/kconfig-scan"
 mkdir -p "${KCONFIG_SCAN_ROOT}"
 printf 'config DEBUG_INFO_BTF\n\tbool "btf"\nmenuconfig WIREGUARD\n' > "${KCONFIG_SCAN_ROOT}/Kconfig"
@@ -210,29 +210,32 @@ EFFECTIVE_CONFIG="${VERIFY_TREE}/effective-ebpf.config"
 _kernel_inject_verify_full_ebpf_config "${EFFECTIVE_CONFIG}"
 _kernel_inject_verify_full_network_config "${EFFECTIVE_CONFIG}"
 
-# 清单里"当前内核树并未定义"的符号必须降级为跳过，而不是让构建失败。
+# 清单里当前内核树并未定义的正向能力必须失败，不能发布功能缩水的内核。
+# Consumed through a nameref in _kernel_inject_verify_symbol_list.
+# shellcheck disable=SC2034
 custom_required=(VXLAN A_SYMBOL_NO_KCONFIG_DEFINES)
-_kernel_inject_verify_symbol_list "${EFFECTIVE_CONFIG}" '[ym]' custom_required || \
-	fail "verifier must skip required symbols that the kernel tree does not define"
-if ! printf '%s\n' "${_kernel_inject_skipped_symbols[@]}" | grep -qx A_SYMBOL_NO_KCONFIG_DEFINES; then
-	fail "skipped symbols were not recorded for the release notes"
+if _kernel_inject_verify_symbol_list "${EFFECTIVE_CONFIG}" '[ym]' custom_required; then
+	fail "verifier accepted a required symbol that the kernel tree does not define"
 fi
+printf '%s\n' "${KERNEL_INJECT_MISSING_SYMBOLS[@]}" | \
+	grep -q 'A_SYMBOL_NO_KCONFIG_DEFINES.*undefined' || \
+	fail "undefined required symbol was not reported precisely"
 
-# 由 select/def_bool 决定（Kconfig 里没有 prompt）的符号无法被 scripts/config
-# 直接开启：配置里没有记载时必须跳过，一旦有记载就必须按取值严格校验。
+# 由 select/def_bool 决定且没有 prompt 的符号同样是最终能力契约：不存在或取值
+# 不正确都必须失败，不能因为 scripts/config 无法直接设置就静默放过。
 SELECT_ONLY_TREE="${TEST_ROOT}/select-only-tree"
 mkdir -p "${SELECT_ONLY_TREE}"
 printf 'config SELECT_ONLY_SYMBOL\n\ttristate\n' > "${SELECT_ONLY_TREE}/Kconfig"
-printf 'config AUTO_SYMBOL\n\ttristate\n' >> "${SELECT_ONLY_TREE}/Kconfig"
 cp "${EFFECTIVE_CONFIG}" "${SELECT_ONLY_TREE}/.config"
+# Consumed through a nameref in _kernel_inject_verify_symbol_list.
+# shellcheck disable=SC2034
 select_required=(SELECT_ONLY_SYMBOL)
-_kernel_inject_verify_symbol_list "${SELECT_ONLY_TREE}/.config" y select_required || \
-	fail "verifier must skip prompt-less symbols that the config never materialized"
-printf 'CONFIG_AUTO_SYMBOL=m\n' >> "${SELECT_ONLY_TREE}/.config"
-auto_required=(AUTO_SYMBOL)
-if _kernel_inject_verify_symbol_list "${SELECT_ONLY_TREE}/.config" y auto_required; then
-	fail "verifier must still check prompt-less symbols that did materialize"
+if _kernel_inject_verify_symbol_list "${SELECT_ONLY_TREE}/.config" y select_required; then
+	fail "verifier accepted a missing prompt-less symbol"
 fi
+printf 'CONFIG_SELECT_ONLY_SYMBOL=y\n' >> "${SELECT_ONLY_TREE}/.config"
+_kernel_inject_verify_symbol_list "${SELECT_ONLY_TREE}/.config" y select_required || \
+	fail "verifier rejected a satisfied prompt-less symbol"
 
 # 扫描不到任何 Kconfig 时必须退回严格模式（宁可失败也不能静默放过）。
 NO_KCONFIG_TREE="${TEST_ROOT}/no-kconfig-tree"
@@ -262,6 +265,7 @@ mkdir -p "${RELEASE_METADATA}" "${RELEASE_DEBS}"
 printf '# 动态构建摘要\n\neBPF 已校验。\n' > "${RELEASE_METADATA}/build-summary.md"
 printf 'CONFIG_BPF=y\n' > "${RELEASE_METADATA}/edge-kernel.config"
 printf '+BPF y\n' > "${RELEASE_METADATA}/edge-config-vs-arm64-defconfig.txt"
+printf 'synthetic defconfig diagnostic\n' > "${RELEASE_METADATA}/arm64-defconfig-build.log"
 printf 'edge package\n' > \
 	"${RELEASE_DEBS}/linux-image-edge-rockchip64_test__7.2.1-build.deb"
 printf 'must not upload\n' > \
@@ -315,6 +319,26 @@ printf 'must not upload\n' > \
 	if resolve_built_version current; then
 		fail "resolve_built_version invented a version for a branch with no artifact"
 	fi
+	BUILD_MARKER="$(mktemp ./build/.resolve-marker.XXXXXX)"
+	if resolve_built_version edge "${BUILD_MARKER}"; then
+		fail "resolve_built_version accepted a stale artifact from before this build"
+	fi
+	sleep 1
+	touch "${RELEASE_DEBS}/linux-image-edge-rockchip64_test__7.2.1-build.deb"
+	built_version="$(resolve_built_version edge "${BUILD_MARKER}")"
+	[[ "${built_version}" == '7.2.1' ]] || \
+		fail "fresh artifact resolution returned '${built_version}'"
+
+	CWD_TEST_ROOT="${RELEASE_TEST_ROOT}/cwd-test"
+	mkdir -p "${CWD_TEST_ROOT}/build"
+	cat > "${CWD_TEST_ROOT}/build/build_with_diy.sh" <<'CWD_WRAPPER'
+#!/usr/bin/env bash
+pwd -P > ../wrapper-cwd.txt
+CWD_WRAPPER
+	chmod +x "${CWD_TEST_ROOT}/build/build_with_diy.sh"
+	run_armbian_build "${CWD_TEST_ROOT}/build" kernel BOARD=fake
+	[[ "$(cat "${CWD_TEST_ROOT}/wrapper-cwd.txt")" == "$(cd "${CWD_TEST_ROOT}/build" && pwd -P)" ]] || \
+		fail "run_armbian_build did not execute the wrapper from the Armbian root"
 )
 assert_contains "${RELEASE_TEST_ROOT}/captured-notes.md" '# 动态构建摘要'
 assert_contains "${RELEASE_TEST_ROOT}/captured-notes.md" 'linux-image-edge-rockchip64'
@@ -324,11 +348,40 @@ assert_contains "${RELEASE_TEST_ROOT}/captured-notes.md" '内核版本（构建�
 assert_contains "${RELEASE_TEST_ROOT}/captured-notes.md" 'kernel.org 上游版本：`7.2.0`'
 assert_not_contains "${RELEASE_TEST_ROOT}/captured-gh-args.txt" 'bleedingedge'
 assert_contains "${RELEASE_TEST_ROOT}/captured-gh-args.txt" 'edge-kernel.config'
+assert_contains "${RELEASE_TEST_ROOT}/captured-gh-args.txt" 'arm64-defconfig-build.log'
 
 WRAPPER_ROOT="${TEST_ROOT}/wrapper-root"
 mkdir -p "${WRAPPER_ROOT}/userpatches"
 cp "${REPO_ROOT}/overwrite/build_with_diy.sh" "${WRAPPER_ROOT}/build_with_diy.sh"
 cp "${REPO_ROOT}/userpatches/lib.config" "${WRAPPER_ROOT}/userpatches/lib.config"
+
+# Git Bash on Windows has no dpkg-deb. Provide a minimal manifest-compatible
+# stand-in so the exact module filename checks run locally as well as on CI.
+if ! command -v dpkg-deb >/dev/null 2>&1; then
+	FAKE_DPKG_BIN="${TEST_ROOT}/fake-dpkg-bin"
+	mkdir -p "${FAKE_DPKG_BIN}"
+	cat > "${FAKE_DPKG_BIN}/dpkg-deb" <<'FAKE_DPKG_DEB'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+case "$1" in
+	--build)
+		stage="$2"
+		destination="$3"
+		(
+			cd "${stage}"
+			while IFS= read -r path; do
+				printf '%s\n' "-rw-r--r-- root/root 0 ./$(printf '%s' "${path}" | sed 's#^\./##')"
+			done < <(find . -type f -print | sort)
+		) > "${destination}"
+		;;
+	-c) cat -- "$2" ;;
+	*) exit 2 ;;
+esac
+FAKE_DPKG_DEB
+	chmod +x "${FAKE_DPKG_BIN}/dpkg-deb"
+	export PATH="${FAKE_DPKG_BIN}:${PATH}"
+fi
+
 cat > "${WRAPPER_ROOT}/compile.sh" <<'FAKE_COMPILE'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -344,12 +397,14 @@ printf 'commit=%s\n' "${AMNEZIAWG_COMMIT}" \
 	> "${kernel_root}/drivers/net/amneziawg/.source-revision"
 printf 'commit=%s\n' "${NF_DEAF_COMMIT}" \
 	> "${kernel_root}/net/netfilter/nf_deaf/.source-revision"
+cp "${FAKE_IMAGE_DEB_SOURCE}" \
+	output/debs/linux-image-fake-rockchip64_1.0_arm64__6.18.53-S9a8b-D7c6-P5e4-C3H2.deb
 FAKE_COMPILE
 chmod +x "${WRAPPER_ROOT}/compile.sh" "${WRAPPER_ROOT}/build_with_diy.sh"
 
 # The wrapper verifies the built artifact, not just the worktree. A real .deb
 # is needed when dpkg-deb is available (CI); a plain placeholder elsewhere.
-FAKE_DEB="${WRAPPER_ROOT}/output/debs/linux-image-fake-rockchip64_1.0_arm64__6.18.53-S9a8b-D7c6-P5e4-C3H2.deb"
+FAKE_DEB_TEMPLATE="${WRAPPER_ROOT}/fake-linux-image.deb"
 mkdir -p "${WRAPPER_ROOT}/output/debs"
 if command -v dpkg-deb >/dev/null 2>&1; then
 	DEB_STAGE="${WRAPPER_ROOT}/deb-stage"
@@ -358,7 +413,7 @@ if command -v dpkg-deb >/dev/null 2>&1; then
 		"${DEB_STAGE}/usr/lib/modules/fake/kernel/drivers/net/amneziawg" \
 		"${DEB_STAGE}/usr/lib/modules/fake/kernel/net/netfilter/nf_deaf" \
 		"${DEB_STAGE}/DEBIAN"
-	: > "${DEB_STAGE}/usr/lib/modules/fake/kernel/net/ipv4/tcp_brutal/tcp_brutal.ko"
+	: > "${DEB_STAGE}/usr/lib/modules/fake/kernel/net/ipv4/tcp_brutal/brutal.ko"
 	: > "${DEB_STAGE}/usr/lib/modules/fake/kernel/drivers/net/amneziawg/amneziawg.ko"
 	: > "${DEB_STAGE}/usr/lib/modules/fake/kernel/net/netfilter/nf_deaf/nf_deaf.ko"
 	cat > "${DEB_STAGE}/DEBIAN/control" <<'CONTROL'
@@ -370,14 +425,15 @@ Architecture: arm64
 Maintainer: NNdroid <nn@users.noreply.github.com>
 Description: fake modules package for wrapper verification
 CONTROL
-	dpkg-deb --build "${DEB_STAGE}" "${FAKE_DEB}" >/dev/null
+	dpkg-deb --build "${DEB_STAGE}" "${FAKE_DEB_TEMPLATE}" >/dev/null
 else
-	printf 'tcp_brutal amneziawg nf_deaf\n' > "${FAKE_DEB}"
+	printf 'brutal amneziawg nf_deaf\n' > "${FAKE_DEB_TEMPLATE}"
 fi
 
 (
 	cd "${WRAPPER_ROOT}"
 	EFFECTIVE_CONFIG="${EFFECTIVE_CONFIG}" \
+	FAKE_IMAGE_DEB_SOURCE="${FAKE_DEB_TEMPLATE}" \
 	TCP_BRUTAL_COMMIT="${TCP_BRUTAL_COMMIT}" \
 	AMNEZIAWG_COMMIT="${AMNEZIAWG_COMMIT}" \
 	NF_DEAF_COMMIT="${NF_DEAF_COMMIT}" \
@@ -391,11 +447,39 @@ assert_contains "${WRAPPER_ROOT}/output/release-metadata/unknown/build-summary.m
 	'完整网络功能集'
 assert_contains "${WRAPPER_ROOT}/output/release-metadata/unknown/build-summary.md" \
 	'MPLS / SRv6'
+assert_contains "${WRAPPER_ROOT}/output/release-metadata/unknown/build-summary.md" \
+	'Armbian/build 基线提交'
+assert_contains "${WRAPPER_ROOT}/output/release-metadata/unknown/build-summary.md" \
+	'内核源码基线提交'
+
+# TCP-Brutal v2's Kbuild output is brutal.ko. A package containing only the old
+# tcp_brutal.ko name must not pass merely because its directory contains the
+# text "tcp_brutal".
+if command -v dpkg-deb >/dev/null 2>&1; then
+	rm -f -- "${DEB_STAGE}/usr/lib/modules/fake/kernel/net/ipv4/tcp_brutal/brutal.ko"
+	: > "${DEB_STAGE}/usr/lib/modules/fake/kernel/net/ipv4/tcp_brutal/tcp_brutal.ko"
+	dpkg-deb --build "${DEB_STAGE}" "${FAKE_DEB_TEMPLATE}" >/dev/null
+	if (
+		cd "${WRAPPER_ROOT}"
+		EFFECTIVE_CONFIG="${EFFECTIVE_CONFIG}" \
+		FAKE_IMAGE_DEB_SOURCE="${FAKE_DEB_TEMPLATE}" \
+		TCP_BRUTAL_COMMIT="${TCP_BRUTAL_COMMIT}" \
+		AMNEZIAWG_COMMIT="${AMNEZIAWG_COMMIT}" \
+		NF_DEAF_COMMIT="${NF_DEAF_COMMIT}" \
+		./build_with_diy.sh kernel BOARD=fake
+	); then
+		fail "build wrapper accepted tcp_brutal.ko instead of TCP-Brutal v2 brutal.ko"
+	fi
+	rm -f -- "${DEB_STAGE}/usr/lib/modules/fake/kernel/net/ipv4/tcp_brutal/tcp_brutal.ko"
+	: > "${DEB_STAGE}/usr/lib/modules/fake/kernel/net/ipv4/tcp_brutal/brutal.ko"
+	dpkg-deb --build "${DEB_STAGE}" "${FAKE_DEB_TEMPLATE}" >/dev/null
+fi
 
 sed -i 's/^CONFIG_DEBUG_INFO_BTF=y$/# CONFIG_DEBUG_INFO_BTF is not set/' "${EFFECTIVE_CONFIG}"
 if (
 	cd "${WRAPPER_ROOT}"
 	EFFECTIVE_CONFIG="${EFFECTIVE_CONFIG}" \
+	FAKE_IMAGE_DEB_SOURCE="${FAKE_DEB_TEMPLATE}" \
 	TCP_BRUTAL_COMMIT="${TCP_BRUTAL_COMMIT}" \
 	AMNEZIAWG_COMMIT="${AMNEZIAWG_COMMIT}" \
 	NF_DEAF_COMMIT="${NF_DEAF_COMMIT}" \
@@ -468,6 +552,8 @@ assert_file "${KERNEL_ROOT}/net/ipv4/tcp_brutal/brutal.h"
 assert_contains "${KERNEL_ROOT}/net/ipv4/tcp_brutal/Makefile" 'BRUTAL_HAVE_TSO_SEGS'
 assert_contains "${KERNEL_ROOT}/net/ipv4/tcp_brutal/.source-revision" \
 	'commit=fd3e540223c8d22adbed6d1f4fc54caa623d49c0'
+assert_contains "${KERNEL_ROOT}/net/ipv4/tcp_brutal/.source-revision" \
+	'ref=fd3e540223c8d22adbed6d1f4fc54caa623d49c0'
 assert_absent "${KERNEL_ROOT}/net/ipv4/tcp_brutal.c"
 assert_not_contains "${KERNEL_ROOT}/net/ipv4/tcp.c" 'TCP_BRUTAL_PARAMS'
 assert_contains "${KERNEL_ROOT}/net/ipv4/Kconfig" 'config TCP_AFTER_LEGACY'
