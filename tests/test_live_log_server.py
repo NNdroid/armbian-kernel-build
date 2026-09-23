@@ -38,6 +38,75 @@ def request(url: str, *, authenticated: bool = False) -> tuple[int, bytes, dict[
         return error.code, error.read(), dict(error.headers.items())
 
 
+def open_sse(
+    url: str, *, last_event_id: int | None = None
+) -> urllib.response.addinfourl:
+    headers = {
+        "Accept": "text/event-stream",
+        "Authorization": AUTH_HEADER,
+    }
+    if last_event_id is not None:
+        headers["Last-Event-ID"] = str(last_event_id)
+    return urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=3)
+
+
+def read_sse_frame(response: urllib.response.addinfourl) -> dict[str, object]:
+    event = "message"
+    event_id: str | None = None
+    data: list[str] = []
+    comments: list[str] = []
+    while True:
+        raw_line = response.readline()
+        if not raw_line:
+            raise AssertionError("SSE stream closed before the expected frame")
+        line = raw_line.decode("utf-8").rstrip("\r\n")
+        if not line:
+            if data or comments or event_id is not None or event != "message":
+                return {
+                    "event": event,
+                    "id": event_id,
+                    "data": "\n".join(data),
+                    "comments": comments,
+                }
+            continue
+        if line.startswith(":"):
+            comments.append(line[1:].lstrip())
+            continue
+        field, separator, value = line.partition(":")
+        if separator and value.startswith(" "):
+            value = value[1:]
+        if field == "event":
+            event = value
+        elif field == "id":
+            event_id = value
+        elif field == "data":
+            data.append(value)
+
+
+def read_until_event(
+    response: urllib.response.addinfourl, event_name: str, *, limit: int = 20
+) -> dict[str, object]:
+    frames: list[dict[str, object]] = []
+    for _ in range(limit):
+        frame = read_sse_frame(response)
+        frames.append(frame)
+        if frame["event"] == event_name:
+            return frame
+    raise AssertionError(f"SSE event {event_name!r} not received: {frames!r}")
+
+
+def read_until_heartbeat(
+    response: urllib.response.addinfourl, *, limit: int = 20
+) -> dict[str, object]:
+    frames: list[dict[str, object]] = []
+    for _ in range(limit):
+        frame = read_sse_frame(response)
+        frames.append(frame)
+        if "keepalive" in frame["comments"]:
+            return frame
+    raise AssertionError(f"SSE heartbeat not received: {frames!r}")
+
+
 def wait_until_ready(base_url: str, process: subprocess.Popen[bytes]) -> None:
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
@@ -78,6 +147,10 @@ def main() -> int:
                 str(log_root),
                 "--port",
                 str(port),
+                "--sse-poll-interval",
+                "0.02",
+                "--sse-heartbeat-interval",
+                "0.15",
             ],
             env=environment,
             stdout=subprocess.PIPE,
@@ -95,25 +168,72 @@ def main() -> int:
             assert status == 200, status
             assert b"Armbian Kernel Build" in body
             assert b"(?:\\[[0-?]*[ -/]*[@-~]|[@-_])" in body
+            assert b"new EventSource(`/api/events?offset=${offset}`" in body
+
+            status, _, _ = request(f"{base_url}/api/events")
+            assert status == 401, status
+
+            with open_sse(f"{base_url}/api/events?offset=0") as stream:
+                assert stream.status == 200
+                assert stream.headers.get_content_type() == "text/event-stream"
+                assert stream.headers.get("Cache-Control") == "no-cache, no-transform"
+                assert stream.headers.get("X-Accel-Buffering") == "no"
+
+                frame = read_until_event(stream, "log")
+                payload = json.loads(str(frame["data"]))
+                first_offset = len(b"first line\n")
+                assert frame["id"] == str(first_offset), frame
+                assert payload == {"offset": first_offset, "text": "first line\n"}, payload
+
+                frame = read_until_event(stream, "state")
+                assert json.loads(str(frame["data"])) == {"state": "running"}, frame
+                heartbeat = read_until_heartbeat(stream)
+                assert heartbeat["comments"] == ["keepalive"], heartbeat
+
+                with (log_root / "build.log").open("ab") as log_file:
+                    log_file.write(b"second line\n")
+                frame = read_until_event(stream, "log")
+                payload = json.loads(str(frame["data"]))
+                final_offset = len(b"first line\nsecond line\n")
+                assert frame["id"] == str(final_offset), frame
+                assert payload == {"offset": final_offset, "text": "second line\n"}, payload
+
+                (log_root / "status.json").write_text(
+                    json.dumps({"state": "success", "exit_code": 0}), encoding="utf-8"
+                )
+                frame = read_until_event(stream, "state")
+                assert json.loads(str(frame["data"])) == {
+                    "state": "success",
+                    "exit_code": 0,
+                }, frame
+                frame = read_until_event(stream, "complete")
+                assert json.loads(str(frame["data"])) == {
+                    "state": "success",
+                    "exit_code": 0,
+                    "offset": final_offset,
+                }, frame
+
+            with open_sse(
+                f"{base_url}/api/events?offset=0", last_event_id=first_offset
+            ) as resumed_stream:
+                frame = read_until_event(resumed_stream, "log")
+                payload = json.loads(str(frame["data"]))
+                assert payload == {"offset": final_offset, "text": "second line\n"}, payload
+                frame = read_until_event(resumed_stream, "complete")
+                assert json.loads(str(frame["data"]))["offset"] == final_offset
 
             status, body, _ = request(f"{base_url}/api/log?offset=0", authenticated=True)
             assert status == 200, status
             payload = json.loads(body)
             assert payload == {
-                "offset": len(b"first line\n"),
+                "offset": final_offset,
                 "reset": False,
-                "state": "running",
-                "text": "first line\n",
+                "state": "success",
+                "text": "first line\nsecond line\n",
             }, payload
 
-            with (log_root / "build.log").open("ab") as log_file:
-                log_file.write(b"second line\n")
-            (log_root / "status.json").write_text(
-                json.dumps({"state": "success"}), encoding="utf-8"
-            )
-
             status, body, _ = request(
-                f"{base_url}/api/log?offset={payload['offset']}", authenticated=True
+                f"{base_url}/api/log?offset={first_offset}", authenticated=True
             )
             assert status == 200, status
             payload = json.loads(body)

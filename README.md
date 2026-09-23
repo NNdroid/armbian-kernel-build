@@ -112,4 +112,8 @@ gh secret set NGROK_LOG_AUTH
 gh secret set NGROK_URL
 ```
 
-三个配置项都只从 Repository secrets 读取。启动成功后，workflow notice 和 Job Summary 只提示端点就绪，不回显 Secret 中的 URL；直接访问你保存为 `NGROK_URL` 的地址。实时页面、增量日志 API 和下载入口均要求 Basic Auth；只有不包含日志的 `/healthz` 无需认证。该日志由 `tee` 在 GitHub 掩码处理前写入，因此必须保护好 `NGROK_LOG_AUTH`，并避免让构建脚本主动打印秘密。端点只在 job 运行期间存在，工作流不会把完整日志上传到 LogPasta 或其他 paste 服务；构建结束后的记录仍以 GitHub Actions 自身日志为准。
+三个配置项都只从 Repository secrets 读取。启动成功后，workflow notice 和 Job Summary 只提示端点就绪，不回显 Secret 中的 URL；直接访问你保存为 `NGROK_URL` 的地址。
+
+浏览器默认通过同源 `/api/events` SSE 通道接收新增日志，服务端每 15 秒发送心跳，并用日志字节偏移作为 SSE event ID；连接恢复时优先读取 `Last-Event-ID`，因此不会从头重复下载。连续 SSE 连接失败时，页面自动回退到 `/api/log?offset=...` 增量轮询；`/download` 仍可下载当前完整日志。页面、SSE、增量 API 和下载入口均要求 Basic Auth，只有不包含日志的 `/healthz` 无需认证。
+
+该日志由 `tee` 在 GitHub 掩码处理前写入，因此必须保护好 `NGROK_LOG_AUTH`，并避免让构建脚本主动打印秘密。端点只在 job 运行期间存在，工作流不会把完整日志上传到 LogPasta 或其他 paste 服务；构建结束后的记录仍以 GitHub Actions 自身日志为准。
