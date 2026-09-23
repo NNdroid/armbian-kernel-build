@@ -77,6 +77,26 @@ argument_value() {
 	return 1
 }
 
+merge_extension_lists() {
+	local merged=""
+	local extension_list
+	local extension
+	local -a extensions=()
+
+	for extension_list in "$@"; do
+		extensions=()
+		read -r -a extensions <<< "${extension_list//,/ }"
+		for extension in "${extensions[@]}"; do
+			[[ -n "${extension}" ]] || continue
+			case ",${merged}," in
+				*,"${extension}",*) ;;
+				*) merged="${merged:+${merged},}${extension}" ;;
+			esac
+		done
+	done
+	printf '%s\n' "${merged}"
+}
+
 config_value() {
 	local config_file="$1"
 	local symbol="$2"
@@ -299,11 +319,34 @@ rm -f -- userpatches/90_patch_brutal.sh
 requested_branch="$(argument_value BRANCH "$@" || true)"
 requested_board="$(argument_value BOARD "$@" || true)"
 userspace_release="$(argument_value RELEASE "$@" || true)"
+requested_extensions="$(argument_value ENABLE_EXTENSIONS "$@" || true)"
+requested_legacy_extensions="$(argument_value EXT "$@" || true)"
+configured_extensions="${requested_extensions:-${requested_legacy_extensions:-${ENABLE_EXTENSIONS:-${EXT:-}}}}"
+
+# Armbian initializes the extension manager before it sources lib.config. The
+# package-evidence hook therefore lives in userpatches/extensions and must be
+# enabled before compile.sh starts. Merge rather than replace caller-provided
+# extensions, then remove duplicate CLI assignments so the final value cannot
+# be overridden later in argument order.
+ENABLE_EXTENSIONS="$(merge_extension_lists \
+	"${configured_extensions}" \
+	"kernel-inject-evidence")"
+export ENABLE_EXTENSIONS
+compile_arguments=()
+for argument in "$@"; do
+	case "${argument}" in
+		ENABLE_EXTENSIONS=* | EXT=*) ;;
+		*) compile_arguments+=("${argument}") ;;
+	esac
+done
+set -- "${compile_arguments[@]}" "ENABLE_EXTENSIONS=${ENABLE_EXTENSIONS}"
 
 _kernel_inject_log info "构建包装器" \
 	"参数: target=kernel BRANCH=${requested_branch:-<unset>} BOARD=${requested_board:-<unset>} RELEASE=${userspace_release:-<unset>}"
 _kernel_inject_log info "构建包装器" \
 	"完整 eBPF: ${ENABLE_FULL_EBPF}, 完整网络功能: ${ENABLE_FULL_NETWORKING}, KERNEL_BTF: ${KERNEL_BTF}"
+_kernel_inject_log info "构建包装器" \
+	"Armbian 扩展: ${ENABLE_EXTENSIONS}（已确保启用 kernel-inject-evidence）"
 
 mkdir -p output/debs
 artifact_marker="$(mktemp "${TMPDIR:-/tmp}/kernel-build-start.XXXXXX")"
@@ -414,7 +457,7 @@ if ((${#evidence_manifests[@]} != 1)); then
 	_kernel_inject_log err "构建证据缺失" \
 		"$(basename "${image_deb}") 必须包含且只包含一份 source-manifest.env，实际 ${#evidence_manifests[@]} 份"
 	_kernel_inject_log err "构建证据缺失" \
-		"该包可能来自旧缓存；新的 pre_package_kernel_image 钩子没有参与打包"
+		"kernel-inject-evidence 扩展未参与该包；检查 Extension Manager 日志和包版本中的 HK 哈希"
 	exit 1
 fi
 evidence_manifest="${evidence_manifests[0]}"

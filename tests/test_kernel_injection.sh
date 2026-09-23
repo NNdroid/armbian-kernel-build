@@ -2,9 +2,18 @@
 set -Eeuo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-# Resolved from the computed repository root.
+# Reproduce Armbian's real load order: extensions are sourced before the late
+# legacy lib.config override. Loading only lib.config used to make the hook unit
+# test pass even though the real extension manager could never register it.
+# shellcheck disable=SC1091
+source "${REPO_ROOT}/userpatches/extensions/kernel-inject-evidence.sh"
 # shellcheck disable=SC1091
 source "${REPO_ROOT}/userpatches/lib.config"
+
+declare -F pre_package_kernel_image__kernel_inject_evidence >/dev/null || {
+	printf '[FAIL] package evidence extension hook is not defined\n' >&2
+	exit 1
+}
 
 fail() {
 	printf '[FAIL] %s\n' "$*" >&2
@@ -432,6 +441,8 @@ fi
 cat > "${WRAPPER_ROOT}/compile.sh" <<'FAKE_COMPILE'
 #!/usr/bin/env bash
 set -Eeuo pipefail
+printf '%s\n' "${ENABLE_EXTENSIONS:-}" > enabled-extensions.txt
+printf '%s\n' "$@" > compile-arguments.txt
 mkdir -p output/debs
 cp "${FAKE_IMAGE_DEB_SOURCE}" \
 	output/debs/linux-image-fake-rockchip64_1.0_arm64__6.18.53-S9a8b-D7c6-P5e4-C3H2.deb
@@ -507,8 +518,13 @@ build_fake_image_deb
 	TCP_BRUTAL_COMMIT="${TCP_BRUTAL_COMMIT}" \
 	AMNEZIAWG_COMMIT="${AMNEZIAWG_COMMIT}" \
 	NF_DEAF_COMMIT="${NF_DEAF_COMMIT}" \
-	./build_with_diy.sh kernel BOARD=fake
+	./build_with_diy.sh kernel BOARD=fake \
+		ENABLE_EXTENSIONS=sample-one,kernel-inject-evidence,sample-two
 )
+assert_contains "${WRAPPER_ROOT}/enabled-extensions.txt" \
+	'sample-one,kernel-inject-evidence,sample-two'
+assert_contains "${WRAPPER_ROOT}/compile-arguments.txt" \
+	'ENABLE_EXTENSIONS=sample-one,kernel-inject-evidence,sample-two'
 assert_file "${WRAPPER_ROOT}/output/release-metadata/fake/fake-kernel.config"
 assert_file "${WRAPPER_ROOT}/output/release-metadata/fake/fake-config-vs-arm64-defconfig.txt"
 assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
