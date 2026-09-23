@@ -2,7 +2,7 @@
 # shellcheck disable=SC2016
 
 # ==============================================================================
-# 脚本名称: kernel_sync_build.sh
+# 脚本名称: build.sh
 # 脚本描述: 自动化 Armbian 内核构建与发布工具。
 #           支持从 kernel.org 获取最新版本，对比 GitHub 已发布版本，
 #           自动触发构建并上传至 GitHub Release。
@@ -14,12 +14,26 @@
 set -Eeuo pipefail # 任一命令、未定义变量或管道失败时立即中止
 
 # ==========================================
-# 日志输出系统 (带颜色高亮，方便调试)
+# 日志输出系统 (带 UTC 时间戳与颜色高亮)
+# info 走 stdout（进度信息）；debug/warn/error 一律走 stderr，避免被 $( )
+# 捕获、污染函数返回值。
 # ==========================================
-log_info()  { echo -e "\e[32m[INFO]\e[0m $1"; }
-log_debug() { echo -e "\e[34m[DEBUG]\e[0m $1"; }
-log_warn()  { echo -e "\e[33m[WARN]\e[0m $1"; }
-log_error() { echo -e "\e[31m[ERROR]\e[0m $1" >&2; }
+log_now() { date -u +'%Y-%m-%dT%H:%M:%SZ'; }
+
+log_info()  { printf '\e[32m[INFO]\e[0m \e[2m%s\e[0m %s\n' "$(log_now)" "$1"; }
+log_debug() { printf '\e[34m[DEBUG]\e[0m \e[2m%s\e[0m %s\n' "$(log_now)" "$1" >&2; }
+log_warn()  { printf '\e[33m[WARN]\e[0m \e[2m%s\e[0m %s\n' "$(log_now)" "$1" >&2; }
+log_error() { printf '\e[31m[ERROR]\e[0m \e[2m%s\e[0m %s\n' "$(log_now)" "$1" >&2; }
+
+# 阶段计时: begin_step / end_step 成对使用，结束时输出耗时。
+STEP_START=0
+begin_step() {
+	STEP_START=$SECONDS
+	log_info "──── $1 ────"
+}
+end_step() {
+	log_info "──── $1 完成 (耗时 $((SECONDS - STEP_START))s) ────"
+}
 
 report_unhandled_error() {
 	local exit_code="$1"
@@ -28,6 +42,7 @@ report_unhandled_error() {
 
 	trap - ERR
 	log_error "命令失败：exit=${exit_code}, line=${line_number}, command=${failed_command}"
+	log_error "失败时的工作目录：${PWD}"
 	exit "${exit_code}"
 }
 
@@ -47,8 +62,38 @@ resolve_repository_url() {
 }
 
 # ==============================================================================
+# 函数: ensure_host_dependencies
+# 描述: 检查必需的宿主工具，缺失时尝试通过 apt 安装；安装失败仅告警不终止，
+#       让后续步骤以明确的报错暴露真正缺什么。不再安装未使用的 lsof/yq。
+# ==============================================================================
+ensure_host_dependencies() {
+	local required=(git curl wget jq)
+	local -a missing=()
+	local tool
+
+	for tool in "${required[@]}"; do
+		if ! command -v "${tool}" > /dev/null 2>&1; then
+			missing+=("${tool}")
+		fi
+	done
+
+	if ((${#missing[@]} == 0)); then
+		log_debug "宿主依赖齐全: ${required[*]}"
+		return 0
+	fi
+
+	log_info "安装缺失的宿主依赖: ${missing[*]}"
+	if sudo apt-get update -qq && sudo apt-get install -y -qq "${missing[@]}"; then
+		log_info "宿主依赖安装完成"
+	else
+		log_warn "apt 安装失败 (${missing[*]})；继续执行，后续步骤若失败请手动安装"
+	fi
+}
+
+# ==============================================================================
 # 函数: sync_tree
-# 描述: 递归同步两个目录的内容。
+# 描述: 递归同步两个目录的内容 (只增改不删——目标端多出来的文件保持原样，
+#       因为 ./overwrite 会被同步进 Armbian 仓库根目录，删除会破坏上游文件)。
 # 参数:
 #   $1 - SRC_DIR:  源目录路径
 #   $2 - DEST_DIR: 目标目录路径
@@ -78,6 +123,7 @@ function sync_tree() {
 
     log_debug "开始精确映射同步: [$SRC_DIR] => [$DEST_ABS]"
 
+    local copied_count=0
     # 在子 Shell 中执行，避免 cd 影响主进程
     if (
         cd "$SRC_DIR" || exit 1
@@ -102,7 +148,8 @@ function sync_tree() {
             fi
 		done < <(find . -mindepth 1 -print0)
     ); then
-        log_info "目录同步完成: $SRC_DIR"
+        copied_count="$(find "$SRC_DIR" -type f | wc -l | tr -d ' ')"
+        log_info "目录同步完成: $SRC_DIR (${copied_count} 个文件)"
         return 0
     else
         log_error "同步过程中发生错误！"
@@ -153,13 +200,15 @@ get_latest_github_tag() {
         return 1
     fi
 
+    # 前缀中的点必须转义；后随 \. 或行尾锚定，避免 current-6.1 误吞 current-6.12.x。
+    local escaped_prefix="${prefix//./\\.}"
     local latest_tag
-    # 流程: 获取所有 tags -> 过滤掉 ^/ref/tags/ -> 移除 ^^{} 标记 -> 
+    # 流程: 获取所有 tags -> 过滤掉 ^/ref/tags/ -> 移除 ^^{} 标记 ->
     #       匹配前缀 -> 版本排序 -> 取最后一个
 	latest_tag=$(git ls-remote --tags "$repo_url" 2>/dev/null | \
         sed 's|.*refs/tags/||' | \
         sed 's/\^{}//' | \
-        grep -E "^v?${prefix}" | \
+        grep -E "^${escaped_prefix}(\.|$)" | \
         sort -Vu | \
 		tail -n 1) || return 1
 
@@ -167,6 +216,31 @@ get_latest_github_tag() {
         return 1
     fi
     echo "$latest_tag"
+}
+
+# ==============================================================================
+# 函数: needs_update
+# 描述: 判断某个分支是否需要重新构建。使用 sort -V 做版本序比较而非字符串
+#       相等比较：已发布版本比上游新时不再触发重建，避免无限循环。
+# 参数:
+#   $1 - released: 仓库中已发布的最新版本号 (可为空，表示从未发布)
+#   $2 - upstream: kernel.org 当前最新版本号 (为空表示分支尚未发布，不构建)
+# 返回: 0 - 需要构建; 1 - 不需要
+# ==============================================================================
+needs_update() {
+	local released="$1"
+	local upstream="$2"
+
+	if [[ -z "${upstream}" ]]; then
+		return 1
+	fi
+	if [[ -z "${released}" ]]; then
+		return 0
+	fi
+	if [[ "${released}" == "${upstream}" ]]; then
+		return 1
+	fi
+	[[ "$(printf '%s\n%s\n' "${released}" "${upstream}" | sort -V | tail -n 1)" == "${upstream}" ]]
 }
 
 # ==============================================================================
@@ -220,7 +294,7 @@ load_kernel_org_version() {
 	fi
 
 	if ((status == 2)); then
-		log_warn "kernel.org 尚未发布 ${configured_version}.x；跳过 ${branch} 分支。" >&2
+		log_warn "kernel.org 尚未发布 ${configured_version}.x；跳过 ${branch} 分支。"
 		return 0
 	fi
 
@@ -229,18 +303,54 @@ load_kernel_org_version() {
 }
 
 # ==============================================================================
+# 函数: resolve_built_version
+# 描述: 构建结束后，从 output/debs 中最新的 linux-image deb 文件名反解出实际
+#       构建的内核版本。构建耗时数小时，期间 kernel.org 可能已升版，因此
+#       不能用构建前抓取的版本号去匹配产物。
+# 参数:
+#   $1 - branch: Armbian 分支名 (如 'current')
+# 返回: 通过 stdout 输出版本号 (如 '6.18.8')
+# ==============================================================================
+resolve_built_version() {
+	local branch="$1"
+	local debs_dir="./build/output/debs"
+	local newest_deb
+	local built_version
+
+	newest_deb="$(find "${debs_dir}" -name "linux-image-${branch}-rockchip64_*.deb" \
+		-printf '%T@ %p\n' 2>/dev/null | sort -rn | head -n 1 | cut -d' ' -f2-)"
+	if [[ -z "${newest_deb}" ]]; then
+		log_error "未找到 linux-image-${branch}-rockchip64_*.deb 构建产物。"
+		return 1
+	fi
+	log_debug "${branch}: 最新产物 $(basename "${newest_deb}")"
+
+	built_version="$(basename "${newest_deb}" | \
+		sed -n 's/^.*__\([0-9][0-9]*\.[0-9][0-9]*\(\.[0-9][0-9]*\)\?\)-.*$/\1/p')"
+	if [[ -z "${built_version}" ]]; then
+		log_error "无法从 $(basename "${newest_deb}") 反解内核版本 (缺少 __<版本>- 段)。"
+		return 1
+	fi
+	printf '%s\n' "${built_version}"
+}
+
+# ==============================================================================
 # 函数: upload_to_github_release
 # 描述: 使用 GitHub CLI (gh) 创建 Release 并上传构建生成的 .deb 文件。
 # 参数:
-#   $1 - tag_name:      发布使用的 Tag 名称 (如: current-6.12.1)
-#   $2 - files_pattern: 文件通配符路径 (如: output/*.deb)
+#   $1 - tag_name:         发布使用的 Tag 名称 (如: current-6.12.1)
+#   $2 - branch:           Armbian 分支名 (用于定位构建元数据)
+#   $3 - kernel_version:   实际构建出的内核版本 (从产物反解)
+#   $4 - upstream_version: kernel.org 构建前的上游版本 (记录用)
+#   $5 - files_pattern:    文件通配符路径 (如: output/*.deb)
 # 返回: 0 - 成功; 1 - 失败
 # ==============================================================================
 function upload_to_github_release() {
     local tag_name="$1"
 	local branch="$2"
 	local kernel_version="$3"
-	local files_pattern="$4"
+	local upstream_version="$4"
+	local files_pattern="$5"
 	local metadata_dir="./build/output/release-metadata/${branch}"
 	local notes_file="${metadata_dir}/release-notes.md"
 	local summary_file="${metadata_dir}/build-summary.md"
@@ -256,7 +366,7 @@ function upload_to_github_release() {
     fi
 
     log_info "检查是否有文件匹配: ${files_pattern}"
-    
+
     # 使用 compgen 展开调用方传入的通配符；无匹配时保留空数组。
     local -a upload_files=()
     mapfile -t upload_files < <(compgen -G "${files_pattern}" || true)
@@ -266,13 +376,21 @@ function upload_to_github_release() {
 
     # 检查数组长度是否为 0
     if [ ${#upload_files[@]} -eq 0 ]; then
-        log_warn "未找到匹配的文件: ${files_pattern}，跳过上传。"
+        log_error "未找到匹配的构建产物: ${files_pattern}，拒绝发布空 Release。"
         return 1
     fi
 	if [[ ! -s "${summary_file}" || ${#metadata_files[@]} -eq 0 ]]; then
 		log_error "缺少 ${branch} 的构建元数据，拒绝发布信息不完整的 Release。"
 		return 1
 	fi
+
+	log_info "待上传产物 ${#upload_files[@]} 个，元数据文件 ${#metadata_files[@]} 个："
+	for file in "${upload_files[@]}"; do
+		log_debug "  产物: $(basename "${file}") ($(du -h "${file}" | awk '{print $1}'))"
+	done
+	for file in "${metadata_files[@]}"; do
+		log_debug "  元数据: $(basename "${file}")"
+	done
 
 	cp -- "${summary_file}" "${notes_file}"
 	{
@@ -286,21 +404,26 @@ function upload_to_github_release() {
 		done
 		printf '\n## 构建来源\n\n'
 		printf -- '- 发布标签：`%s`\n' "${tag_name}"
-		printf -- '- Kernel.org 版本：`%s`\n' "${kernel_version}"
+		printf -- '- 内核版本（构建产物）：`%s`\n' "${kernel_version}"
+		printf -- '- kernel.org 上游版本：`%s`\n' "${upstream_version}"
 		printf -- '- 仓库提交：`%s`\n' \
 			"${GITHUB_SHA:-$(git -c safe.directory="${PWD}" rev-parse HEAD)}"
 		printf -- '- 构建时间：`%s`\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 	} >> "${notes_file}"
 
     log_info "正在创建 GitHub Release 并上传产物: ${tag_name} ..."
-    
+
     # 使用 "${upload_files[@]}" 安全地将文件作为多个参数传递，不再有 SC2086 警告
 	if gh release create "${tag_name}" "${upload_files[@]}" "${metadata_files[@]}" \
         --title "Auto Build ${tag_name}" \
         --notes-file "${notes_file}"; then
-        log_info "✅ 成功发布并上传产物到: ${tag_name}"
+        log_info "成功发布并上传产物到: ${tag_name}"
 	else
-		log_error "❌ 上传 Release 失败！请检查网络、权限及 Tag 是否冲突。"
+		if gh release view "${tag_name}" &> /dev/null; then
+			log_error "Release ${tag_name} 已存在；请检查是否重复构建或手动清理该标签。"
+		else
+			log_error "上传 Release 失败！请检查网络、权限及 Tag 是否冲突。"
+		fi
 		return 1
 	fi
 	return 0
@@ -320,9 +443,8 @@ trap 'report_unhandled_error "$?" "$LINENO" "$BASH_COMMAND"' ERR
 # 主逻辑流程开始
 # ==============================================================================
 
-log_info "1. 环境初始化中..."
-# 默认安装必要的工具包
-sudo apt-get update && sudo apt-get install -y git lsof curl wget jq yq >/dev/null 2>&1
+begin_step "1. 环境初始化"
+ensure_host_dependencies
 
 # 下载 Armbian 的配置包含文件以解析内核版本
 ROCKCHIP64_CONFIG_FILE="./rockchip64_common.inc"
@@ -332,21 +454,8 @@ if [[ ! -s "${ROCKCHIP64_CONFIG_FILE}" ]]; then
     log_error "下载 rockchip64_common.inc 失败或文件为空，请检查网络！"
     exit 1
 fi
-
-# ------------------------------------------------------------------------------
-# 2. 版本比对逻辑
-# ------------------------------------------------------------------------------
-# 获取配置文件中定义的分支大版本 (如 6.6)
-CONFIG_CURRENT_KERNEL_VER=$(get_kernel_version current ${ROCKCHIP64_CONFIG_FILE})
-CONFIG_EDGE_KERNEL_VER=$(get_kernel_version edge ${ROCKCHIP64_CONFIG_FILE})
-CONFIG_BLEEDINGEDGE_KERNEL_VER=$(get_kernel_version bleedingedge ${ROCKCHIP64_CONFIG_FILE})
-if [[ -z "${CONFIG_CURRENT_KERNEL_VER}" || -z "${CONFIG_EDGE_KERNEL_VER}" || -z "${CONFIG_BLEEDINGEDGE_KERNEL_VER}" ]]; then
-	log_error "未能从 ${ROCKCHIP64_CONFIG_FILE} 解析全部内核分支版本"
-	exit 1
-fi
-log_info "CONFIG_CURRENT_KERNEL_VER=${CONFIG_CURRENT_KERNEL_VER}"
-log_info "CONFIG_EDGE_KERNEL_VER=${CONFIG_EDGE_KERNEL_VER}"
-log_info "CONFIG_BLEEDINGEDGE_KERNEL_VER=${CONFIG_BLEEDINGEDGE_KERNEL_VER}"
+log_info "rockchip64_common.inc 下载完成 ($(wc -l < "${ROCKCHIP64_CONFIG_FILE}" | tr -d ' ') 行)"
+end_step "1. 环境初始化"
 
 # GitHub Actions 通过 sudo 运行时，checkout 目录属于 runner 用户，root
 # 直接调用 git 会触发 dubious ownership。优先使用 Actions 自带变量；
@@ -355,56 +464,66 @@ if ! CUR_GIT_REPO_URL="$(resolve_repository_url "${PWD}")"; then
 	log_error "未能确定当前 GitHub 仓库地址。请检查 GITHUB_REPOSITORY 或 origin remote。"
 	exit 1
 fi
-log_debug "发布仓库：${CUR_GIT_REPO_URL}"
-
-# 获取 GitHub 上已经发布的最新的 Tag 和 版本
-# current
-RELEASE_CURRENT_KERNEL_VER=$(get_latest_github_tag "${CUR_GIT_REPO_URL}" "current-${CONFIG_CURRENT_KERNEL_VER}" || true)
-RELEASE_CURRENT_KERNEL_VER2=$(echo "${RELEASE_CURRENT_KERNEL_VER}" | awk -F'-' '{print $2}')
-# edge
-RELEASE_EDGE_KERNEL_VER=$(get_latest_github_tag "${CUR_GIT_REPO_URL}" "edge-${CONFIG_EDGE_KERNEL_VER}" || true)
-RELEASE_EDGE_KERNEL_VER2=$(echo "${RELEASE_EDGE_KERNEL_VER}" | awk -F'-' '{print $2}')
-# bleedingedge
-RELEASE_BLEEDINGEDGE_KERNEL_VER=$(get_latest_github_tag "${CUR_GIT_REPO_URL}" "bleedingedge-${CONFIG_BLEEDINGEDGE_KERNEL_VER}" || true)
-RELEASE_BLEEDINGEDGE_KERNEL_VER2=$(echo "${RELEASE_BLEEDINGEDGE_KERNEL_VER}" | awk -F'-' '{print $2}')
-
-
-# 获取 Kernel.org 官方目前的最新小版本 (如 6.6.15)。未发布的
-# bleedingedge 版本会被跳过；真实网络/服务器错误仍会终止流水线。
-KERNEL_ORG_CURRENT_VER="$(load_kernel_org_version current \
-	"${CONFIG_CURRENT_KERNEL_VER}")" || exit 1
-KERNEL_ORG_EDGE_VER="$(load_kernel_org_version edge \
-	"${CONFIG_EDGE_KERNEL_VER}")" || exit 1
-KERNEL_ORG_BLEEDINGEDGE_VER="$(load_kernel_org_version bleedingedge \
-	"${CONFIG_BLEEDINGEDGE_KERNEL_VER}")" || exit 1
-log_info "KERNEL_ORG_CURRENT_VER=${KERNEL_ORG_CURRENT_VER}"
-log_info "KERNEL_ORG_EDGE_VER=${KERNEL_ORG_EDGE_VER}"
-log_info "KERNEL_ORG_BLEEDINGEDGE_VER=${KERNEL_ORG_BLEEDINGEDGE_VER}"
-
-# 决定是否需要触发更新
-NEED_UPDATE_CURRENT_KERNEL=false
-NEED_UPDATE_EDGE_KERNEL=false
-NEED_UPDATE_BLEEDINGEDGE_KERNEL=false
-
-if [[ "${RELEASE_CURRENT_KERNEL_VER2}" != "${KERNEL_ORG_CURRENT_VER}" && -n "${KERNEL_ORG_CURRENT_VER}" ]]; then
-    NEED_UPDATE_CURRENT_KERNEL=true
-fi
-if [[ "${RELEASE_EDGE_KERNEL_VER2}" != "${KERNEL_ORG_EDGE_VER}" && -n "${KERNEL_ORG_EDGE_VER}" ]]; then
-    NEED_UPDATE_EDGE_KERNEL=true
-fi
-if [[ "${RELEASE_BLEEDINGEDGE_KERNEL_VER2}" != "${KERNEL_ORG_BLEEDINGEDGE_VER}" && -n "${KERNEL_ORG_BLEEDINGEDGE_VER}" ]]; then
-    NEED_UPDATE_BLEEDINGEDGE_KERNEL=true
-fi
+log_info "发布仓库：${CUR_GIT_REPO_URL}"
 
 # ------------------------------------------------------------------------------
-# 执行构建与同步
+# 2. 版本比对逻辑：逐分支解析上游版本、查询已发布 Tag、决定是否构建
 # ------------------------------------------------------------------------------
-if [[ "$NEED_UPDATE_CURRENT_KERNEL" == false && "$NEED_UPDATE_EDGE_KERNEL" == false && "$NEED_UPDATE_BLEEDINGEDGE_KERNEL" == false ]]; then
-    log_info "内核版本已是最新，无需触发构建。退出。"
+begin_step "2. 版本比对"
+branch_list=(current edge bleedingedge)
+declare -A BRANCH_UPSTREAM_VER=()
+declare -A NEED_BUILD=()
+
+for branch in "${branch_list[@]}"; do
+	CONFIG_KERNEL_VER="$(get_kernel_version "${branch}" "${ROCKCHIP64_CONFIG_FILE}" || true)"
+	if [[ -z "${CONFIG_KERNEL_VER}" ]]; then
+		# 上游移除某个分支时降级为跳过，而不是让整条流水线失败。
+		log_warn "${branch}: Armbian 配置中没有该分支的 KERNEL_MAJOR_MINOR，跳过此分支"
+		continue
+	fi
+	log_info "${branch}: Armbian 配置大版本 = ${CONFIG_KERNEL_VER}"
+
+	KERNEL_ORG_VER="$(load_kernel_org_version "${branch}" "${CONFIG_KERNEL_VER}")" || exit 1
+	if [[ -z "${KERNEL_ORG_VER}" ]]; then
+		continue
+	fi
+
+	RELEASED_TAG="$(get_latest_github_tag "${CUR_GIT_REPO_URL}" "${branch}-${CONFIG_KERNEL_VER}" || true)"
+	RELEASED_VER="${RELEASED_TAG#"${branch}-"}"
+
+	if needs_update "${RELEASED_VER}" "${KERNEL_ORG_VER}"; then
+		NEED_BUILD["${branch}"]=yes
+		BRANCH_UPSTREAM_VER["${branch}"]="${KERNEL_ORG_VER}"
+		if [[ -z "${RELEASED_TAG}" ]]; then
+			log_info "${branch}: 尚无已发布版本，上游最新 ${KERNEL_ORG_VER} → 计划构建"
+		else
+			log_info "${branch}: 已发布 ${RELEASED_TAG} < 上游 ${KERNEL_ORG_VER} → 计划构建"
+		fi
+	else
+		log_info "${branch}: 已发布 ${RELEASED_TAG} >= 上游 ${KERNEL_ORG_VER} → 无需构建"
+	fi
+done
+end_step "2. 版本比对"
+
+# ------------------------------------------------------------------------------
+# 执行构建与发布：逐分支"构建 → 反解实际版本 → 上传"，某个分支失败时
+# 已完成的分支产物不会丢失。
+# ------------------------------------------------------------------------------
+planned_branches=()
+for branch in "${branch_list[@]}"; do
+	if [[ "${NEED_BUILD[${branch}]:-}" == yes ]]; then
+		planned_branches+=("${branch}")
+	fi
+done
+
+if ((${#planned_branches[@]} == 0)); then
+    log_info "所有分支内核版本已是最新，无需触发构建。退出。"
     exit 0
 fi
+log_info "计划构建分支: ${planned_branches[*]}"
 
 # 准备 Armbian 构建环境
+begin_step "3. 准备 Armbian 构建环境"
 if [ -d "build" ]; then
     log_info "更新现有 build 目录..."
 	git -C build checkout .
@@ -418,47 +537,21 @@ else
     sync_tree ./overwrite ./build
     sync_tree ./userpatches ./build/userpatches
 fi
+end_step "3. 准备 Armbian 构建环境"
 
-# 执行构建脚本
-cd build || exit 1
-chmod +x ./build_with_diy.sh
+for branch in "${planned_branches[@]}"; do
+	begin_step "4. 构建 ${branch} 分支内核 (目标 ${BRANCH_UPSTREAM_VER[${branch}]})"
+	./build_with_diy.sh kernel BOARD=nanopi-r5s BRANCH="${branch}" RELEASE=trixie
 
-if [[ "$NEED_UPDATE_CURRENT_KERNEL" == true ]]; then
-    log_info "🚀 开始构建 current 分支内核: ${KERNEL_ORG_CURRENT_VER}"
-    ./build_with_diy.sh kernel BOARD=nanopi-r5s BRANCH=current RELEASE=trixie
-fi
+	BUILT_KERNEL_VER="$(resolve_built_version "${branch}")" || exit 1
+	log_info "${branch}: 从构建产物反解实际内核版本 = ${BUILT_KERNEL_VER}"
+	end_step "4. 构建 ${branch} 分支内核"
 
-if [[ "$NEED_UPDATE_EDGE_KERNEL" == true ]]; then
-    log_info "🚀 开始构建 edge 分支内核: ${KERNEL_ORG_EDGE_VER}"
-    ./build_with_diy.sh kernel BOARD=nanopi-r5s BRANCH=edge RELEASE=trixie
-fi
+	begin_step "5. 发布 ${branch}-${BUILT_KERNEL_VER}"
+	upload_to_github_release "${branch}-${BUILT_KERNEL_VER}" "${branch}" \
+		"${BUILT_KERNEL_VER}" "${BRANCH_UPSTREAM_VER[${branch}]}" \
+		"./build/output/debs/*-${branch}-rockchip64_*__${BUILT_KERNEL_VER}-*.deb"
+	end_step "5. 发布 ${branch}-${BUILT_KERNEL_VER}"
+done
 
-if [[ "$NEED_UPDATE_BLEEDINGEDGE_KERNEL" == true ]]; then
-    log_info "🚀 开始构建 bleedingedge 分支内核: ${KERNEL_ORG_BLEEDINGEDGE_VER}"
-    ./build_with_diy.sh kernel BOARD=nanopi-r5s BRANCH=bleedingedge RELEASE=trixie
-fi
-
-# ------------------------------------------------------------------------------
-# 发布产物
-# ------------------------------------------------------------------------------
-cd ..
-
-if [[ "$NEED_UPDATE_CURRENT_KERNEL" == true ]]; then
-    upload_to_github_release "current-${KERNEL_ORG_CURRENT_VER}" current \
-		"${KERNEL_ORG_CURRENT_VER}" \
-		"./build/output/debs/*-current-rockchip64_*__${KERNEL_ORG_CURRENT_VER}-*.deb"
-fi
-
-if [[ "$NEED_UPDATE_EDGE_KERNEL" == true ]]; then
-    upload_to_github_release "edge-${KERNEL_ORG_EDGE_VER}" edge \
-		"${KERNEL_ORG_EDGE_VER}" \
-		"./build/output/debs/*-edge-rockchip64_*__${KERNEL_ORG_EDGE_VER}-*.deb"
-fi
-
-if [[ "$NEED_UPDATE_BLEEDINGEDGE_KERNEL" == true ]]; then
-    upload_to_github_release "bleedingedge-${KERNEL_ORG_BLEEDINGEDGE_VER}" bleedingedge \
-		"${KERNEL_ORG_BLEEDINGEDGE_VER}" \
-		"./build/output/debs/*-bleedingedge-rockchip64_*__${KERNEL_ORG_BLEEDINGEDGE_VER}-*.deb"
-fi
-
-log_info "🎉 所有自动化流程已成功结束。"
+log_info "所有自动化流程已成功结束。"

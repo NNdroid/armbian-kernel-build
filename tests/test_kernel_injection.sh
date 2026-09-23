@@ -169,7 +169,32 @@ assert_array_contains opts_y USB_CONFIGFS_F_MIDI2
 assert_contains "${KERNEL_ROOT}/.config" \
 	'CONFIG_LSM="lockdown,yama,integrity,apparmor,bpf"'
 
-EFFECTIVE_CONFIG="${TEST_ROOT}/effective-ebpf.config"
+# 内核树已定义符号扫描：强制校验依据它把"清单有、本树没有"的符号降级为跳过。
+KCONFIG_SCAN_ROOT="${TEST_ROOT}/kconfig-scan"
+mkdir -p "${KCONFIG_SCAN_ROOT}"
+printf 'config DEBUG_INFO_BTF\n\tbool "btf"\nmenuconfig WIREGUARD\n' > "${KCONFIG_SCAN_ROOT}/Kconfig"
+_kernel_inject_load_defined_symbols "${KCONFIG_SCAN_ROOT}"
+_kernel_inject_symbol_is_defined DEBUG_INFO_BTF || \
+	fail "symbol scanner missed a plain config symbol"
+_kernel_inject_symbol_is_defined WIREGUARD || \
+	fail "symbol scanner missed a menuconfig symbol"
+if _kernel_inject_symbol_is_defined NOT_IN_THIS_TREE; then
+	fail "symbol scanner invented a symbol that no Kconfig defines"
+fi
+
+# 验证器会扫描"内核树"里 Kconfig 实际定义的符号，所以给最终配置准备一棵
+# 合成内核树：Kconfig 覆盖两份清单的全部符号，负向用例才仍然有效。
+VERIFY_TREE="${TEST_ROOT}/verify-tree"
+mkdir -p "${VERIFY_TREE}"
+: > "${VERIFY_TREE}/Kconfig"
+for symbol in "${opts_y[@]}" "${opts_m[@]}"; do
+	printf 'config %s\n\tbool "synthetic"\n' "${symbol}" >> "${VERIFY_TREE}/Kconfig"
+done
+printf 'config HAVE_EBPF_JIT\n\tbool "synthetic"\n' >> "${VERIFY_TREE}/Kconfig"
+printf 'config DEBUG_INFO_NONE\n\tbool "synthetic"\n' >> "${VERIFY_TREE}/Kconfig"
+printf 'config DEBUG_INFO_REDUCED\n\tbool "synthetic"\n' >> "${VERIFY_TREE}/Kconfig"
+
+EFFECTIVE_CONFIG="${VERIFY_TREE}/effective-ebpf.config"
 {
 	for symbol in "${opts_y[@]}"; do
 		printf 'CONFIG_%s=y\n' "${symbol}"
@@ -184,6 +209,39 @@ EFFECTIVE_CONFIG="${TEST_ROOT}/effective-ebpf.config"
 } > "${EFFECTIVE_CONFIG}"
 _kernel_inject_verify_full_ebpf_config "${EFFECTIVE_CONFIG}"
 _kernel_inject_verify_full_network_config "${EFFECTIVE_CONFIG}"
+
+# 清单里"当前内核树并未定义"的符号必须降级为跳过，而不是让构建失败。
+custom_required=(VXLAN A_SYMBOL_NO_KCONFIG_DEFINES)
+_kernel_inject_verify_symbol_list "${EFFECTIVE_CONFIG}" '[ym]' custom_required || \
+	fail "verifier must skip required symbols that the kernel tree does not define"
+if ! printf '%s\n' "${_kernel_inject_skipped_symbols[@]}" | grep -qx A_SYMBOL_NO_KCONFIG_DEFINES; then
+	fail "skipped symbols were not recorded for the release notes"
+fi
+
+# 由 select/def_bool 决定（Kconfig 里没有 prompt）的符号无法被 scripts/config
+# 直接开启：配置里没有记载时必须跳过，一旦有记载就必须按取值严格校验。
+SELECT_ONLY_TREE="${TEST_ROOT}/select-only-tree"
+mkdir -p "${SELECT_ONLY_TREE}"
+printf 'config SELECT_ONLY_SYMBOL\n\ttristate\n' > "${SELECT_ONLY_TREE}/Kconfig"
+printf 'config AUTO_SYMBOL\n\ttristate\n' >> "${SELECT_ONLY_TREE}/Kconfig"
+cp "${EFFECTIVE_CONFIG}" "${SELECT_ONLY_TREE}/.config"
+select_required=(SELECT_ONLY_SYMBOL)
+_kernel_inject_verify_symbol_list "${SELECT_ONLY_TREE}/.config" y select_required || \
+	fail "verifier must skip prompt-less symbols that the config never materialized"
+printf 'CONFIG_AUTO_SYMBOL=m\n' >> "${SELECT_ONLY_TREE}/.config"
+auto_required=(AUTO_SYMBOL)
+if _kernel_inject_verify_symbol_list "${SELECT_ONLY_TREE}/.config" y auto_required; then
+	fail "verifier must still check prompt-less symbols that did materialize"
+fi
+
+# 扫描不到任何 Kconfig 时必须退回严格模式（宁可失败也不能静默放过）。
+NO_KCONFIG_TREE="${TEST_ROOT}/no-kconfig-tree"
+mkdir -p "${NO_KCONFIG_TREE}"
+cp "${EFFECTIVE_CONFIG}" "${NO_KCONFIG_TREE}/.config"
+sed -i 's/^CONFIG_VXLAN=m$/# CONFIG_VXLAN is not set/' "${NO_KCONFIG_TREE}/.config"
+if _kernel_inject_verify_full_network_config "${NO_KCONFIG_TREE}/.config"; then
+	fail "verifier must fall back to strict checking when no Kconfig file is present"
+fi
 
 sed -i 's/^CONFIG_DEBUG_INFO_BTF=y$/# CONFIG_DEBUG_INFO_BTF is not set/' "${EFFECTIVE_CONFIG}"
 if _kernel_inject_verify_full_ebpf_config "${EFFECTIVE_CONFIG}"; then
@@ -215,6 +273,12 @@ printf 'must not upload\n' > \
 		GITHUB_REPOSITORY=owner/kernel-build resolve_repository_url "${PWD}")"
 	[[ "${resolved_url}" == 'https://github.example/owner/kernel-build.git' ]] || \
 		fail "GitHub Actions repository URL fallback is incorrect: ${resolved_url}"
+	needs_update "" "6.18.1" || fail "needs_update must trigger on a first release"
+	if needs_update "" ""; then fail "needs_update must not trigger without an upstream version"; fi
+	if needs_update "6.18.1" "6.18.1"; then fail "needs_update must not trigger on equal versions"; fi
+	if needs_update "6.18.2" "6.18.1"; then fail "needs_update must not trigger when released is newer"; fi
+	needs_update "6.18.1" "6.18.2" || fail "needs_update must trigger when upstream is newer"
+	needs_update "6.18.9" "6.18.10" || fail "needs_update must compare versions numerically"
 	kernel_index_fixture='<a href="linux-7.2.tar.xz">base</a>
 <a href="linux-7.2.6.tar.xz">old</a>
 <a href="linux-7.2.7.tar.xz">latest</a>'
@@ -241,13 +305,23 @@ printf 'must not upload\n' > \
 		done
 	}
 	export GITHUB_SHA=0123456789abcdef0123456789abcdef01234567
-	upload_to_github_release edge-7.2.1 edge 7.2.1 \
+	upload_to_github_release edge-7.2.1 edge 7.2.1 7.2.0 \
 		'./build/output/debs/*-edge-rockchip64_*__7.2.1-*.deb'
+
+	# 版本必须从构建产物反解；日志不得混进捕获的返回值。
+	built_version="$(resolve_built_version edge)"
+	[[ "${built_version}" == '7.2.1' ]] || \
+		fail "resolve_built_version returned '${built_version}' instead of 7.2.1"
+	if resolve_built_version current; then
+		fail "resolve_built_version invented a version for a branch with no artifact"
+	fi
 )
 assert_contains "${RELEASE_TEST_ROOT}/captured-notes.md" '# 动态构建摘要'
 assert_contains "${RELEASE_TEST_ROOT}/captured-notes.md" 'linux-image-edge-rockchip64'
 assert_contains "${RELEASE_TEST_ROOT}/captured-notes.md" \
 	'0123456789abcdef0123456789abcdef01234567'
+assert_contains "${RELEASE_TEST_ROOT}/captured-notes.md" '内核版本（构建产物）：`7.2.1`'
+assert_contains "${RELEASE_TEST_ROOT}/captured-notes.md" 'kernel.org 上游版本：`7.2.0`'
 assert_not_contains "${RELEASE_TEST_ROOT}/captured-gh-args.txt" 'bleedingedge'
 assert_contains "${RELEASE_TEST_ROOT}/captured-gh-args.txt" 'edge-kernel.config'
 
@@ -275,7 +349,7 @@ chmod +x "${WRAPPER_ROOT}/compile.sh" "${WRAPPER_ROOT}/build_with_diy.sh"
 
 # The wrapper verifies the built artifact, not just the worktree. A real .deb
 # is needed when dpkg-deb is available (CI); a plain placeholder elsewhere.
-FAKE_DEB="${WRAPPER_ROOT}/output/debs/linux-modules-6.18.53-fake-rockchip64.deb"
+FAKE_DEB="${WRAPPER_ROOT}/output/debs/linux-image-fake-rockchip64_1.0_arm64__6.18.53-S9a8b-D7c6-P5e4-C3H2.deb"
 mkdir -p "${WRAPPER_ROOT}/output/debs"
 if command -v dpkg-deb >/dev/null 2>&1; then
 	DEB_STAGE="${WRAPPER_ROOT}/deb-stage"
@@ -288,7 +362,7 @@ if command -v dpkg-deb >/dev/null 2>&1; then
 	: > "${DEB_STAGE}/usr/lib/modules/fake/kernel/drivers/net/amneziawg/amneziawg.ko"
 	: > "${DEB_STAGE}/usr/lib/modules/fake/kernel/net/netfilter/nf_deaf/nf_deaf.ko"
 	cat > "${DEB_STAGE}/DEBIAN/control" <<'CONTROL'
-Package: linux-modules-fake
+Package: linux-image-fake
 Version: 6.18.53-0-fake
 Section: kernel
 Priority: optional
@@ -352,7 +426,7 @@ printf 'commit=0000000000000000000000000000000000000000\n' \
 printf 'commit=0000000000000000000000000000000000000000\n' \
 	> "${kernel_root}/net/netfilter/nf_deaf/.source-revision"
 printf 'tcp_brutal amneziawg nf_deaf\n' \
-	> output/debs/linux-modules-6.18.53-stale-rockchip64.deb
+	> output/debs/linux-image-stale-rockchip64_1.0_arm64__6.18.53-S0.deb
 FAKE_COMPILE
 chmod +x "${MISMATCH_ROOT}/compile.sh" "${MISMATCH_ROOT}/build_with_diy.sh"
 if (
@@ -364,6 +438,27 @@ if (
 	./build_with_diy.sh kernel BOARD=fake
 ); then
 	fail "build wrapper accepted a worktree whose TCP-Brutal commit is not the pinned one"
+fi
+
+# A deb produced for another branch (e.g. a stale artifact from a previous
+# build in the same output/debs) must never satisfy this build's BRANCH.
+BRANCH_MISMATCH_ROOT="${TEST_ROOT}/wrapper-branch-mismatch"
+mkdir -p "${BRANCH_MISMATCH_ROOT}/userpatches"
+cp "${REPO_ROOT}/overwrite/build_with_diy.sh" "${BRANCH_MISMATCH_ROOT}/build_with_diy.sh"
+cp "${REPO_ROOT}/userpatches/lib.config" "${BRANCH_MISMATCH_ROOT}/userpatches/lib.config"
+cat > "${BRANCH_MISMATCH_ROOT}/compile.sh" <<'FAKE_COMPILE'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+mkdir -p output/debs
+printf 'tcp_brutal amneziawg nf_deaf\n' \
+	> output/debs/linux-image-current-rockchip64_1.0_arm64__6.18.53-S0.deb
+FAKE_COMPILE
+chmod +x "${BRANCH_MISMATCH_ROOT}/compile.sh" "${BRANCH_MISMATCH_ROOT}/build_with_diy.sh"
+if (
+	cd "${BRANCH_MISMATCH_ROOT}"
+	./build_with_diy.sh kernel BOARD=fake BRANCH=bleedingedge
+); then
+	fail "build wrapper accepted an artifact that belongs to a different branch"
 fi
 
 assert_file "${KERNEL_ROOT}/net/ipv4/tcp_brutal/brutal_cc.c"

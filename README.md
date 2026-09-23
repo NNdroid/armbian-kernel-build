@@ -15,6 +15,8 @@
 - Kconfig/Makefile 使用带标记的幂等块，重复执行不会产生重复条目；
 - 自动清理旧版单文件 TCP-Brutal、旧 `tcp.c` 补丁和旧 nf_deaf 布局；
 - 由 Armbian 统一执行 `scripts/config` 和 `olddefconfig`，不硬编码 CPU 架构；
+- 最终 `.config` 校验前会先扫描内核树 Kconfig 实际定义的符号：清单中随内核版本
+  增删而消失的符号会被跳过（warn 日志 + Release notes 记录），而不是让构建失败；
 - TCP-Brutal、AmneziaWG 和 nf_deaf 默认构建为模块，原生 WireGuard 默认内置。
 
 ## 完整 eBPF / BTF / CO-RE

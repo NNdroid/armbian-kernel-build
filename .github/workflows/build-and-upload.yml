@@ -5,9 +5,12 @@ on:
   schedule:
     - cron: '10 13 * * *'
 
+concurrency:
+  group: build-and-upload
+  cancel-in-progress: false
+
 permissions:
   contents: write
-  actions: write # 如果未来还需要 API 操作留着无妨
 
 jobs:
   build:
