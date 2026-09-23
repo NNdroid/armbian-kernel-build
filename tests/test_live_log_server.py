@@ -94,6 +94,7 @@ def main() -> int:
             status, body, _ = request(f"{base_url}/", authenticated=True)
             assert status == 200, status
             assert b"Armbian Kernel Build" in body
+            assert b"(?:\\[[0-?]*[ -/]*[@-~]|[@-_])" in body
 
             status, body, _ = request(f"{base_url}/api/log?offset=0", authenticated=True)
             assert status == 200, status

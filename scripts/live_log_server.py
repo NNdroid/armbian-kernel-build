@@ -47,7 +47,9 @@ INDEX_HTML = r"""<!doctype html>
     const maxChars = 5 * 1024 * 1024;
     let offset = 0;
     let busy = false;
-    const ansi = /\x1B(?:[@-_]|\[[0-?]*[ -/]*[@-~])/g;
+    // CSI sequences must be matched before the shorter two-byte ESC form.
+    // Otherwise ESC[ is consumed alone and fragments such as "0m" remain.
+    const ansi = /\x1B(?:\[[0-?]*[ -/]*[@-~]|[@-_])/g;
 
     async function poll() {
       if (busy) return;
