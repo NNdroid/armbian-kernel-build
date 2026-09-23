@@ -73,7 +73,7 @@ ENABLE_FULL_NETWORKING=yes
 KERNEL_BTF=yes
 ```
 
-构建模式支持 `y`（直接内建）、`m`（可加载模块）和 `n`（关闭）。默认组合不需要在系统启动后执行 `modprobe brutal`、`modprobe amneziawg` 或 `modprobe nf_deaf`；三项能力随内核启动直接就绪。
+构建模式支持 `y`（直接内建）、`m`（可加载模块）和 `n`（关闭）。默认组合不需要在系统启动后执行 `modprobe brutal`、`modprobe amneziawg` 或 `modprobe nf_deaf`；三项能力随内核启动直接就绪。若把任一受管组件改为 `m`，发布流程会从最终 `linux-image` 包提取实际的 `.ko`（保留 `.gz`、`.xz` 或 `.zst` 压缩格式），作为独立 Release 附件上传，并附带 SHA256 和与具体内核 release/架构绑定的安装说明。
 
 更新上游版本时只设置不可变的 `*_COMMIT` 即可，未显式设置的 `*_REF` 会自动采用同一提交；只有特殊 Git 服务需要 fetch hint 时才同时设置 `*_REF`。不建议把可移动分支当作期望提交。默认以 AmneziaWG 取代原生 WireGuard；如果重新启用原生 WireGuard，不能让二者同时为 `y`，hook 会拒绝该组合以避免静态链接符号冲突。
 
@@ -96,9 +96,10 @@ python3 tests/test_live_log_server.py
 - eBPF/BTF/CO-RE 最终校验状态；
 - MPLS/SRv6、隧道、netfilter、BBR、bridge/BNEP 和 USB Gadget 的最终配置摘要；
 - 与同一份 Armbian 补丁后源码树生成的标准 `arm64 defconfig` 之间的配置差异数量；
-- 每个 `.deb` 的大小和 SHA256，以及仓库提交和 UTC 构建时间。
+- 每个 `.deb` 的大小和 SHA256，以及仓库提交和 UTC 构建时间；
+- 最终模式为 `m` 时，列出对应的独立 `.ko*` 附件、SHA256、ABI 限制以及完整 `depmod` / `modprobe` 使用命令。
 
-Release 还会附带最终 `<branch>-kernel.config` 和完整 `<branch>-config-vs-arm64-defconfig.txt`；如果基线生成失败，还会附带 `arm64-defconfig-build.log` 便于诊断。该比较反映内核配置差异；Armbian 的 Rockchip64、设备树和其他源码补丁属于额外的源码级差异，不会被误写成原版 kernel.org 配置差异。
+Release 还会附带最终 `<branch>-kernel.config` 和完整 `<branch>-config-vs-arm64-defconfig.txt`；如果基线生成失败，还会附带 `arm64-defconfig-build.log` 便于诊断。存在 `m` 模块时，还会上传 `<branch>-<kernel-release>-<arch>-<module>.ko*`、`<branch>-loadable-modules-SHA256SUMS` 和 `<branch>-loadable-modules.md`。单独模块只能用于 Release notes 标明的完全相同内核 release 与架构；更推荐安装完整 `linux-image-*.deb`。该比较反映内核配置差异；Armbian 的 Rockchip64、设备树和其他源码补丁属于额外的源码级差异，不会被误写成原版 kernel.org 配置差异。
 
 ## GitHub Actions 实时构建日志
 

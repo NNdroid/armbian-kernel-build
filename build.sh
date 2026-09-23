@@ -356,7 +356,7 @@ resolve_built_version() {
 
 # ==============================================================================
 # 函数: upload_to_github_release
-# 描述: 使用 GitHub CLI (gh) 创建 Release 并上传构建生成的 .deb 文件。
+# 描述: 使用 GitHub CLI (gh) 创建 Release，并上传 .deb、配置证据及可加载模块附件。
 # 参数:
 #   $1 - tag_name:         发布使用的 Tag 名称 (如: current-6.12.1)
 #   $2 - branch:           Armbian 分支名 (用于定位构建元数据)
@@ -393,7 +393,10 @@ function upload_to_github_release() {
 	local -a metadata_files=()
 	mapfile -d '' -t metadata_files < <(find "${metadata_dir}" -maxdepth 1 -type f \
 		\( -name '*.config' -o -name '*-config-vs-*-defconfig.txt' \
-			-o -name '*-defconfig-build.log' \) -print0 2>/dev/null)
+			-o -name '*-defconfig-build.log' -o -name '*-loadable-modules.md' \
+			-o -name '*-loadable-modules-SHA256SUMS' -o -name '*.ko' \
+			-o -name '*.ko.gz' -o -name '*.ko.xz' -o -name '*.ko.zst' \) \
+		-print0 2>/dev/null)
 
     # 检查数组长度是否为 0
     if [ ${#upload_files[@]} -eq 0 ]; then
@@ -405,12 +408,12 @@ function upload_to_github_release() {
 		return 1
 	fi
 
-	log_info "待上传产物 ${#upload_files[@]} 个，元数据文件 ${#metadata_files[@]} 个："
+	log_info "待上传内核包 ${#upload_files[@]} 个，附加文件 ${#metadata_files[@]} 个："
 	for file in "${upload_files[@]}"; do
 		log_debug "  产物: $(basename "${file}") ($(du -h "${file}" | awk '{print $1}'))"
 	done
 	for file in "${metadata_files[@]}"; do
-		log_debug "  元数据: $(basename "${file}")"
+		log_debug "  附件: $(basename "${file}")"
 	done
 
 	cp -- "${summary_file}" "${notes_file}"

@@ -156,11 +156,145 @@ require_manifest_value() {
 	printf '%s\n' "${value}"
 }
 
+export_loadable_module_assets() {
+	local final_config="$1"
+	local extracted_package_root="$2"
+	local staging="$3"
+	local branch="$4"
+	local kernel_release="$5"
+	local debian_arch="$6"
+	local module_guide="${staging}/${branch}-loadable-modules.md"
+	local module_sums="${staging}/${branch}-loadable-modules-SHA256SUMS"
+	local component_spec
+	local module
+	local config_symbol
+	local _expected_mode
+	local actual_mode
+	local i
+	local display_name
+	local module_path
+	local module_basename
+	local module_suffix
+	local asset_basename
+	local asset_path
+	local asset_sha256
+	local -a matched_modules=()
+	local -a exported_names=()
+	local -a exported_modules=()
+	local -a exported_canonical_names=()
+	local -a exported_display_names=()
+	local -a exported_config_symbols=()
+	local -a exported_sha256=()
+
+	exported_module_count=0
+	exported_module_guide=""
+	[[ -d "${extracted_package_root}" ]] || {
+		echo "[kernel-inject][error] extracted linux-image root is missing: ${extracted_package_root}" >&2
+		return 1
+	}
+
+	for component_spec in "${component_specs[@]}"; do
+		IFS=: read -r module config_symbol _expected_mode <<< "${component_spec}"
+		actual_mode="$(config_value "${final_config}" "${config_symbol}")"
+		[[ "${actual_mode}" == m ]] || continue
+
+		matched_modules=()
+		mapfile -d '' -t matched_modules < <(
+			find "${extracted_package_root}" -type f \
+				\( -name "${module}.ko" -o -name "${module}.ko.gz" \
+					-o -name "${module}.ko.xz" -o -name "${module}.ko.zst" \) \
+				-print0 2>/dev/null
+		)
+		if ((${#matched_modules[@]} != 1)); then
+			_kernel_inject_log err "模块附件导出" \
+				"CONFIG_${config_symbol}=m，但内核包内找到 ${#matched_modules[@]} 份 ${module}.ko*（要求恰好一份）"
+			return 1
+		fi
+
+		case "${module}" in
+			brutal) display_name="TCP-Brutal v2" ;;
+			amneziawg) display_name="AmneziaWG" ;;
+			nf_deaf) display_name="nf_deaf" ;;
+			wireguard) display_name="原生 WireGuard" ;;
+			*) display_name="${module}" ;;
+		esac
+		module_path="${matched_modules[0]}"
+		module_basename="$(basename "${module_path}")"
+		module_suffix="${module_basename#${module}}"
+		asset_basename="${branch}-${kernel_release}-${debian_arch}-${module}${module_suffix}"
+		asset_path="${staging}/${asset_basename}"
+		cp -- "${module_path}" "${asset_path}"
+		asset_sha256="$(sha256sum "${asset_path}" | awk '{print $1}')"
+		printf '%s  %s\n' "${asset_sha256}" "${asset_basename}" >> "${module_sums}"
+
+		exported_names+=("${asset_basename}")
+		exported_modules+=("${module}")
+		exported_canonical_names+=("${module_basename}")
+		exported_display_names+=("${display_name}")
+		exported_config_symbols+=("${config_symbol}")
+		exported_sha256+=("${asset_sha256}")
+		((exported_module_count += 1))
+		_kernel_inject_log info "模块附件导出" \
+			"${display_name}: ${module_basename} -> ${asset_basename}"
+	done
+
+	if ((exported_module_count == 0)); then
+		rm -f -- "${module_sums}"
+		_kernel_inject_log info "模块附件导出" "最终配置没有 =m 的受管组件，无需生成独立 .ko 附件"
+		return 0
+	fi
+
+	{
+		printf '## 可加载模块附件\n\n'
+		printf '下列组件的最终配置为 `m`。Release 同时上传了内核包中的原始 `.ko`'
+		printf '（可能使用 `.gz`、`.xz` 或 `.zst` 压缩）以及校验文件 `%s`。\n\n' \
+			"$(basename "${module_sums}")"
+		printf '> 模块与内核 ABI 严格绑定：仅用于 `uname -r` 恰好为 `%s`、Debian 架构为 `%s` 的系统。不同内核 release、架构或配置不能混用。\n\n' \
+			"${kernel_release}" "${debian_arch}"
+		printf '| 组件 | Kconfig | Release 附件 | 安装后的规范文件名 | SHA256 |\n'
+		printf '|---|---|---|---|---|\n'
+		for ((i = 0; i < exported_module_count; i++)); do
+			printf '| %s | `CONFIG_%s=m` | `%s` | `%s` | `%s` |\n' \
+				"${exported_display_names[i]}" "${exported_config_symbols[i]}" \
+				"${exported_names[i]}" "${exported_canonical_names[i]}" \
+				"${exported_sha256[i]}"
+		done
+		printf '\n### 推荐方式：安装完整内核包\n\n'
+		printf '对应的 `linux-image-*.deb` 已包含这些模块和完整的模块索引；安装该包并重启到目标内核后，只需：\n\n'
+		printf '```bash\n'
+		for module in "${exported_modules[@]}"; do
+			printf 'sudo modprobe %q\n' "${module}"
+		done
+		printf '```\n\n'
+		printf '### 只安装独立模块附件\n\n'
+		printf '先下载上表附件到当前目录，再执行（文件名必须按命令恢复为模块的规范名称）：\n\n'
+		printf '```bash\n'
+		printf 'KERNEL_RELEASE=%q\n' "${kernel_release}"
+		printf 'DEBIAN_ARCH=%q\n' "${debian_arch}"
+		printf 'sha256sum -c %q\n' "$(basename "${module_sums}")"
+		printf 'test "$(uname -r)" = "${KERNEL_RELEASE}"\n'
+		printf 'test "$(dpkg --print-architecture)" = "${DEBIAN_ARCH}"\n'
+		printf 'sudo install -d -m 0755 "/lib/modules/${KERNEL_RELEASE}/extra"\n'
+		for ((i = 0; i < exported_module_count; i++)); do
+			printf 'sudo install -m 0644 %q "/lib/modules/${KERNEL_RELEASE}/extra/%s"\n' \
+				"./${exported_names[i]}" "${exported_canonical_names[i]}"
+		done
+		printf 'sudo depmod -a "${KERNEL_RELEASE}"\n'
+		for module in "${exported_modules[@]}"; do
+			printf 'sudo modprobe %q\n' "${module}"
+		done
+		printf '```\n\n'
+		printf '可用 `modinfo <模块名>` 和 `lsmod` 验证。若启用了 Secure Boot，独立模块还必须由系统信任的密钥签名；出现 `invalid module format` 时通常表示内核 release、架构、vermagic 或签名不匹配，应改装对应的完整 `.deb`。\n'
+	} > "${module_guide}"
+	exported_module_guide="${module_guide}"
+}
+
 generate_release_metadata() {
 	local evidence_dir="$1"
 	local branch="$2"
 	local board="$3"
 	local userspace_release="$4"
+	local extracted_package_root="$5"
 	local metadata_parent="output/release-metadata"
 	local metadata_dir="${metadata_parent}/${branch}"
 	local staging
@@ -209,7 +343,10 @@ generate_release_metadata() {
 	armbian_build_commit="$(require_manifest_value "${manifest_file}" armbian_build_commit)" || return 1
 	kernel_source_commit="$(require_manifest_value "${manifest_file}" kernel_source_commit)" || return 1
 	expected_config_sha256="$(require_manifest_value "${manifest_file}" config_sha256)" || return 1
-	if [[ ! "${kbuild_arch}" =~ ^[A-Za-z0-9._-]+$ || ! "${diff_count}" =~ ^[0-9]+$ ]]; then
+	if [[ ! "${kbuild_arch}" =~ ^[A-Za-z0-9._-]+$ || \
+		! "${debian_arch}" =~ ^[A-Za-z0-9._-]+$ || \
+		! "${kernel_release}" =~ ^[A-Za-z0-9._+-]+$ || \
+		! "${diff_count}" =~ ^[0-9]+$ ]]; then
 		echo "[kernel-inject][error] unsafe values in build evidence manifest" >&2
 		return 1
 	fi
@@ -250,6 +387,12 @@ generate_release_metadata() {
 		return 1
 	fi
 
+	export_loadable_module_assets "${final_config}" "${extracted_package_root}" \
+		"${staging}" "${branch}" "${kernel_release}" "${debian_arch}" || {
+		rm -rf -- "${staging}"
+		return 1
+	}
+
 	{
 		printf '# 内核构建详情\n\n'
 		printf '| 项目 | 最终值 |\n|---|---|\n'
@@ -286,6 +429,12 @@ generate_release_metadata() {
 			"$(config_value "${final_config}" NETFILTER_DEAF)" "${nf_commit:0:12}" "${nf_commit}"
 		printf '| 原生 WireGuard（默认由 AmneziaWG 取代） | `%s` | Linux 内核源码树 |\n' \
 			"$(config_value "${final_config}" WIREGUARD)"
+		printf '\n'
+		if ((exported_module_count > 0)); then
+			cat "${exported_module_guide}"
+		else
+			printf '> 以上受管组件的最终模式均不是 `m`，因此本次 Release 不生成独立 `.ko` 附件；`y` 表示已直接内建进内核。\n'
+		fi
 		printf '\n## 完整网络功能集\n\n'
 		if [[ "${ENABLE_FULL_NETWORKING}" == yes ]]; then
 			printf '最终配置已逐项校验：MPLS 路由/隧道、SRv6（LWT/HMAC/BPF）、VXLAN、Geneve、IPv4/IPv6 GRE、FOU、内建 AmneziaWG（原生 WireGuard 默认关闭）、TPROXY、SYNPROXY、nftables、BBR+FQ、NPTv6、Linux bridge/bridge netfilter、Bluetooth BNEP，以及 ConfigFS/FunctionFS USB Gadget。\n\n'
@@ -578,4 +727,5 @@ if [[ "${ENABLE_FULL_NETWORKING}" == yes ]]; then
 fi
 
 generate_release_metadata "${evidence_dir}" "${requested_branch:-${built_branch}}" \
-	"${requested_board:-unknown}" "${userspace_release:-unknown}"
+	"${requested_board:-unknown}" "${userspace_release:-unknown}" \
+	"${package_extract_root}"

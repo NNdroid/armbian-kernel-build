@@ -348,6 +348,12 @@ printf '# 动态构建摘要\n\neBPF 已校验。\n' > "${RELEASE_METADATA}/buil
 printf 'CONFIG_BPF=y\n' > "${RELEASE_METADATA}/edge-kernel.config"
 printf '+BPF y\n' > "${RELEASE_METADATA}/edge-config-vs-arm64-defconfig.txt"
 printf 'synthetic defconfig diagnostic\n' > "${RELEASE_METADATA}/arm64-defconfig-build.log"
+printf 'synthetic module\n' > \
+	"${RELEASE_METADATA}/edge-7.2.1-rockchip64-arm64-brutal.ko.zst"
+printf 'module installation guide\n' > \
+	"${RELEASE_METADATA}/edge-loadable-modules.md"
+printf 'deadbeef  edge-7.2.1-rockchip64-arm64-brutal.ko.zst\n' > \
+	"${RELEASE_METADATA}/edge-loadable-modules-SHA256SUMS"
 printf 'edge package\n' > \
 	"${RELEASE_DEBS}/linux-image-edge-rockchip64_test__7.2.1-build.deb"
 printf 'must not upload\n' > \
@@ -431,6 +437,11 @@ assert_contains "${RELEASE_TEST_ROOT}/captured-notes.md" 'kernel.org 上游版�
 assert_not_contains "${RELEASE_TEST_ROOT}/captured-gh-args.txt" 'bleedingedge'
 assert_contains "${RELEASE_TEST_ROOT}/captured-gh-args.txt" 'edge-kernel.config'
 assert_contains "${RELEASE_TEST_ROOT}/captured-gh-args.txt" 'arm64-defconfig-build.log'
+assert_contains "${RELEASE_TEST_ROOT}/captured-gh-args.txt" \
+	'edge-7.2.1-rockchip64-arm64-brutal.ko.zst'
+assert_contains "${RELEASE_TEST_ROOT}/captured-gh-args.txt" 'edge-loadable-modules.md'
+assert_contains "${RELEASE_TEST_ROOT}/captured-gh-args.txt" \
+	'edge-loadable-modules-SHA256SUMS'
 
 WRAPPER_ROOT="${TEST_ROOT}/wrapper-root"
 mkdir -p "${WRAPPER_ROOT}/userpatches"
@@ -577,6 +588,57 @@ assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" 
 	'| nf_deaf | `y` |'
 assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
 	'| 原生 WireGuard（默认由 AmneziaWG 取代） | `n` |'
+assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
+	'最终模式均不是 `m`'
+
+# A component whose final packaged config is =m must be exported as the exact
+# .ko payload from that package, with checksums and kernel/architecture-bound
+# installation instructions. Restore the built-in fixture afterwards so the
+# following negative built-in inventory checks retain their original scope.
+MODULAR_BRUTAL_DIR="${DEB_STAGE}/usr/lib/modules/fake/kernel/net/ipv4/tcp_brutal"
+mkdir -p "${MODULAR_BRUTAL_DIR}"
+printf 'synthetic brutal module\n' > "${MODULAR_BRUTAL_DIR}/brutal.ko"
+sed -i 's/^CONFIG_TCP_CONG_BRUTAL=y$/CONFIG_TCP_CONG_BRUTAL=m/' \
+	"${DEB_EVIDENCE}/kernel.config"
+sed -i '\#/brutal\.ko$#d' "${DEB_STAGE}/usr/lib/modules/fake/modules.builtin"
+build_fake_image_deb
+(
+	cd "${WRAPPER_ROOT}"
+	FAKE_IMAGE_DEB_SOURCE="${FAKE_DEB_TEMPLATE}" \
+	TCP_BRUTAL_MODE=m \
+	TCP_BRUTAL_COMMIT="${TCP_BRUTAL_COMMIT}" \
+	AMNEZIAWG_COMMIT="${AMNEZIAWG_COMMIT}" \
+	NF_DEAF_COMMIT="${NF_DEAF_COMMIT}" \
+	./build_with_diy.sh kernel BOARD=fake
+)
+MODULAR_ASSET="${WRAPPER_ROOT}/output/release-metadata/fake/fake-6.18.53-fake-arm64-brutal.ko"
+assert_file "${MODULAR_ASSET}"
+assert_contains "${MODULAR_ASSET}" 'synthetic brutal module'
+assert_file "${WRAPPER_ROOT}/output/release-metadata/fake/fake-loadable-modules.md"
+assert_file "${WRAPPER_ROOT}/output/release-metadata/fake/fake-loadable-modules-SHA256SUMS"
+assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/fake-loadable-modules.md" \
+	'CONFIG_TCP_CONG_BRUTAL=m'
+assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/fake-loadable-modules.md" \
+	'sudo modprobe brutal'
+assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/fake-loadable-modules.md" \
+	'sha256sum -c fake-loadable-modules-SHA256SUMS'
+assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/fake-loadable-modules.md" \
+	'sudo install -m 0644 ./fake-6.18.53-fake-arm64-brutal.ko "/lib/modules/${KERNEL_RELEASE}/extra/brutal.ko"'
+assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
+	'只安装独立模块附件'
+assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/fake-loadable-modules-SHA256SUMS" \
+	'fake-6.18.53-fake-arm64-brutal.ko'
+(
+	cd "${WRAPPER_ROOT}/output/release-metadata/fake"
+	sha256sum -c fake-loadable-modules-SHA256SUMS >/dev/null
+)
+
+sed -i 's/^CONFIG_TCP_CONG_BRUTAL=m$/CONFIG_TCP_CONG_BRUTAL=y/' \
+	"${DEB_EVIDENCE}/kernel.config"
+printf 'kernel/net/ipv4/tcp_brutal/brutal.ko\n' >> \
+	"${DEB_STAGE}/usr/lib/modules/fake/modules.builtin"
+rm -rf -- "${MODULAR_BRUTAL_DIR}"
+build_fake_image_deb
 
 # TCP-Brutal v2's built-in inventory name is brutal.ko. An inventory containing
 # only the old tcp_brutal.ko name must not pass merely because its directory
