@@ -114,6 +114,8 @@ gh secret set NGROK_URL
 
 三个配置项都只从 Repository secrets 读取。启动成功后，workflow notice 和 Job Summary 只提示端点就绪，不回显 Secret 中的 URL；直接访问你保存为 `NGROK_URL` 的地址。
 
-浏览器默认通过同源 `/api/events` SSE 通道接收新增日志，服务端每 15 秒发送心跳，并用日志字节偏移作为 SSE event ID；连接恢复时优先读取 `Last-Event-ID`，因此不会从头重复下载。连续 SSE 连接失败时，页面自动回退到 `/api/log?offset=...` 增量轮询；`/download` 仍可下载当前完整日志。页面、SSE、增量 API 和下载入口均要求 Basic Auth，只有不包含日志的 `/healthz` 无需认证。
+实时页面提供带行号的日志视图、ANSI 控制字符清理、搜索与上/下一个匹配、指定行跳转、自动换行、跟随末尾和完整日志下载。界面支持中文、日文、英文、法文和德文；主题可选择自动、浅色或深色，自动模式跟随浏览器/设备配色。顶部同时显示目标板、架构、发行版、内核分支和版本，以及 Runner 的系统、CPU、负载、内存、磁盘、构建耗时和日志大小。为避免长时间编译耗尽浏览器内存，前端最多保留约 5 MiB 或 50,000 行的可见日志，完整原始日志仍可通过 `/download` 获取。
+
+浏览器默认通过同源 `/api/events` SSE 通道接收新增日志、构建状态和资源指标；服务端每 15 秒发送心跳，并用日志字节偏移作为 SSE event ID。连接恢复时优先读取 `Last-Event-ID`，因此不会从头重复下载。连续 SSE 连接失败时，页面自动回退到 `/api/log?offset=...` 增量轮询，并通过 `/api/metrics` 更新设备与资源信息；`/download` 仍可下载当前完整日志。页面、SSE、指标、增量 API 和下载入口均要求 Basic Auth，只有不包含日志的 `/healthz` 无需认证。
 
 该日志由 `tee` 在 GitHub 掩码处理前写入，因此必须保护好 `NGROK_LOG_AUTH`，并避免让构建脚本主动打印秘密。端点只在 job 运行期间存在，工作流不会把完整日志上传到 LogPasta 或其他 paste 服务；构建结束后的记录仍以 GitHub Actions 自身日志为准。

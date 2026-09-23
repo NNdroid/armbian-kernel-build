@@ -97,6 +97,10 @@ jobs:
           sudo apt-get install -y ngrok
 
           nohup env LIVE_LOG_AUTH="${LIVE_LOG_AUTH}" \
+            LIVE_LOG_BOARD="nanopi-r5s" \
+            LIVE_LOG_ARCH="arm64" \
+            LIVE_LOG_FAMILY="rockchip64" \
+            LIVE_LOG_RELEASE="trixie" \
             python3 scripts/live_log_server.py \
               --directory "${live_dir}" \
               --host 127.0.0.1 \

@@ -8,6 +8,10 @@ import base64
 import hmac
 import json
 import os
+import platform
+import re
+import shutil
+import socket
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -17,133 +21,7 @@ from urllib.parse import parse_qs, urlsplit
 
 MAX_CHUNK_BYTES = 512 * 1024
 TERMINAL_STATES = frozenset({"success", "failure", "disabled"})
-
-INDEX_HTML = r"""<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Armbian Kernel Build Live Log</title>
-  <style>
-    :root { color-scheme: dark; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
-    body { margin: 0; background: #0d1117; color: #c9d1d9; }
-    header { position: sticky; top: 0; padding: 12px 16px; background: #161b22; border-bottom: 1px solid #30363d; }
-    h1 { display: inline; margin: 0 18px 0 0; font-size: 16px; }
-    #state { color: #58a6ff; }
-    a { color: #58a6ff; }
-    pre { margin: 0; padding: 16px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.35; }
-    .muted { color: #8b949e; font-size: 12px; }
-  </style>
-</head>
-<body>
-  <header>
-    <h1>Armbian Kernel Build</h1>
-    <span id="state">connecting</span>
-    <span class="muted"> · browser keeps the latest 5 MiB · </span>
-    <a href="/download">download current log</a>
-  </header>
-  <pre id="log"></pre>
-  <script>
-    const output = document.getElementById('log');
-    const state = document.getElementById('state');
-    const maxChars = 5 * 1024 * 1024;
-    let offset = 0;
-    let busy = false;
-    let eventSource = null;
-    let pollingTimer = null;
-    let sseFailures = 0;
-    // CSI sequences must be matched before the shorter two-byte ESC form.
-    // Otherwise ESC[ is consumed alone and fragments such as "0m" remain.
-    const ansi = /\x1B(?:\[[0-?]*[ -/]*[@-~]|[@-_])/g;
-
-    function appendLog(text) {
-      if (!text) return;
-      output.textContent += text.replace(ansi, '');
-      if (output.textContent.length > maxChars) {
-        output.textContent = output.textContent.slice(-maxChars);
-      }
-      window.scrollTo(0, document.body.scrollHeight);
-    }
-
-    async function poll() {
-      if (busy) return;
-      busy = true;
-      try {
-        const response = await fetch(`/api/log?offset=${offset}`, {cache: 'no-store'});
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const payload = await response.json();
-        if (payload.reset) output.textContent = '';
-        offset = payload.offset;
-        appendLog(payload.text);
-        state.textContent = payload.state || 'running';
-        if (['success', 'failure', 'disabled'].includes(payload.state) && pollingTimer) {
-          clearInterval(pollingTimer);
-          pollingTimer = null;
-        }
-      } catch (error) {
-        state.textContent = `disconnected: ${error.message}`;
-      } finally {
-        busy = false;
-      }
-    }
-
-    function startPolling(reason) {
-      if (pollingTimer) return;
-      if (eventSource) {
-        eventSource.close();
-        eventSource = null;
-      }
-      state.textContent = `polling fallback: ${reason}`;
-      pollingTimer = setInterval(poll, 1500);
-      poll();
-    }
-
-    function startEventStream() {
-      if (!window.EventSource) {
-        startPolling('SSE unsupported');
-        return;
-      }
-
-      eventSource = new EventSource(`/api/events?offset=${offset}`, {withCredentials: true});
-      eventSource.onopen = () => {
-        state.textContent = 'connected (SSE)';
-      };
-      eventSource.addEventListener('log', (event) => {
-        sseFailures = 0;
-        const payload = JSON.parse(event.data);
-        offset = payload.offset;
-        appendLog(payload.text);
-      });
-      eventSource.addEventListener('reset', (event) => {
-        const payload = JSON.parse(event.data);
-        output.textContent = '';
-        offset = payload.offset || 0;
-      });
-      eventSource.addEventListener('state', (event) => {
-        sseFailures = 0;
-        const payload = JSON.parse(event.data);
-        state.textContent = payload.state || 'running';
-      });
-      eventSource.addEventListener('complete', (event) => {
-        const payload = JSON.parse(event.data);
-        state.textContent = payload.state || 'complete';
-        offset = payload.offset ?? offset;
-        eventSource.close();
-        eventSource = null;
-      });
-      eventSource.onerror = () => {
-        sseFailures += 1;
-        state.textContent = 'SSE reconnecting';
-        if (sseFailures >= 3) startPolling('repeated SSE errors');
-      };
-    }
-
-    startEventStream();
-  </script>
-</body>
-</html>
-"""
-
+INDEX_HTML_PATH = Path(__file__).with_name("live_log_page.html")
 
 class LiveLogServer(ThreadingHTTPServer):
     daemon_threads = True
@@ -156,11 +34,27 @@ class LiveLogServer(ThreadingHTTPServer):
         *,
         sse_poll_interval: float,
         sse_heartbeat_interval: float,
+        metrics_interval: float,
     ):
         super().__init__(address, LiveLogHandler)
         self.root = root
         self.sse_poll_interval = sse_poll_interval
         self.sse_heartbeat_interval = sse_heartbeat_interval
+        self.metrics_interval = metrics_interval
+        self.started_at = time.monotonic()
+        self.index_html = INDEX_HTML_PATH.read_bytes()
+        self.target = {
+            "board": os.environ.get("LIVE_LOG_BOARD", "nanopi-r5s"),
+            "arch": os.environ.get("LIVE_LOG_ARCH", "arm64"),
+            "family": os.environ.get("LIVE_LOG_FAMILY", "rockchip64"),
+            "release": os.environ.get("LIVE_LOG_RELEASE", "trixie"),
+        }
+        self.run = {
+            "repository": os.environ.get("GITHUB_REPOSITORY", ""),
+            "run_id": os.environ.get("GITHUB_RUN_ID", ""),
+            "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
+            "runner_name": os.environ.get("RUNNER_NAME", ""),
+        }
         encoded = base64.b64encode(auth_spec.encode("utf-8")).decode("ascii")
         self.expected_authorization = f"Basic {encoded}"
 
@@ -219,6 +113,101 @@ class LiveLogHandler(BaseHTTPRequestHandler):
             return result
         except (OSError, json.JSONDecodeError):
             return {"state": "running"}
+
+    @staticmethod
+    def _memory_usage() -> tuple[int, int]:
+        values: dict[str, int] = {}
+        try:
+            with Path("/proc/meminfo").open(encoding="utf-8") as meminfo:
+                for line in meminfo:
+                    key, separator, value = line.partition(":")
+                    if separator:
+                        values[key] = int(value.strip().split()[0]) * 1024
+        except (FileNotFoundError, OSError, ValueError, IndexError):
+            return 0, 0
+        total = values.get("MemTotal", 0)
+        available = values.get("MemAvailable", values.get("MemFree", 0))
+        return max(total - available, 0), total
+
+    @staticmethod
+    def _cpu_model() -> str:
+        try:
+            for line in Path("/proc/cpuinfo").read_text(encoding="utf-8").splitlines():
+                key, separator, value = line.partition(":")
+                if separator and key.strip() in {"model name", "Hardware", "Model"}:
+                    return value.strip()[:120]
+        except OSError:
+            pass
+        return platform.processor()[:120] or "unknown"
+
+    def _build_details(self) -> dict[str, str]:
+        log_path = self.server.root / "build.log"
+        try:
+            size = log_path.stat().st_size
+            with log_path.open("rb") as log_file:
+                log_file.seek(max(0, size - 256 * 1024))
+                tail = log_file.read().decode("utf-8", errors="replace")
+        except OSError:
+            return {"branch": "", "kernel": ""}
+
+        branches = re.findall(r"\bBRANCH=([A-Za-z0-9._-]+)", tail)
+        kernels = re.findall(r"__([0-9]+\.[0-9]+(?:\.[0-9]+)?)-[A-Za-z0-9]", tail)
+        if not kernels:
+            kernels = re.findall(r"实际构建内核大版本:\s*([0-9]+\.[0-9]+(?:\.[0-9]+)?)", tail)
+        return {
+            "branch": branches[-1] if branches else "",
+            "kernel": kernels[-1] if kernels else "",
+        }
+
+    def _metrics(self) -> dict[str, object]:
+        cpu_count = os.cpu_count() or 1
+        try:
+            load1, load5, load15 = os.getloadavg()
+        except (AttributeError, OSError):
+            load1 = load5 = load15 = 0.0
+        memory_used, memory_total = self._memory_usage()
+        try:
+            disk = shutil.disk_usage(self.server.root)
+            disk_used, disk_total = disk.used, disk.total
+        except OSError:
+            disk_used = disk_total = 0
+        try:
+            log_bytes = (self.server.root / "build.log").stat().st_size
+        except OSError:
+            log_bytes = 0
+        build = self._build_details()
+        return {
+            "generated_at": int(time.time()),
+            "elapsed_seconds": max(int(time.monotonic() - self.server.started_at), 0),
+            "state": self._status()["state"],
+            "target": {**self.server.target, **build},
+            "host": {
+                "hostname": socket.gethostname(),
+                "os": f"{platform.system()} {platform.release()}",
+                "cpu_count": cpu_count,
+                "cpu_model": self._cpu_model(),
+            },
+            "usage": {
+                "load1": round(load1, 2),
+                "load5": round(load5, 2),
+                "load15": round(load15, 2),
+                "load_percent": round(min(max(load1 / cpu_count * 100, 0), 100), 1),
+                "memory_used": memory_used,
+                "memory_total": memory_total,
+                "memory_percent": round(memory_used / memory_total * 100, 1)
+                if memory_total
+                else 0,
+                "disk_used": disk_used,
+                "disk_total": disk_total,
+                "disk_percent": round(disk_used / disk_total * 100, 1) if disk_total else 0,
+            },
+            "run": self.server.run,
+            "log_bytes": log_bytes,
+        }
+
+    def _serve_metrics(self) -> None:
+        payload = json.dumps(self._metrics(), ensure_ascii=False).encode("utf-8")
+        self._write(HTTPStatus.OK, "application/json; charset=utf-8", payload)
 
     def _read_log_chunk(self, offset: int) -> tuple[int, bool, str]:
         log_path = self.server.root / "build.log"
@@ -310,6 +299,7 @@ class LiveLogHandler(BaseHTTPRequestHandler):
 
         last_status: dict[str, object] | None = None
         next_heartbeat = time.monotonic() + self.server.sse_heartbeat_interval
+        next_metrics = 0.0
         try:
             self.wfile.write(b"retry: 1500\n\n")
             self.wfile.flush()
@@ -329,6 +319,11 @@ class LiveLogHandler(BaseHTTPRequestHandler):
                     self._write_sse_event("state", status)
                     last_status = status
 
+                now = time.monotonic()
+                if now >= next_metrics:
+                    self._write_sse_event("metrics", self._metrics())
+                    next_metrics = now + self.server.metrics_interval
+
                 state = str(status["state"])
                 if not text and state in TERMINAL_STATES:
                     self._write_sse_event(
@@ -337,7 +332,6 @@ class LiveLogHandler(BaseHTTPRequestHandler):
                     self.close_connection = True
                     return
 
-                now = time.monotonic()
                 if now >= next_heartbeat:
                     self.wfile.write(b": keepalive\n\n")
                     self.wfile.flush()
@@ -371,11 +365,13 @@ class LiveLogHandler(BaseHTTPRequestHandler):
         if not self._authorized():
             return
         if target.path == "/":
-            self._write(HTTPStatus.OK, "text/html; charset=utf-8", INDEX_HTML.encode("utf-8"))
+            self._write(HTTPStatus.OK, "text/html; charset=utf-8", self.server.index_html)
         elif target.path == "/api/events":
             self._serve_events(target.query)
         elif target.path == "/api/log":
             self._serve_increment(target.query)
+        elif target.path == "/api/metrics":
+            self._serve_metrics()
         elif target.path == "/download":
             self._serve_download()
         else:
@@ -389,6 +385,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", default=8080, type=int)
     parser.add_argument("--sse-poll-interval", default=0.25, type=float)
     parser.add_argument("--sse-heartbeat-interval", default=15.0, type=float)
+    parser.add_argument("--metrics-interval", default=2.0, type=float)
     return parser.parse_args()
 
 
@@ -397,8 +394,12 @@ def main() -> int:
     auth_spec = os.environ.get("LIVE_LOG_AUTH", "")
     if not auth_spec or ":" not in auth_spec:
         raise SystemExit("LIVE_LOG_AUTH must be set to username:password")
-    if args.sse_poll_interval <= 0 or args.sse_heartbeat_interval <= 0:
-        raise SystemExit("SSE intervals must be greater than zero")
+    if (
+        args.sse_poll_interval <= 0
+        or args.sse_heartbeat_interval <= 0
+        or args.metrics_interval <= 0
+    ):
+        raise SystemExit("SSE and metrics intervals must be greater than zero")
     root = args.directory.resolve()
     root.mkdir(parents=True, exist_ok=True)
     server = LiveLogServer(
@@ -407,6 +408,7 @@ def main() -> int:
         auth_spec,
         sse_poll_interval=args.sse_poll_interval,
         sse_heartbeat_interval=args.sse_heartbeat_interval,
+        metrics_interval=args.metrics_interval,
     )
     print(f"[live-log-http] listening on http://{args.host}:{args.port}", flush=True)
     try:

@@ -1,0 +1,879 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto" data-resolved-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Armbian Kernel Build · Live Log</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f3f6fa;
+      --panel: #ffffff;
+      --panel-soft: #f7f9fc;
+      --panel-strong: #eef3f8;
+      --text: #172033;
+      --muted: #667085;
+      --faint: #98a2b3;
+      --border: #dce3ec;
+      --border-strong: #c9d3df;
+      --accent: #2f6feb;
+      --accent-soft: #eaf2ff;
+      --success: #178443;
+      --success-soft: #e8f7ee;
+      --warning: #a15c00;
+      --warning-soft: #fff4dc;
+      --danger: #c4322c;
+      --danger-soft: #ffebea;
+      --log-bg: #fbfcfe;
+      --log-gutter: #f1f4f8;
+      --log-text: #263142;
+      --mark: #ffe28a;
+      --mark-active: #ffb545;
+      --selected: #e8f1ff;
+      --shadow: 0 14px 40px rgba(23, 32, 51, .09);
+      --radius: 14px;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    html[data-resolved-theme="dark"] {
+      color-scheme: dark;
+      --bg: #090d14;
+      --panel: #101722;
+      --panel-soft: #131c29;
+      --panel-strong: #182333;
+      --text: #e6edf6;
+      --muted: #9aa8ba;
+      --faint: #6f7d90;
+      --border: #253246;
+      --border-strong: #34445b;
+      --accent: #70a5ff;
+      --accent-soft: #172a48;
+      --success: #57d68d;
+      --success-soft: #153526;
+      --warning: #ffc35a;
+      --warning-soft: #3a2c13;
+      --danger: #ff8580;
+      --danger-soft: #3c2022;
+      --log-bg: #0b111a;
+      --log-gutter: #0f1722;
+      --log-text: #d6deea;
+      --mark: #6f5719;
+      --mark-active: #a96008;
+      --selected: #162b4d;
+      --shadow: 0 18px 55px rgba(0, 0, 0, .32);
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); }
+    button, input, select { font: inherit; }
+    button, select, input, a { outline: none; }
+    button:focus-visible, select:focus-visible, input:focus-visible, a:focus-visible {
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent);
+      border-color: var(--accent);
+    }
+    button, .button-link {
+      min-height: 34px;
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      background: var(--panel-soft);
+      color: var(--text);
+      padding: 0 11px;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      transition: background .15s ease, border-color .15s ease, transform .15s ease;
+    }
+    button:hover, .button-link:hover { background: var(--panel-strong); border-color: var(--border-strong); }
+    button:active, .button-link:active { transform: translateY(1px); }
+    button[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+    button:disabled { opacity: .45; cursor: default; transform: none; }
+    input, select {
+      min-height: 34px;
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      background: var(--panel-soft);
+      color: var(--text);
+      padding: 0 10px;
+    }
+    input::placeholder { color: var(--faint); }
+
+    .app { width: min(1800px, 100%); margin: 0 auto; padding: 18px; }
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      min-height: 66px;
+      padding: 12px 16px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: color-mix(in srgb, var(--panel) 90%, transparent);
+      backdrop-filter: blur(16px);
+      box-shadow: var(--shadow);
+    }
+    .brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
+    .brand-mark {
+      width: 36px;
+      height: 36px;
+      border-radius: 11px;
+      display: grid;
+      place-items: center;
+      color: white;
+      font-weight: 800;
+      background: linear-gradient(145deg, #4b8cff, #7857e8);
+      box-shadow: 0 8px 20px rgba(75, 140, 255, .28);
+    }
+    .brand-copy { min-width: 0; }
+    .brand-copy h1 { margin: 0; font-size: 16px; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .brand-copy p { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
+    .header-status { display: flex; align-items: center; gap: 9px; margin-left: 8px; }
+    .status-pill, .transport-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 27px;
+      border-radius: 999px;
+      padding: 0 10px;
+      font-size: 12px;
+      font-weight: 650;
+      white-space: nowrap;
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+    .status-pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 4px color-mix(in srgb, currentColor 13%, transparent); }
+    .status-pill[data-state="success"] { color: var(--success); background: var(--success-soft); }
+    .status-pill[data-state="failure"] { color: var(--danger); background: var(--danger-soft); }
+    .status-pill[data-state="disabled"] { color: var(--warning); background: var(--warning-soft); }
+    .status-pill[data-state="reconnecting"] { color: var(--warning); background: var(--warning-soft); }
+    .status-pill[data-state="polling"] { color: var(--warning); background: var(--warning-soft); }
+    .status-pill[data-state="disconnected"] { color: var(--danger); background: var(--danger-soft); }
+    .transport-pill { min-height: 24px; padding: 0 8px; font-weight: 550; color: var(--muted); background: var(--panel-strong); }
+    .header-spacer { flex: 1; }
+    .header-controls { display: flex; align-items: center; gap: 8px; }
+    .select-label { position: relative; }
+    .select-label span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+    .select-label select { min-width: 112px; }
+
+    .overview {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      margin: 16px 0;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+    .overview-card { min-width: 0; padding: 15px 17px; }
+    .overview-card + .overview-card { border-left: 1px solid var(--border); }
+    .card-label { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; font-weight: 750; text-transform: uppercase; letter-spacing: .075em; }
+    .card-label::before { content: ""; width: 8px; height: 8px; border-radius: 3px; background: var(--accent); }
+    .card-main { margin-top: 9px; font-size: 15px; font-weight: 720; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .card-sub { margin-top: 5px; color: var(--muted); font-size: 12px; line-height: 1.45; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .meter-row { display: grid; grid-template-columns: 58px 1fr 45px; align-items: center; gap: 8px; margin-top: 8px; font-size: 11px; color: var(--muted); }
+    .meter { height: 6px; border-radius: 999px; overflow: hidden; background: var(--panel-strong); }
+    .meter > i { display: block; height: 100%; width: 0; border-radius: inherit; background: linear-gradient(90deg, var(--accent), #8a67ee); transition: width .3s ease; }
+    .meter-row output { text-align: right; font-variant-numeric: tabular-nums; }
+
+    .workspace {
+      display: flex;
+      flex-direction: column;
+      min-height: 540px;
+      height: calc(100vh - 238px);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+    .toolbar {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      min-height: 54px;
+      padding: 9px 12px;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel);
+    }
+    .search-tools { display: flex; align-items: center; gap: 6px; flex: 1 1 390px; min-width: 270px; }
+    .search-tools input { flex: 1; min-width: 130px; }
+    .search-count { min-width: 54px; color: var(--muted); text-align: center; font-size: 12px; font-variant-numeric: tabular-nums; }
+    .icon-button { width: 34px; padding: 0; font-size: 16px; }
+    .jump-tools { display: flex; align-items: center; gap: 6px; }
+    .jump-tools input { width: 108px; }
+    .toolbar-actions { display: flex; align-items: center; gap: 6px; }
+    .log-meta {
+      min-height: 38px;
+      padding: 0 13px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel-soft);
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .log-meta strong { color: var(--text); font-weight: 650; }
+    .log-meta .right { margin-left: auto; font-variant-numeric: tabular-nums; }
+    .log-viewport { flex: 1; min-height: 0; overflow: auto; background: var(--log-bg); overscroll-behavior: contain; }
+    .log-body { min-width: 100%; width: max-content; font: 12.5px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+    .log-row { display: grid; grid-template-columns: 70px minmax(0, 1fr); min-height: 24px; }
+    .log-row:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+    .log-row.is-selected { background: var(--selected); }
+    .log-row.is-search-match { background: color-mix(in srgb, var(--mark) 20%, transparent); }
+    .log-row.is-active-match { background: color-mix(in srgb, var(--mark-active) 30%, transparent); }
+    .line-number {
+      min-height: 24px;
+      height: 100%;
+      border: 0;
+      border-right: 1px solid var(--border);
+      border-radius: 0;
+      padding: 2px 11px 2px 6px;
+      justify-content: flex-end;
+      color: var(--faint);
+      background: var(--log-gutter);
+      font: inherit;
+      font-variant-numeric: tabular-nums;
+      user-select: none;
+    }
+    .line-number:hover { background: var(--panel-strong); color: var(--accent); border-color: var(--border); }
+    .log-text { display: block; padding: 2px 13px; color: var(--log-text); white-space: pre; tab-size: 4; overflow-wrap: normal; }
+    .log-body.wrap { width: 100%; }
+    .log-body.wrap .log-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+    mark.search-hit { color: inherit; background: var(--mark); border-radius: 3px; padding: 0 1px; }
+    .is-active-match mark.search-hit { background: var(--mark-active); }
+    .empty-state { padding: 48px 20px; color: var(--muted); text-align: center; width: 100%; }
+    .footer {
+      min-height: 36px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 13px;
+      border-top: 1px solid var(--border);
+      background: var(--panel-soft);
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .footer output { color: var(--text); }
+    .footer .right { margin-left: auto; }
+
+    @media (max-width: 1100px) {
+      .overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .overview-card:nth-child(3) { border-left: 0; border-top: 1px solid var(--border); }
+      .overview-card:nth-child(4) { border-top: 1px solid var(--border); }
+      .workspace { height: calc(100vh - 360px); }
+    }
+    @media (max-width: 720px) {
+      .app { padding: 8px; }
+      .topbar { position: relative; align-items: flex-start; flex-wrap: wrap; border-radius: 11px; }
+      .header-status { margin-left: 0; }
+      .header-spacer { display: none; }
+      .header-controls { width: 100%; }
+      .select-label { flex: 1; }
+      .select-label select { width: 100%; }
+      .overview { grid-template-columns: 1fr; margin: 9px 0; border-radius: 11px; }
+      .overview-card + .overview-card { border-left: 0; border-top: 1px solid var(--border); }
+      .workspace { height: 68vh; min-height: 480px; border-radius: 11px; }
+      .search-tools { min-width: 100%; flex-basis: 100%; }
+      .jump-tools { flex: 1; }
+      .jump-tools input { flex: 1; width: auto; }
+      .toolbar-actions { width: 100%; }
+      .toolbar-actions > * { flex: 1; }
+      .log-row { grid-template-columns: 58px minmax(0, 1fr); }
+      .log-meta .phase { display: none; }
+      .footer .right { display: none; }
+    }
+    @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; transition: none !important; } }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">A</div>
+        <div class="brand-copy">
+          <h1 data-i18n="title">Armbian 内核构建</h1>
+          <p><span data-i18n="subtitle">安全的实时构建控制台</span> · <span id="elapsed">00:00:00</span></p>
+        </div>
+      </div>
+      <div class="header-status">
+        <span id="status" class="status-pill" data-state="connecting">正在连接</span>
+        <span id="transport" class="transport-pill">SSE</span>
+      </div>
+      <div class="header-spacer"></div>
+      <div class="header-controls">
+        <label class="select-label"><span data-i18n="themeLabel">显示主题</span>
+          <select id="theme" data-i18n-aria="themeLabel" aria-label="显示主题">
+            <option value="auto" data-i18n="themeAuto">自动</option>
+            <option value="light" data-i18n="themeLight">浅色</option>
+            <option value="dark" data-i18n="themeDark">深色</option>
+          </select>
+        </label>
+        <label class="select-label"><span data-i18n="languageLabel">界面语言</span>
+          <select id="locale" data-i18n-aria="languageLabel" aria-label="界面语言">
+            <option value="zh-CN">中文</option>
+            <option value="ja">日本語</option>
+            <option value="en">English</option>
+            <option value="fr">Français</option>
+            <option value="de">Deutsch</option>
+          </select>
+        </label>
+      </div>
+    </header>
+
+    <section class="overview" data-i18n-aria="overviewLabel" aria-label="目标与构建资源概览">
+      <article class="overview-card">
+        <div class="card-label" data-i18n="target">目标设备</div>
+        <div id="target-board" class="card-main">nanopi-r5s</div>
+        <div id="target-details" class="card-sub">arm64 · trixie</div>
+      </article>
+      <article class="overview-card">
+        <div class="card-label" data-i18n="build">构建信息</div>
+        <div id="build-main" class="card-main">linux-rockchip64</div>
+        <div id="build-details" class="card-sub">—</div>
+      </article>
+      <article class="overview-card">
+        <div class="card-label" data-i18n="runner">Runner 信息</div>
+        <div id="runner-main" class="card-main">—</div>
+        <div id="runner-details" class="card-sub">—</div>
+        <div class="meter-row"><span data-i18n="load">负载</span><div class="meter"><i id="load-meter"></i></div><output id="load-value">0%</output></div>
+      </article>
+      <article class="overview-card">
+        <div class="card-label" data-i18n="resources">资源占用</div>
+        <div class="meter-row"><span data-i18n="memory">内存</span><div class="meter"><i id="memory-meter"></i></div><output id="memory-value">0%</output></div>
+        <div class="meter-row"><span data-i18n="disk">磁盘</span><div class="meter"><i id="disk-meter"></i></div><output id="disk-value">0%</output></div>
+        <div id="resource-details" class="card-sub">—</div>
+      </article>
+    </section>
+
+    <section class="workspace">
+      <div class="toolbar" data-i18n-aria="logToolsLabel" aria-label="日志搜索与行跳转">
+        <div class="search-tools">
+          <input id="search" type="search" autocomplete="off" data-i18n-placeholder="searchPlaceholder" data-i18n-aria="searchPlaceholder" placeholder="搜索日志" aria-label="搜索日志">
+          <output id="search-count" class="search-count" aria-live="polite">0 / 0</output>
+          <button id="search-prev" class="icon-button" type="button" data-i18n-aria="previousMatch" aria-label="上一个匹配项" disabled>↑</button>
+          <button id="search-next" class="icon-button" type="button" data-i18n-aria="nextMatch" aria-label="下一个匹配项" disabled>↓</button>
+        </div>
+        <form id="jump-form" class="jump-tools">
+          <input id="jump-line" type="number" min="1" inputmode="numeric" data-i18n-placeholder="linePlaceholder" data-i18n-aria="linePlaceholder" placeholder="行号" aria-label="行号">
+          <button type="submit" data-i18n="goLine">跳转</button>
+        </form>
+        <div class="toolbar-actions">
+          <button id="wrap" type="button" aria-pressed="true" data-i18n="wrap">自动换行</button>
+          <button id="follow" type="button" aria-pressed="true" data-i18n="follow">跟随末尾</button>
+          <a class="button-link" href="/download" data-i18n="download">下载日志</a>
+        </div>
+      </div>
+      <div class="log-meta">
+        <strong data-i18n="liveOutput">实时输出</strong>
+        <span class="phase" id="phase">—</span>
+        <span class="right"><span id="line-summary">0</span> <span data-i18n="lines">行</span> · <span id="size-summary">0 B</span></span>
+      </div>
+      <div id="log-viewport" class="log-viewport">
+        <div id="log-body" class="log-body wrap" role="log" aria-live="off" data-i18n-aria="liveOutput" aria-label="实时输出">
+          <div id="empty-state" class="empty-state" data-i18n="waiting">等待构建日志…</div>
+        </div>
+      </div>
+      <footer class="footer">
+        <output id="selection" aria-live="polite" data-i18n="noSelection">尚未选择日志行</output>
+        <span class="right" data-i18n="footer">界面已本地化 · 原始日志不会翻译 · Basic Auth</span>
+      </footer>
+    </section>
+  </main>
+
+  <script>
+    (() => {
+      'use strict';
+
+      const $ = (id) => document.getElementById(id);
+      const elements = {
+        root: document.documentElement,
+        status: $('status'), transport: $('transport'), elapsed: $('elapsed'),
+        theme: $('theme'), locale: $('locale'), targetBoard: $('target-board'),
+        targetDetails: $('target-details'), buildMain: $('build-main'), buildDetails: $('build-details'),
+        runnerMain: $('runner-main'), runnerDetails: $('runner-details'), loadMeter: $('load-meter'),
+        loadValue: $('load-value'), memoryMeter: $('memory-meter'), memoryValue: $('memory-value'),
+        diskMeter: $('disk-meter'), diskValue: $('disk-value'), resourceDetails: $('resource-details'),
+        search: $('search'), searchCount: $('search-count'), searchPrev: $('search-prev'),
+        searchNext: $('search-next'), jumpForm: $('jump-form'), jumpLine: $('jump-line'),
+        wrap: $('wrap'), follow: $('follow'), viewport: $('log-viewport'), body: $('log-body'),
+        empty: $('empty-state'), phase: $('phase'), lineSummary: $('line-summary'),
+        sizeSummary: $('size-summary'), selection: $('selection')
+      };
+
+      const translations = {
+        'zh-CN': {
+          title: 'Armbian 内核构建', subtitle: '安全的实时构建控制台', themeLabel: '显示主题', themeAuto: '自动', themeLight: '浅色', themeDark: '深色', languageLabel: '界面语言',
+          overviewLabel: '目标与构建资源概览', target: '目标设备', build: '构建信息', runner: 'Runner 信息', resources: '资源占用', load: '负载', memory: '内存', disk: '磁盘',
+          logToolsLabel: '日志搜索与行跳转', searchPlaceholder: '搜索日志', previousMatch: '上一个匹配项', nextMatch: '下一个匹配项', linePlaceholder: '行号', goLine: '跳转', wrap: '自动换行', follow: '跟随末尾', download: '下载日志',
+          liveOutput: '实时输出', lines: '行', waiting: '等待构建日志…', noSelection: '尚未选择日志行', footer: '界面已本地化 · 原始日志不会翻译 · Basic Auth',
+          connecting: '正在连接', running: '构建中', success: '构建成功', failure: '构建失败', disabled: '日志已停用', reconnecting: '正在重连', polling: '轮询回退', disconnected: '连接中断',
+          sse: 'SSE 实时', poll: '增量轮询', selectLine: '选择第 {line} 行', selectedLine: '已选择第 {line} 行', searchResult: '匹配 {current} / {total} · 第 {line} 行', noMatches: '没有匹配的日志', lineNotFound: '当前缓存中没有第 {line} 行',
+          branch: '分支', kernel: '内核', attempt: '尝试', unknown: '未知'
+        },
+        ja: {
+          title: 'Armbian カーネルビルド', subtitle: '安全なライブビルドコンソール', themeLabel: '表示テーマ', themeAuto: '自動', themeLight: 'ライト', themeDark: 'ダーク', languageLabel: '表示言語',
+          overviewLabel: 'ターゲットとビルドリソースの概要', target: '対象デバイス', build: 'ビルド情報', runner: 'Runner 情報', resources: 'リソース使用量', load: '負荷', memory: 'メモリ', disk: 'ディスク',
+          logToolsLabel: 'ログ検索と行ジャンプ', searchPlaceholder: 'ログを検索', previousMatch: '前の一致', nextMatch: '次の一致', linePlaceholder: '行番号', goLine: '移動', wrap: '自動改行', follow: '末尾を追跡', download: 'ログをダウンロード',
+          liveOutput: 'ライブ出力', lines: '行', waiting: 'ビルドログを待機中…', noSelection: 'ログ行は未選択です', footer: 'ローカライズ済み UI · 生ログは翻訳しません · Basic Auth',
+          connecting: '接続中', running: 'ビルド中', success: '成功', failure: '失敗', disabled: 'ログ無効', reconnecting: '再接続中', polling: 'ポーリングへ切替', disconnected: '切断',
+          sse: 'SSE ライブ', poll: '差分ポーリング', selectLine: '{line} 行目を選ぶ', selectedLine: '{line} 行目を選択', searchResult: '一致 {current} / {total} · {line} 行目', noMatches: '一致するログはありません', lineNotFound: '現在のバッファに {line} 行目はありません',
+          branch: 'ブランチ', kernel: 'カーネル', attempt: '試行', unknown: '不明'
+        },
+        en: {
+          title: 'Armbian Kernel Build', subtitle: 'Secure live build console', themeLabel: 'Display theme', themeAuto: 'Auto', themeLight: 'Light', themeDark: 'Dark', languageLabel: 'Interface language',
+          overviewLabel: 'Target and build resource overview', target: 'Target device', build: 'Build information', runner: 'Runner information', resources: 'Resource usage', load: 'Load', memory: 'Memory', disk: 'Disk',
+          logToolsLabel: 'Log search and line navigation', searchPlaceholder: 'Search logs', previousMatch: 'Previous match', nextMatch: 'Next match', linePlaceholder: 'Line number', goLine: 'Go', wrap: 'Wrap lines', follow: 'Follow tail', download: 'Download log',
+          liveOutput: 'Live output', lines: 'lines', waiting: 'Waiting for build output…', noSelection: 'No log line selected', footer: 'Localized UI · raw logs stay untranslated · Basic Auth',
+          connecting: 'Connecting', running: 'Building', success: 'Build succeeded', failure: 'Build failed', disabled: 'Log disabled', reconnecting: 'Reconnecting', polling: 'Polling fallback', disconnected: 'Disconnected',
+          sse: 'Live SSE', poll: 'Incremental polling', selectLine: 'Select line {line}', selectedLine: 'Line {line} selected', searchResult: 'Match {current} / {total} · line {line}', noMatches: 'No matching log lines', lineNotFound: 'Line {line} is not in the current buffer',
+          branch: 'Branch', kernel: 'Kernel', attempt: 'Attempt', unknown: 'Unknown'
+        },
+        fr: {
+          title: 'Compilation du noyau Armbian', subtitle: 'Console de compilation sécurisée en direct', themeLabel: 'Thème d’affichage', themeAuto: 'Auto', themeLight: 'Clair', themeDark: 'Sombre', languageLabel: 'Langue de l’interface',
+          overviewLabel: 'Aperçu de la cible et des ressources', target: 'Appareil cible', build: 'Informations de compilation', runner: 'Informations du runner', resources: 'Utilisation des ressources', load: 'Charge', memory: 'Mémoire', disk: 'Disque',
+          logToolsLabel: 'Recherche et navigation par ligne', searchPlaceholder: 'Rechercher dans le journal', previousMatch: 'Résultat précédent', nextMatch: 'Résultat suivant', linePlaceholder: 'Numéro de ligne', goLine: 'Aller', wrap: 'Retour automatique', follow: 'Suivre la fin', download: 'Télécharger le journal',
+          liveOutput: 'Sortie en direct', lines: 'lignes', waiting: 'En attente du journal…', noSelection: 'Aucune ligne sélectionnée', footer: 'Interface localisée · journaux bruts non traduits · Basic Auth',
+          connecting: 'Connexion', running: 'Compilation', success: 'Compilation réussie', failure: 'Échec', disabled: 'Journal désactivé', reconnecting: 'Reconnexion', polling: 'Repli par interrogation', disconnected: 'Déconnecté',
+          sse: 'SSE en direct', poll: 'Interrogation différentielle', selectLine: 'Sélectionner la ligne {line}', selectedLine: 'Ligne {line} sélectionnée', searchResult: 'Résultat {current} / {total} · ligne {line}', noMatches: 'Aucune ligne correspondante', lineNotFound: 'La ligne {line} n’est pas dans le tampon actuel',
+          branch: 'Branche', kernel: 'Noyau', attempt: 'Tentative', unknown: 'Inconnu'
+        },
+        de: {
+          title: 'Armbian-Kernel-Build', subtitle: 'Sichere Live-Build-Konsole', themeLabel: 'Darstellung', themeAuto: 'Automatisch', themeLight: 'Hell', themeDark: 'Dunkel', languageLabel: 'Sprache der Oberfläche',
+          overviewLabel: 'Übersicht über Ziel und Build-Ressourcen', target: 'Zielgerät', build: 'Build-Informationen', runner: 'Runner-Informationen', resources: 'Ressourcennutzung', load: 'Last', memory: 'Speicher', disk: 'Datenträger',
+          logToolsLabel: 'Protokollsuche und Zeilensprung', searchPlaceholder: 'Protokoll durchsuchen', previousMatch: 'Vorheriger Treffer', nextMatch: 'Nächster Treffer', linePlaceholder: 'Zeilennummer', goLine: 'Springen', wrap: 'Zeilenumbruch', follow: 'Ende folgen', download: 'Protokoll laden',
+          liveOutput: 'Live-Ausgabe', lines: 'Zeilen', waiting: 'Warte auf Build-Ausgabe…', noSelection: 'Keine Protokollzeile ausgewählt', footer: 'Lokalisierte Oberfläche · Rohprotokolle bleiben unübersetzt · Basic Auth',
+          connecting: 'Verbinden', running: 'Build läuft', success: 'Build erfolgreich', failure: 'Build fehlgeschlagen', disabled: 'Protokoll deaktiviert', reconnecting: 'Neu verbinden', polling: 'Polling-Fallback', disconnected: 'Getrennt',
+          sse: 'Live-SSE', poll: 'Inkrementelles Polling', selectLine: 'Zeile {line} auswählen', selectedLine: 'Zeile {line} ausgewählt', searchResult: 'Treffer {current} / {total} · Zeile {line}', noMatches: 'Keine passenden Protokollzeilen', lineNotFound: 'Zeile {line} ist nicht im aktuellen Puffer',
+          branch: 'Branch', kernel: 'Kernel', attempt: 'Versuch', unknown: 'Unbekannt'
+        }
+      };
+
+      const ansi = /\x1B(?:\[[0-?]*[ -/]*[@-~]|[@-_])/g;
+      const maxChars = 5 * 1024 * 1024;
+      const maxLines = 50000;
+      const mediaTheme = window.matchMedia('(prefers-color-scheme: dark)');
+      const state = {
+        locale: detectLocale(), theme: loadPreference('theme', 'auto'),
+        wrap: loadPreference('wrap', 'true') !== 'false', follow: loadPreference('follow', 'true') !== 'false',
+        buildState: 'connecting', transport: 'sse', offset: 0, busy: false,
+        eventSource: null, pollingTimer: null, metricsTimer: null, sseFailures: 0,
+        nextLine: 1, rowCount: 0, charCount: 0, pendingRaw: '', pendingRow: null,
+        searchMatches: [], activeMatch: -1, selectedLine: '', metrics: null, searchTimer: null
+      };
+
+      function loadPreference(key, fallback) {
+        try { return localStorage.getItem(`armbian-log-${key}`) || fallback; } catch (_) { return fallback; }
+      }
+      function savePreference(key, value) {
+        try { localStorage.setItem(`armbian-log-${key}`, String(value)); } catch (_) { /* private mode */ }
+      }
+      function detectLocale() {
+        const saved = loadPreference('locale', '');
+        if (translations[saved]) return saved;
+        const language = (navigator.language || 'en').toLowerCase();
+        if (language.startsWith('zh')) return 'zh-CN';
+        if (language.startsWith('ja')) return 'ja';
+        if (language.startsWith('fr')) return 'fr';
+        if (language.startsWith('de')) return 'de';
+        return 'en';
+      }
+      function text(key, variables = {}) {
+        let value = translations[state.locale]?.[key] || translations.en[key] || key;
+        Object.entries(variables).forEach(([name, replacement]) => {
+          value = value.replaceAll(`{${name}}`, String(replacement));
+        });
+        return value;
+      }
+      function formatNumber(value) { return new Intl.NumberFormat(state.locale).format(value); }
+      function formatBytes(bytes) {
+        if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+        const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+        const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+        return `${new Intl.NumberFormat(state.locale, {maximumFractionDigits: index ? 1 : 0}).format(bytes / (1024 ** index))} ${units[index]}`;
+      }
+      function formatDuration(seconds) {
+        const total = Math.max(Number(seconds) || 0, 0);
+        const hours = Math.floor(total / 3600);
+        const minutes = Math.floor((total % 3600) / 60);
+        const secs = Math.floor(total % 60);
+        return [hours, minutes, secs].map((part) => String(part).padStart(2, '0')).join(':');
+      }
+      function percent(value) { return `${Math.max(0, Math.min(Number(value) || 0, 100)).toFixed(0)}%`; }
+
+      function applyTheme() {
+        const resolved = state.theme === 'auto' ? (mediaTheme.matches ? 'dark' : 'light') : state.theme;
+        elements.root.dataset.theme = state.theme;
+        elements.root.dataset.resolvedTheme = resolved;
+        elements.theme.value = state.theme;
+      }
+      function applyLocale() {
+        elements.root.lang = state.locale;
+        elements.locale.value = state.locale;
+        document.querySelectorAll('[data-i18n]').forEach((node) => { node.textContent = text(node.dataset.i18n); });
+        document.querySelectorAll('[data-i18n-aria]').forEach((node) => { node.setAttribute('aria-label', text(node.dataset.i18nAria)); });
+        document.querySelectorAll('[data-i18n-placeholder]').forEach((node) => { node.setAttribute('placeholder', text(node.dataset.i18nPlaceholder)); });
+        document.querySelectorAll('.line-number').forEach((node) => { node.setAttribute('aria-label', text('selectLine', {line: node.textContent})); });
+        updateBuildState(state.buildState);
+        updateTransport(state.transport);
+        updateSelection();
+        updateMetrics(state.metrics);
+        updateSummary();
+      }
+      function updateBuildState(value) {
+        state.buildState = value || 'running';
+        const displayState = ['success', 'failure', 'disabled', 'reconnecting', 'polling', 'disconnected'].includes(state.buildState) ? state.buildState : (state.buildState === 'connecting' ? 'connecting' : 'running');
+        elements.status.dataset.state = displayState;
+        elements.status.textContent = text(displayState);
+        elements.phase.textContent = text(displayState);
+      }
+      function updateTransport(value) {
+        state.transport = value;
+        elements.transport.textContent = text(value === 'poll' ? 'poll' : 'sse');
+      }
+      function setMeter(meter, output, value) {
+        const normalized = Math.max(0, Math.min(Number(value) || 0, 100));
+        meter.style.width = `${normalized}%`;
+        output.textContent = percent(normalized);
+      }
+      function updateMetrics(metrics) {
+        if (!metrics) return;
+        state.metrics = metrics;
+        const target = metrics.target || {};
+        const host = metrics.host || {};
+        const usage = metrics.usage || {};
+        const run = metrics.run || {};
+        elements.elapsed.textContent = formatDuration(metrics.elapsed_seconds);
+        elements.targetBoard.textContent = target.board || text('unknown');
+        elements.targetDetails.textContent = [target.arch, target.release].filter(Boolean).join(' · ') || '—';
+        const family = target.family || '';
+        elements.buildMain.textContent = target.branch ? `linux-${family ? `${family}-` : ''}${target.branch}` : (family ? `linux-${family}` : 'linux');
+        const buildDetails = [];
+        if (target.branch) buildDetails.push(`${text('branch')}: ${target.branch}`);
+        if (target.kernel) buildDetails.push(`${text('kernel')}: ${target.kernel}`);
+        if (run.run_attempt) buildDetails.push(`${text('attempt')}: ${run.run_attempt}`);
+        elements.buildDetails.textContent = buildDetails.join(' · ') || '—';
+        elements.runnerMain.textContent = host.os || text('unknown');
+        elements.runnerDetails.textContent = [host.hostname, host.cpu_count ? `${host.cpu_count} vCPU` : '', host.cpu_model].filter(Boolean).join(' · ') || '—';
+        setMeter(elements.loadMeter, elements.loadValue, usage.load_percent);
+        setMeter(elements.memoryMeter, elements.memoryValue, usage.memory_percent);
+        setMeter(elements.diskMeter, elements.diskValue, usage.disk_percent);
+        elements.resourceDetails.textContent = `${formatBytes(usage.memory_used)} / ${formatBytes(usage.memory_total)} · ${formatBytes(usage.disk_used)} / ${formatBytes(usage.disk_total)}`;
+        if (Number.isFinite(metrics.log_bytes)) elements.sizeSummary.textContent = formatBytes(metrics.log_bytes);
+      }
+
+      function createRow(number, value, pending = false) {
+        const row = document.createElement('div');
+        row.className = 'log-row';
+        row.id = `line-${number}`;
+        row.dataset.line = String(number);
+        row.dataset.text = value;
+        if (pending) row.dataset.pending = 'true';
+        const lineButton = document.createElement('button');
+        lineButton.type = 'button';
+        lineButton.className = 'line-number';
+        lineButton.textContent = String(number);
+        lineButton.tabIndex = -1;
+        lineButton.setAttribute('aria-label', text('selectLine', {line: number}));
+        const content = document.createElement('code');
+        content.className = 'log-text';
+        content.textContent = value;
+        row.append(lineButton, content);
+        return row;
+      }
+      function removePendingRow() {
+        if (state.pendingRow) state.pendingRow.remove();
+        state.pendingRow = null;
+      }
+      function trimBuffer() {
+        while ((state.charCount > maxChars || state.rowCount > maxLines) && state.rowCount > 1) {
+          const first = elements.body.querySelector('.log-row:not([data-pending])');
+          if (!first) break;
+          state.charCount -= (first.dataset.text || '').length + 1;
+          state.rowCount -= 1;
+          first.remove();
+        }
+      }
+      function appendLog(value) {
+        if (!value) return;
+        const wasNearBottom = elements.viewport.scrollHeight - elements.viewport.scrollTop - elements.viewport.clientHeight < 80;
+        removePendingRow();
+        const combined = state.pendingRaw + value;
+        const parts = combined.split('\n');
+        state.pendingRaw = parts.pop() || '';
+        if (state.pendingRaw.length > maxChars) state.pendingRaw = state.pendingRaw.slice(-maxChars);
+        const fragment = document.createDocumentFragment();
+        for (const rawLine of parts) {
+          const cleanLine = rawLine.replace(ansi, '');
+          fragment.appendChild(createRow(state.nextLine, cleanLine));
+          state.charCount += cleanLine.length + 1;
+          state.rowCount += 1;
+          state.nextLine += 1;
+        }
+        if (parts.length && elements.empty?.isConnected) elements.empty.remove();
+        elements.body.appendChild(fragment);
+        if (state.pendingRaw) {
+          state.pendingRow = createRow(state.nextLine, state.pendingRaw.replace(ansi, ''), true);
+          elements.body.appendChild(state.pendingRow);
+          if (elements.empty?.isConnected) elements.empty.remove();
+        }
+        trimBuffer();
+        updateSummary();
+        scheduleSearch();
+        if (state.follow && (wasNearBottom || parts.length)) elements.viewport.scrollTop = elements.viewport.scrollHeight;
+      }
+      function resetLog(nextOffset = 0) {
+        elements.body.replaceChildren();
+        state.offset = nextOffset;
+        state.nextLine = 1;
+        state.rowCount = 0;
+        state.charCount = 0;
+        state.pendingRaw = '';
+        state.pendingRow = null;
+        state.searchMatches = [];
+        state.activeMatch = -1;
+        state.selectedLine = '';
+        const empty = document.createElement('div');
+        empty.id = 'empty-state';
+        empty.className = 'empty-state';
+        empty.dataset.i18n = 'waiting';
+        empty.textContent = text('waiting');
+        elements.empty = empty;
+        elements.body.appendChild(empty);
+        updateSummary();
+        updateSelection();
+      }
+      function updateSummary() {
+        const pending = state.pendingRaw ? 1 : 0;
+        elements.lineSummary.textContent = formatNumber(state.rowCount + pending);
+        if (!state.metrics) elements.sizeSummary.textContent = formatBytes(state.offset);
+      }
+      function selectRow(row, mode = 'selected') {
+        elements.body.querySelectorAll('.is-selected').forEach((node) => node.classList.remove('is-selected'));
+        row.classList.add('is-selected');
+        state.selectedLine = row.dataset.line;
+        state.selectionMode = mode;
+        updateSelection();
+      }
+      function updateSelection() {
+        if (state.selectionMode === 'not-found') {
+          elements.selection.textContent = text('lineNotFound', {line: elements.jumpLine.value});
+        } else if (state.selectionMode === 'no-matches') {
+          elements.selection.textContent = text('noMatches');
+        } else if (state.selectionMode === 'search' && state.searchMatches.length) {
+          elements.selection.textContent = text('searchResult', {current: state.activeMatch + 1, total: state.searchMatches.length, line: state.selectedLine});
+        } else if (state.selectedLine) {
+          elements.selection.textContent = text('selectedLine', {line: state.selectedLine});
+        } else {
+          elements.selection.textContent = text('noSelection');
+        }
+      }
+      function clearHighlights() {
+        elements.body.querySelectorAll('.log-row').forEach((row) => {
+          row.classList.remove('is-search-match', 'is-active-match');
+          const content = row.querySelector('.log-text');
+          if (content) content.textContent = row.dataset.text || '';
+        });
+      }
+      function highlight(content, source, query) {
+        const lower = source.toLocaleLowerCase();
+        const wanted = query.toLocaleLowerCase();
+        let cursor = 0;
+        let index = lower.indexOf(wanted);
+        const fragment = document.createDocumentFragment();
+        while (index >= 0) {
+          fragment.append(document.createTextNode(source.slice(cursor, index)));
+          const mark = document.createElement('mark');
+          mark.className = 'search-hit';
+          mark.textContent = source.slice(index, index + query.length);
+          fragment.append(mark);
+          cursor = index + query.length;
+          index = lower.indexOf(wanted, cursor);
+        }
+        fragment.append(document.createTextNode(source.slice(cursor)));
+        content.replaceChildren(fragment);
+      }
+      function runSearch() {
+        clearHighlights();
+        const query = elements.search.value.trim();
+        state.searchMatches = [];
+        state.activeMatch = -1;
+        if (query) {
+          elements.body.querySelectorAll('.log-row').forEach((row) => {
+            const source = row.dataset.text || '';
+            if (source.toLocaleLowerCase().includes(query.toLocaleLowerCase())) {
+              row.classList.add('is-search-match');
+              highlight(row.querySelector('.log-text'), source, query);
+              state.searchMatches.push(row);
+            }
+          });
+        }
+        activateMatch(state.searchMatches.length ? 0 : -1);
+      }
+      function scheduleSearch() {
+        if (!elements.search.value.trim()) return;
+        clearTimeout(state.searchTimer);
+        state.searchTimer = setTimeout(runSearch, 120);
+      }
+      function activateMatch(index) {
+        elements.body.querySelectorAll('.is-active-match').forEach((row) => row.classList.remove('is-active-match'));
+        if (!state.searchMatches.length) {
+          state.activeMatch = -1;
+          elements.searchCount.textContent = '0 / 0';
+          elements.searchPrev.disabled = true;
+          elements.searchNext.disabled = true;
+          state.selectionMode = elements.search.value.trim() ? 'no-matches' : 'selected';
+          updateSelection();
+          return;
+        }
+        state.activeMatch = (index + state.searchMatches.length) % state.searchMatches.length;
+        const row = state.searchMatches[state.activeMatch];
+        row.classList.add('is-active-match');
+        selectRow(row, 'search');
+        row.scrollIntoView({block: 'center'});
+        elements.searchCount.textContent = `${state.activeMatch + 1} / ${state.searchMatches.length}`;
+        elements.searchPrev.disabled = false;
+        elements.searchNext.disabled = false;
+      }
+
+      async function pollMetrics() {
+        try {
+          const response = await fetch('/api/metrics', {cache: 'no-store'});
+          if (response.ok) updateMetrics(await response.json());
+        } catch (_) { /* log polling owns connection state */ }
+      }
+      async function pollLog() {
+        if (state.busy) return;
+        state.busy = true;
+        try {
+          const response = await fetch(`/api/log?offset=${state.offset}`, {cache: 'no-store'});
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const payload = await response.json();
+          if (payload.reset) resetLog(0);
+          state.offset = payload.offset;
+          appendLog(payload.text);
+          updateBuildState(payload.state || 'running');
+          if (['success', 'failure', 'disabled'].includes(payload.state)) stopPolling();
+        } catch (_) {
+          updateBuildState('disconnected');
+        } finally {
+          state.busy = false;
+        }
+      }
+      function stopPolling() {
+        if (state.pollingTimer) clearInterval(state.pollingTimer);
+        if (state.metricsTimer) clearInterval(state.metricsTimer);
+        state.pollingTimer = state.metricsTimer = null;
+      }
+      function startPolling() {
+        if (state.pollingTimer) return;
+        if (state.eventSource) state.eventSource.close();
+        state.eventSource = null;
+        updateTransport('poll');
+        updateBuildState('polling');
+        state.pollingTimer = setInterval(pollLog, 1500);
+        state.metricsTimer = setInterval(pollMetrics, 3000);
+        pollLog();
+        pollMetrics();
+      }
+      function parseEvent(event, callback) {
+        try { callback(JSON.parse(event.data)); } catch (_) { /* malformed frame is ignored */ }
+      }
+      function startEventStream() {
+        if (!window.EventSource) { startPolling(); return; }
+        updateTransport('sse');
+        state.eventSource = new EventSource(`/api/events?offset=${state.offset}`, {withCredentials: true});
+        state.eventSource.onopen = () => updateBuildState(state.buildState === 'connecting' ? 'running' : state.buildState);
+        state.eventSource.addEventListener('log', (event) => parseEvent(event, (payload) => {
+          state.sseFailures = 0;
+          state.offset = payload.offset;
+          appendLog(payload.text);
+        }));
+        state.eventSource.addEventListener('reset', (event) => parseEvent(event, (payload) => resetLog(payload.offset || 0)));
+        state.eventSource.addEventListener('state', (event) => parseEvent(event, (payload) => {
+          state.sseFailures = 0;
+          updateBuildState(payload.state || 'running');
+        }));
+        state.eventSource.addEventListener('metrics', (event) => parseEvent(event, (payload) => {
+          state.sseFailures = 0;
+          updateMetrics(payload);
+        }));
+        state.eventSource.addEventListener('complete', (event) => parseEvent(event, (payload) => {
+          state.offset = payload.offset ?? state.offset;
+          updateBuildState(payload.state || 'success');
+          state.eventSource.close();
+          state.eventSource = null;
+        }));
+        state.eventSource.onerror = () => {
+          state.sseFailures += 1;
+          updateBuildState('reconnecting');
+          if (state.sseFailures >= 3) startPolling();
+        };
+      }
+
+      elements.theme.addEventListener('change', () => { state.theme = elements.theme.value; savePreference('theme', state.theme); applyTheme(); });
+      elements.locale.addEventListener('change', () => { state.locale = elements.locale.value; savePreference('locale', state.locale); applyLocale(); });
+      mediaTheme.addEventListener('change', () => { if (state.theme === 'auto') applyTheme(); });
+      elements.wrap.addEventListener('click', () => {
+        state.wrap = !state.wrap;
+        elements.wrap.setAttribute('aria-pressed', String(state.wrap));
+        elements.body.classList.toggle('wrap', state.wrap);
+        savePreference('wrap', state.wrap);
+      });
+      elements.follow.addEventListener('click', () => {
+        state.follow = !state.follow;
+        elements.follow.setAttribute('aria-pressed', String(state.follow));
+        savePreference('follow', state.follow);
+        if (state.follow) elements.viewport.scrollTop = elements.viewport.scrollHeight;
+      });
+      elements.viewport.addEventListener('scroll', () => {
+        const nearBottom = elements.viewport.scrollHeight - elements.viewport.scrollTop - elements.viewport.clientHeight < 40;
+        if (!nearBottom && state.follow) {
+          state.follow = false;
+          elements.follow.setAttribute('aria-pressed', 'false');
+          savePreference('follow', false);
+        }
+      }, {passive: true});
+      elements.body.addEventListener('click', (event) => {
+        const button = event.target.closest('.line-number');
+        if (button) selectRow(button.closest('.log-row'));
+      });
+      elements.search.addEventListener('input', () => { clearTimeout(state.searchTimer); state.searchTimer = setTimeout(runSearch, 120); });
+      elements.search.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') { elements.search.value = ''; runSearch(); }
+        if (event.key === 'Enter') { event.preventDefault(); activateMatch(state.activeMatch + (event.shiftKey ? -1 : 1)); }
+      });
+      elements.searchPrev.addEventListener('click', () => activateMatch(state.activeMatch - 1));
+      elements.searchNext.addEventListener('click', () => activateMatch(state.activeMatch + 1));
+      elements.jumpForm.addEventListener('submit', (event) => {
+        event.preventDefault();
+        const wanted = elements.jumpLine.value.trim();
+        const row = wanted ? document.getElementById(`line-${wanted}`) : null;
+        if (row) { selectRow(row); row.scrollIntoView({block: 'center'}); }
+        else if (wanted) { state.selectionMode = 'not-found'; updateSelection(); }
+      });
+      document.addEventListener('keydown', (event) => {
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+          event.preventDefault();
+          elements.search.focus();
+          elements.search.select();
+        }
+      });
+
+      elements.wrap.setAttribute('aria-pressed', String(state.wrap));
+      elements.follow.setAttribute('aria-pressed', String(state.follow));
+      elements.body.classList.toggle('wrap', state.wrap);
+      applyTheme();
+      applyLocale();
+      startEventStream();
+    })();
+  </script>
+</body>
+</html>

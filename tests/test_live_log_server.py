@@ -139,6 +139,10 @@ def main() -> int:
         base_url = f"http://127.0.0.1:{port}"
         environment = os.environ.copy()
         environment["LIVE_LOG_AUTH"] = AUTH_SPEC
+        environment["LIVE_LOG_BOARD"] = "test-board"
+        environment["LIVE_LOG_ARCH"] = "test-arch"
+        environment["LIVE_LOG_FAMILY"] = "test-family"
+        environment["LIVE_LOG_RELEASE"] = "test-release"
         process = subprocess.Popen(
             [
                 sys.executable,
@@ -151,6 +155,8 @@ def main() -> int:
                 "0.02",
                 "--sse-heartbeat-interval",
                 "0.15",
+                "--metrics-interval",
+                "0.05",
             ],
             env=environment,
             stdout=subprocess.PIPE,
@@ -168,7 +174,29 @@ def main() -> int:
             assert status == 200, status
             assert b"Armbian Kernel Build" in body
             assert b"(?:\\[[0-?]*[ -/]*[@-~]|[@-_])" in body
-            assert b"new EventSource(`/api/events?offset=${offset}`" in body
+            assert b"new EventSource(`/api/events?offset=${state.offset}`" in body
+            assert b'id="search"' in body
+            assert b'id="jump-line"' in body
+            assert b'id="theme"' in body
+            assert b'value="ja"' in body
+            assert b'value="fr"' in body
+            assert b'value="de"' in body
+
+            status, _, _ = request(f"{base_url}/api/metrics")
+            assert status == 401, status
+            status, body, _ = request(f"{base_url}/api/metrics", authenticated=True)
+            assert status == 200, status
+            metrics = json.loads(body)
+            assert metrics["target"] == {
+                "board": "test-board",
+                "arch": "test-arch",
+                "family": "test-family",
+                "release": "test-release",
+                "branch": "",
+                "kernel": "",
+            }, metrics
+            assert metrics["host"]["cpu_count"] >= 1, metrics
+            assert metrics["log_bytes"] == len(b"first line\n"), metrics
 
             status, _, _ = request(f"{base_url}/api/events")
             assert status == 401, status
@@ -187,6 +215,10 @@ def main() -> int:
 
                 frame = read_until_event(stream, "state")
                 assert json.loads(str(frame["data"])) == {"state": "running"}, frame
+                frame = read_until_event(stream, "metrics")
+                metrics = json.loads(str(frame["data"]))
+                assert metrics["target"]["board"] == "test-board", frame
+                assert metrics["log_bytes"] == first_offset, frame
                 heartbeat = read_until_heartbeat(stream)
                 assert heartbeat["comments"] == ["keepalive"], heartbeat
 
