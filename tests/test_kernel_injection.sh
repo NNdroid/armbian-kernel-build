@@ -189,14 +189,31 @@ assert_array_contains opts_y TCP_CONG_BBR
 assert_array_contains opts_y NF_CONNTRACK
 assert_array_contains opts_y VLAN_8021Q
 assert_array_contains opts_y BRIDGE
-assert_array_contains opts_y BT_BNEP
+assert_array_contains opts_m BT
+assert_array_contains opts_m BT_RFCOMM
+assert_array_contains opts_m BT_BNEP
+assert_array_contains opts_m BT_HIDP
+assert_array_contains opts_m BT_6LOWPAN
+assert_array_contains opts_m RFKILL
+assert_array_contains opts_m CFG80211
+assert_array_contains opts_m MAC80211
+assert_array_contains opts_m MT76_CORE
+assert_array_contains opts_m MT76_CONNAC_LIB
+assert_array_contains opts_m MT792x_LIB
+assert_array_contains opts_m MT7921_COMMON
+assert_array_contains opts_m MT7921E
+assert_array_contains opts_y PCI
+assert_array_contains opts_y FW_LOADER
+assert_array_contains opts_y WIRELESS
+assert_array_contains opts_y WLAN
+assert_array_contains opts_y WLAN_VENDOR_MEDIATEK
 assert_array_contains opts_y USB_GADGET
 assert_array_contains opts_y USB_CONFIGFS
 assert_array_contains opts_y USB_FUNCTIONFS
 assert_array_contains opts_y USB_CONFIGFS_F_MIDI2
 for builtin_symbol in MPLS_ROUTING VXLAN GENEVE NET_IPGRE IPV6_GRE NET_FOU \
 	NF_TABLES NFT_TPROXY NFT_SYNPROXY IP6_NF_TARGET_NPT TCP_CONG_BBR \
-	BT_BNEP USB_CONFIGFS USB_FUNCTIONFS; do
+	USB_CONFIGFS USB_FUNCTIONFS; do
 	assert_array_not_contains opts_m "${builtin_symbol}"
 done
 assert_contains "${KERNEL_ROOT}/.config" \
@@ -209,8 +226,13 @@ assert_contains "${CURRENT_KERNEL_CONFIG}" 'CONFIG_NETFILTER_DEAF=y'
 assert_contains "${CURRENT_KERNEL_CONFIG}" '# CONFIG_WIREGUARD is not set'
 for builtin_config in MPLS_ROUTING VXLAN GENEVE NET_IPGRE IPV6_GRE NET_FOU \
 	NF_TABLES NFT_TPROXY NFT_SYNPROXY IP6_NF_TARGET_NPT TCP_CONG_BBR BRIDGE \
-	BT_BNEP USB_GADGET USB_CONFIGFS USB_FUNCTIONFS; do
+	USB_GADGET USB_CONFIGFS USB_FUNCTIONFS PCI FW_LOADER WIRELESS WLAN \
+	WLAN_VENDOR_MEDIATEK; do
 	assert_contains "${CURRENT_KERNEL_CONFIG}" "CONFIG_${builtin_config}=y"
+done
+for module_config in 6LOWPAN BT BT_RFCOMM BT_BNEP BT_HIDP BT_6LOWPAN RFKILL \
+	CFG80211 MAC80211 MT76_CORE MT76_CONNAC_LIB MT792x_LIB MT7921_COMMON MT7921E; do
+	assert_contains "${CURRENT_KERNEL_CONFIG}" "CONFIG_${module_config}=m"
 done
 
 # Armbian calls this hook while the compiled source tree and final .config are
@@ -257,12 +279,14 @@ assert_contains "${PACKAGED_EVIDENCE}/source-manifest.env" \
 # 内核树已定义符号扫描：完整功能清单必须在目标内核树中真实存在。
 KCONFIG_SCAN_ROOT="${TEST_ROOT}/kconfig-scan"
 mkdir -p "${KCONFIG_SCAN_ROOT}"
-printf 'config DEBUG_INFO_BTF\n\tbool "btf"\nmenuconfig WIREGUARD\n' > "${KCONFIG_SCAN_ROOT}/Kconfig"
+printf 'config DEBUG_INFO_BTF\n\tbool "btf"\nmenuconfig WIREGUARD\nconfig MT792x_LIB\n\ttristate "mt792x"\n' > "${KCONFIG_SCAN_ROOT}/Kconfig"
 _kernel_inject_load_defined_symbols "${KCONFIG_SCAN_ROOT}"
 _kernel_inject_symbol_is_defined DEBUG_INFO_BTF || \
 	fail "symbol scanner missed a plain config symbol"
 _kernel_inject_symbol_is_defined WIREGUARD || \
 	fail "symbol scanner missed a menuconfig symbol"
+_kernel_inject_symbol_is_defined MT792x_LIB || \
+	fail "symbol scanner missed a Kconfig symbol containing lowercase characters"
 if _kernel_inject_symbol_is_defined NOT_IN_THIS_TREE; then
 	fail "symbol scanner invented a symbol that no Kconfig defines"
 fi
@@ -308,6 +332,15 @@ printf '%s\n' "${KERNEL_INJECT_MISSING_SYMBOLS[@]}" | \
 	grep -q 'CONFIG_VXLAN=y(actual=m)' || \
 	fail "built-in verifier did not report CONFIG_VXLAN=m precisely"
 sed -i 's/^CONFIG_VXLAN=m$/CONFIG_VXLAN=y/' "${EFFECTIVE_CONFIG}"
+
+sed -i 's/^CONFIG_MT7921E=m$/CONFIG_MT7921E=y/' "${EFFECTIVE_CONFIG}"
+if _kernel_inject_verify_full_network_config "${EFFECTIVE_CONFIG}"; then
+	fail "network verifier accepted built-in MT7921E instead of module mode"
+fi
+printf '%s\n' "${KERNEL_INJECT_MISSING_SYMBOLS[@]}" | \
+	grep -q 'CONFIG_MT7921E=m(actual=y)' || \
+	fail "module verifier did not report built-in MT7921E precisely"
+sed -i 's/^CONFIG_MT7921E=y$/CONFIG_MT7921E=m/' "${EFFECTIVE_CONFIG}"
 
 # Strict-y diagnostics must identify the actual module value instead of
 # claiming that an enabled symbol is simply missing.
@@ -537,6 +570,14 @@ kernel/net/ipv4/tcp_brutal/brutal.ko
 kernel/drivers/net/amneziawg/amneziawg.ko
 kernel/net/netfilter/nf_deaf/nf_deaf.ko
 BUILTIN_MODULES
+FAKE_RADIO_MODULE_DIR="${DEB_STAGE}/usr/lib/modules/fake/kernel/radio"
+mkdir -p "${FAKE_RADIO_MODULE_DIR}"
+for radio_module in 6lowpan bluetooth rfcomm bnep hidp bluetooth_6lowpan \
+	rfkill cfg80211 mac80211 mt76 mt76-connac-lib mt792x-lib \
+	mt7921-common mt7921e; do
+	printf 'synthetic %s module\n' "${radio_module}" > \
+		"${FAKE_RADIO_MODULE_DIR}/${radio_module}.ko"
+done
 cp "${EFFECTIVE_CONFIG}" "${DEB_EVIDENCE}/kernel.config"
 awk '/^(config|menuconfig) / { print $2 }' "${VERIFY_TREE}/Kconfig" | sort -u \
 	> "${DEB_EVIDENCE}/defined-symbols.txt"
@@ -619,7 +660,13 @@ assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" 
 assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
 	'| 原生 WireGuard（默认由 AmneziaWG 取代） | `n` |'
 assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
-	'最终模式均不是 `m`'
+	'`MT7921E=m`'
+assert_file \
+	"${WRAPPER_ROOT}/output/release-metadata/fake/fake-6.18.53-fake-arm64-mt7921e.ko"
+assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/fake-loadable-modules.md" \
+	'MediaTek MT7921E PCIe'
+assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/fake-loadable-modules.md" \
+	'linux-firmware'
 
 # A component whose final packaged config is =m must be exported as the exact
 # .ko payload from that package, with checksums and kernel/architecture-bound

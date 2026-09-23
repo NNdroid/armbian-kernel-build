@@ -216,6 +216,16 @@ export_loadable_module_assets() {
 			amneziawg) display_name="AmneziaWG" ;;
 			nf_deaf) display_name="nf_deaf" ;;
 			wireguard) display_name="原生 WireGuard" ;;
+			bluetooth) display_name="Bluetooth core" ;;
+			bluetooth_6lowpan) display_name="Bluetooth 6LoWPAN" ;;
+			rfkill) display_name="RFKill" ;;
+			cfg80211) display_name="cfg80211" ;;
+			mac80211) display_name="mac80211" ;;
+			mt76) display_name="MediaTek mt76 core" ;;
+			mt76-connac-lib) display_name="MediaTek Connac library" ;;
+			mt792x-lib) display_name="MediaTek MT792x library" ;;
+			mt7921-common) display_name="MediaTek MT7921 common" ;;
+			mt7921e) display_name="MediaTek MT7921E PCIe" ;;
 			*) display_name="${module}" ;;
 		esac
 		module_path="${matched_modules[0]}"
@@ -285,6 +295,7 @@ export_loadable_module_assets() {
 		done
 		printf '```\n\n'
 		printf '可用 `modinfo <模块名>` 和 `lsmod` 验证。若启用了 Secure Boot，独立模块还必须由系统信任的密钥签名；出现 `invalid module format` 时通常表示内核 release、架构、vermagic 或签名不匹配，应改装对应的完整 `.deb`。\n'
+		printf '\n> MT7921E 还需要与硬件/驱动匹配的 MediaTek 固件文件（通常由发行版 `linux-firmware` 提供）；`.ko` 附件本身不包含固件。\n'
 	} > "${module_guide}"
 	exported_module_guide="${module_guide}"
 }
@@ -437,7 +448,7 @@ generate_release_metadata() {
 		fi
 		printf '\n## 完整网络功能集\n\n'
 		if [[ "${ENABLE_FULL_NETWORKING}" == yes ]]; then
-			printf '最终配置已逐项校验并强制内建：MPLS 路由/隧道、SRv6（LWT/HMAC/BPF）、VXLAN、Geneve、IPv4/IPv6 GRE、FOU、AmneziaWG（原生 WireGuard 默认关闭）、TPROXY、SYNPROXY、nftables、BBR+FQ、NPTv6、Linux bridge/bridge netfilter、Bluetooth BNEP，以及 ConfigFS/FunctionFS USB Gadget。\n\n'
+			printf '最终配置已逐项校验：MPLS 路由/隧道、SRv6、VXLAN/Geneve/GRE/FOU、AmneziaWG、netfilter/nftables、BBR+FQ、NPTv6、Linux bridge 与 USB Gadget 强制内建；Bluetooth 与 cfg80211/mac80211/MT7921E 驱动链强制为模块。\n\n'
 			printf '| 能力 | 关键最终配置 |\n|---|---|\n'
 			printf '| MPLS / SRv6 | `MPLS_ROUTING=%s`, `IPV6_SEG6_LWTUNNEL=%s` |\n' \
 				"$(config_value "${final_config}" MPLS_ROUTING)" \
@@ -457,6 +468,12 @@ generate_release_metadata() {
 				"$(config_value "${final_config}" TCP_CONG_BBR)" \
 				"$(config_value "${final_config}" BRIDGE)" \
 				"$(config_value "${final_config}" BT_BNEP)"
+			printf '| Bluetooth / Wi-Fi modules | `BT=%s`, `CFG80211=%s`, `MAC80211=%s`, `MT76_CORE=%s`, `MT7921E=%s` |\n' \
+				"$(config_value "${final_config}" BT)" \
+				"$(config_value "${final_config}" CFG80211)" \
+				"$(config_value "${final_config}" MAC80211)" \
+				"$(config_value "${final_config}" MT76_CORE)" \
+				"$(config_value "${final_config}" MT7921E)"
 			printf '| USB Gadget | `USB_GADGET=%s`, `USB_CONFIGFS=%s`, `USB_FUNCTIONFS=%s` |\n' \
 				"$(config_value "${final_config}" USB_GADGET)" \
 				"$(config_value "${final_config}" USB_CONFIGFS)" \
@@ -606,6 +623,24 @@ component_specs=(
 	"nf_deaf:NETFILTER_DEAF:${NF_DEAF_MODE}"
 	"wireguard:WIREGUARD:${WIREGUARD_MODE}"
 )
+if [[ "${ENABLE_FULL_NETWORKING}" == yes ]]; then
+	component_specs+=(
+		"6lowpan:6LOWPAN:m"
+		"bluetooth:BT:m"
+		"rfcomm:BT_RFCOMM:m"
+		"bnep:BT_BNEP:m"
+		"hidp:BT_HIDP:m"
+		"bluetooth_6lowpan:BT_6LOWPAN:m"
+		"rfkill:RFKILL:m"
+		"cfg80211:CFG80211:m"
+		"mac80211:MAC80211:m"
+		"mt76:MT76_CORE:m"
+		"mt76-connac-lib:MT76_CONNAC_LIB:m"
+		"mt792x-lib:MT792x_LIB:m"
+		"mt7921-common:MT7921_COMMON:m"
+		"mt7921e:MT7921E:m"
+	)
+fi
 for component_spec in "${component_specs[@]}"; do
 	IFS=: read -r module config_symbol expected_mode <<< "${component_spec}"
 	module_present=no
@@ -678,6 +713,10 @@ for component_spec in "${component_specs[@]}"; do
 done
 _kernel_inject_log info "构建模式校验" \
 	"brutal=${TCP_BRUTAL_MODE}, amneziawg=${AMNEZIAWG_MODE}, nf_deaf=${NF_DEAF_MODE}, native-wireguard=${WIREGUARD_MODE} 均与内核包一致"
+if [[ "${ENABLE_FULL_NETWORKING}" == yes ]]; then
+	_kernel_inject_log info "构建模式校验" \
+		"Bluetooth core/BNEP 与 cfg80211/mac80211/MT7921E 依赖链均为模块且 .ko 存在"
+fi
 
 manifest_format="$(require_manifest_value "${evidence_manifest}" evidence_format)" || exit 1
 manifest_branch="$(require_manifest_value "${evidence_manifest}" branch)" || exit 1
