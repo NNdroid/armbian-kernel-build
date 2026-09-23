@@ -78,13 +78,14 @@ KERNEL_BTF=yes
 ```bash
 bash -n build.sh overwrite/build_with_diy.sh userpatches/lib.config tests/test_kernel_injection.sh
 bash tests/test_kernel_injection.sh
+python3 tests/test_live_log_server.py
 ```
 
-回归测试会下载固定提交，在模拟内核树中验证 v1 迁移、源码完整性、来源记录、Kconfig/Kbuild 接入和重复执行幂等性。完整编译仍由 GitHub Actions 的 Armbian 构建完成。
+回归测试会下载固定提交，在模拟内核树中验证 v1 迁移、源码完整性、来源记录、Kconfig/Kbuild 接入和重复执行幂等性；同时模拟 Docker 构建结束后源码 worktree 已被清理的场景，确认包装器仍能只依靠新生成的 `linux-image` 包完成校验。完整编译仍由 GitHub Actions 的 Armbian 构建完成。
 
 ## Release notes 与附件
 
-每次成功编译都会从最终内核树动态生成 Release notes，而不是使用固定文案。内容包括：
+每次成功编译都会在 Armbian 封装 `linux-image` 时，把最终配置、Kconfig 符号清单、源码 pin 和 defconfig 差异作为构建证据写入 `.deb`。Docker 清理临时源码树后，包装器从该包生成 Release notes，而不是依赖已消失的 worktree 或使用固定文案。内容包括：
 
 - 内核 release、Armbian 分支、板型、架构、userspace release、Armbian/build 与内核源码基线提交；
 - TCP-Brutal v2、AmneziaWG、nf_deaf 与原生 WireGuard 的最终构建模式和源码提交；
@@ -94,3 +95,21 @@ bash tests/test_kernel_injection.sh
 - 每个 `.deb` 的大小和 SHA256，以及仓库提交和 UTC 构建时间。
 
 Release 还会附带最终 `<branch>-kernel.config` 和完整 `<branch>-config-vs-arm64-defconfig.txt`；如果基线生成失败，还会附带 `arm64-defconfig-build.log` 便于诊断。该比较反映内核配置差异；Armbian 的 Rockchip64、设备树和其他源码补丁属于额外的源码级差异，不会被误写成原版 kernel.org 配置差异。
+
+## GitHub Actions 实时构建日志
+
+工作流可以在构建期间通过 ngrok 提供一个只读实时日志页面。请在仓库设置中配置：
+
+- Secret `NGROK_AUTHTOKEN`：重新生成的 ngrok token；不要把 token 写进仓库；
+- Secret `NGROK_LOG_AUTH`：页面的 HTTP Basic Auth 凭据，格式为 `username:password`，请使用独立的强密码；
+- Secret `NGROK_URL`：预留的完整 ngrok HTTPS 地址，例如你在 ngrok 账户中绑定的静态域名。
+
+可在仓库目录中通过 `gh` 的安全输入提示逐项设置，避免把值留在 shell 历史中：
+
+```bash
+gh secret set NGROK_AUTHTOKEN
+gh secret set NGROK_LOG_AUTH
+gh secret set NGROK_URL
+```
+
+三个配置项都只从 Repository secrets 读取。启动成功后，workflow notice 和 Job Summary 只提示端点就绪，不回显 Secret 中的 URL；直接访问你保存为 `NGROK_URL` 的地址。实时页面、增量日志 API 和下载入口均要求 Basic Auth；只有不包含日志的 `/healthz` 无需认证。该日志由 `tee` 在 GitHub 掩码处理前写入，因此必须保护好 `NGROK_LOG_AUTH`，并避免让构建脚本主动打印秘密。端点只在 job 运行期间存在，工作流不会把完整日志上传到 LogPasta 或其他 paste 服务；构建结束后的记录仍以 GitHub Actions 自身日志为准。

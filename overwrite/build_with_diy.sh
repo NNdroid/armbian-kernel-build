@@ -52,10 +52,12 @@ source userpatches/lib.config
 _kernel_inject_skipped_symbols=()
 artifact_marker=""
 module_manifest=""
+package_extract_root=""
 
 cleanup_wrapper() {
 	[[ -z "${artifact_marker:-}" ]] || rm -f -- "${artifact_marker}"
 	[[ -z "${module_manifest:-}" ]] || rm -f -- "${module_manifest}"
+	[[ -z "${package_extract_root:-}" ]] || rm -rf -- "${package_extract_root}"
 	if declare -F _kernel_inject_cleanup_symbol_cache >/dev/null 2>&1; then
 		_kernel_inject_cleanup_symbol_cache
 	fi
@@ -88,31 +90,56 @@ config_value() {
 	fi
 }
 
-source_commit() {
-	local revision_file="$1"
-	local commit
+manifest_value() {
+	local manifest_file="$1"
+	local wanted_key="$2"
 
-	commit="$(sed -n 's/^commit=//p' "${revision_file}" 2>/dev/null || true)"
-	printf '%s\n' "${commit:-unknown}"
+	awk -F= -v wanted_key="${wanted_key}" '
+		$1 == wanted_key {
+			sub(/^[^=]*=/, "")
+			print
+			found = 1
+			exit
+		}
+		END { if (!found) exit 1 }
+	' "${manifest_file}"
+}
+
+require_manifest_value() {
+	local manifest_file="$1"
+	local wanted_key="$2"
+	local value
+
+	value="$(manifest_value "${manifest_file}" "${wanted_key}" 2>/dev/null || true)"
+	if [[ -z "${value}" ]]; then
+		_kernel_inject_log err "构建证据损坏" \
+			"$(basename "${manifest_file}") 缺少 ${wanted_key}"
+		return 1
+	fi
+	printf '%s\n' "${value}"
 }
 
 generate_release_metadata() {
-	local kernel_root="$1"
+	local evidence_dir="$1"
 	local branch="$2"
 	local board="$3"
 	local userspace_release="$4"
 	local metadata_parent="output/release-metadata"
 	local metadata_dir="${metadata_parent}/${branch}"
 	local staging
-	local baseline_dir
-	local final_config="${kernel_root}/.config"
+	local manifest_file="${evidence_dir}/source-manifest.env"
+	local final_config="${evidence_dir}/kernel.config"
 	local config_asset
 	local diff_asset
 	local summary_file
 	local kernel_release
 	local config_sha256
-	local diff_count=0
-	local baseline_status="unavailable"
+	local expected_config_sha256
+	local diff_count
+	local baseline_status
+	local kbuild_arch
+	local debian_arch
+	local linuxfamily
 	local tcp_commit
 	local awg_commit
 	local nf_commit
@@ -128,47 +155,54 @@ generate_release_metadata() {
 		echo "[kernel-inject][error] final kernel config is missing: ${final_config}" >&2
 		return 1
 	}
+	[[ -s "${manifest_file}" ]] || {
+		echo "[kernel-inject][error] build evidence manifest is missing: ${manifest_file}" >&2
+		return 1
+	}
+
+	kbuild_arch="$(require_manifest_value "${manifest_file}" kbuild_arch)" || return 1
+	debian_arch="$(require_manifest_value "${manifest_file}" debian_arch)" || return 1
+	linuxfamily="$(require_manifest_value "${manifest_file}" linuxfamily)" || return 1
+	kernel_release="$(require_manifest_value "${manifest_file}" kernel_release)" || return 1
+	baseline_status="$(require_manifest_value "${manifest_file}" baseline_status)" || return 1
+	diff_count="$(require_manifest_value "${manifest_file}" diff_count)" || return 1
+	tcp_commit="$(require_manifest_value "${manifest_file}" tcp_brutal_commit)" || return 1
+	awg_commit="$(require_manifest_value "${manifest_file}" amneziawg_commit)" || return 1
+	nf_commit="$(require_manifest_value "${manifest_file}" nf_deaf_commit)" || return 1
+	armbian_build_commit="$(require_manifest_value "${manifest_file}" armbian_build_commit)" || return 1
+	kernel_source_commit="$(require_manifest_value "${manifest_file}" kernel_source_commit)" || return 1
+	expected_config_sha256="$(require_manifest_value "${manifest_file}" config_sha256)" || return 1
+	if [[ ! "${kbuild_arch}" =~ ^[A-Za-z0-9._-]+$ || ! "${diff_count}" =~ ^[0-9]+$ ]]; then
+		echo "[kernel-inject][error] unsafe values in build evidence manifest" >&2
+		return 1
+	fi
 
 	mkdir -p "${metadata_parent}"
 	staging="$(mktemp -d "${metadata_parent}/.${branch}.XXXXXX")"
 	config_asset="${staging}/${branch}-kernel.config"
-	diff_asset="${staging}/${branch}-config-vs-arm64-defconfig.txt"
+	diff_asset="${staging}/${branch}-config-vs-${kbuild_arch}-defconfig.txt"
 	summary_file="${staging}/build-summary.md"
 	cp -- "${final_config}" "${config_asset}"
 	config_sha256="$(sha256sum "${config_asset}" | awk '{print $1}')"
-	_kernel_inject_log debug "Release 元数据" "最终配置 SHA256=${config_sha256}"
-
-	kernel_release="$(make -s -C "${kernel_root}" ARCH=arm64 kernelrelease 2>/dev/null || true)"
-	kernel_release="${kernel_release:-$(basename "${kernel_root}")}"
-	_kernel_inject_log debug "Release 元数据" "内核 release=${kernel_release}"
-	baseline_dir="$(mktemp -d "${TMPDIR:-/tmp}/arm64-defconfig.XXXXXX")"
-	if [[ -f "${kernel_root}/Makefile" ]] && {
-		make -s -C "${kernel_root}" O="${baseline_dir}" ARCH=arm64 defconfig \
-			> "${staging}/arm64-defconfig-build.log" 2>&1 ||
-		KCONFIG_CONFIG="${baseline_dir}/.config" \
-			make -s -C "${kernel_root}" ARCH=arm64 defconfig \
-				>> "${staging}/arm64-defconfig-build.log" 2>&1
-	}; then
-		if [[ -x "${kernel_root}/scripts/diffconfig" ]] && \
-			"${kernel_root}/scripts/diffconfig" "${baseline_dir}/.config" "${final_config}" \
-				> "${diff_asset}"; then
-			baseline_status="generated"
-			diff_count="$(awk 'NF { count++ } END { print count + 0 }' "${diff_asset}")"
-		else
-			printf 'Unable to run scripts/diffconfig against arm64 defconfig.\n' > "${diff_asset}"
-		fi
-	else
-		printf 'Unable to generate an arm64 defconfig baseline; see arm64-defconfig-build.log.\n' \
-			> "${diff_asset}"
+	if [[ "${config_sha256}" != "${expected_config_sha256}" ]]; then
+		echo "[kernel-inject][error] final config checksum does not match packaged build evidence" >&2
+		rm -rf -- "${staging}"
+		return 1
 	fi
-	_kernel_inject_log info "Release 元数据" "arm64 defconfig 对照: ${baseline_status}, 配置差异 ${diff_count} 项"
-	rm -rf -- "${baseline_dir}"
+	_kernel_inject_log debug "Release 元数据" "最终配置 SHA256=${config_sha256}"
+	_kernel_inject_log debug "Release 元数据" "内核 release=${kernel_release}"
+	if [[ ! -f "${evidence_dir}/config-vs-${kbuild_arch}-defconfig.txt" || \
+		! -f "${evidence_dir}/${kbuild_arch}-defconfig-build.log" ]]; then
+		echo "[kernel-inject][error] packaged defconfig diagnostics are incomplete" >&2
+		rm -rf -- "${staging}"
+		return 1
+	fi
+	cp -- "${evidence_dir}/config-vs-${kbuild_arch}-defconfig.txt" "${diff_asset}"
+	cp -- "${evidence_dir}/${kbuild_arch}-defconfig-build.log" \
+		"${staging}/${kbuild_arch}-defconfig-build.log"
+	_kernel_inject_log info "Release 元数据" \
+		"${kbuild_arch} defconfig 对照: ${baseline_status}, 配置差异 ${diff_count} 项"
 
-	tcp_commit="$(source_commit "${kernel_root}/net/ipv4/tcp_brutal/.source-revision")"
-	awg_commit="$(source_commit "${kernel_root}/drivers/net/amneziawg/.source-revision")"
-	nf_commit="$(source_commit "${kernel_root}/net/netfilter/nf_deaf/.source-revision")"
-	armbian_build_commit="$(git rev-parse HEAD 2>/dev/null || printf 'unknown')"
-	kernel_source_commit="$(git -C "${kernel_root}" rev-parse HEAD 2>/dev/null || printf 'unknown')"
 	_kernel_inject_log debug "Release 元数据" \
 		"源码提交: tcp-brutal=${tcp_commit:0:12}, amneziawg=${awg_commit:0:12}, nf_deaf=${nf_commit:0:12}"
 	if [[ ! "${tcp_commit}" =~ ^[0-9a-f]{40}$ || \
@@ -184,7 +218,8 @@ generate_release_metadata() {
 		printf '| 项目 | 最终值 |\n|---|---|\n'
 		printf '| 内核 release | `%s` |\n' "${kernel_release}"
 		printf '| Armbian 分支 | `%s` |\n' "${branch}"
-		printf '| 板型 / 架构 | `%s` / `arm64` |\n' "${board}"
+		printf '| 板型 / family / Debian 架构 / Kbuild 架构 | `%s` / `%s` / `%s` / `%s` |\n' \
+			"${board}" "${linuxfamily}" "${debian_arch}" "${kbuild_arch}"
 		printf '| Userspace release | `%s` |\n' "${userspace_release}"
 		printf '| Armbian/build 基线提交 | `%s` |\n' "${armbian_build_commit}"
 		printf '| 内核源码基线提交 | `%s` |\n' "${kernel_source_commit}"
@@ -194,9 +229,10 @@ generate_release_metadata() {
 		printf '\n## 与标准内核配置的差异\n\n'
 		printf '附件 `%s` 是经过 `olddefconfig` 解析后的最终有效配置。' "$(basename "${config_asset}")"
 		if [[ "${baseline_status}" == generated ]]; then
-			printf '与同一份 Armbian 补丁后源码树生成的 `arm64 defconfig` 相比，共有 **%s 项配置差异**。\n\n' "${diff_count}"
+			printf '与同一份 Armbian 补丁后源码树生成的 `%s defconfig` 相比，共有 **%s 项配置差异**。\n\n' \
+				"${kbuild_arch}" "${diff_count}"
 		else
-			printf '本次未能生成 `arm64 defconfig` 对照，但最终配置仍已附带。\n\n'
+			printf '本次未能生成 `%s defconfig` 对照，但最终配置仍已附带。\n\n' "${kbuild_arch}"
 		fi
 		if ((${#_kernel_inject_skipped_symbols[@]} > 0)); then
 			printf '> 有 **%s 个旧版负向兼容符号在当前内核树未定义**，无需检查其关闭状态: %s\n\n' \
@@ -342,84 +378,100 @@ if [[ -z "${kernel_major_minor}" ]]; then
 fi
 _kernel_inject_log info "产物定位" "实际构建内核大版本: ${kernel_major_minor}"
 
-# Armbian names each worktree ${KERNEL_MAJOR_MINOR}__${LINUXFAMILY}__${ARCH},
-# so the artifact's version selects the tree it was built from.
-_kernel_inject_log debug "worktree 扫描" "在 cache/sources/linux-kernel-worktree 中查找内核 ${kernel_major_minor} 的构建树"
-revision_files="$(find cache/sources/linux-kernel-worktree -maxdepth 5 -type f \
-	-path "*/${kernel_major_minor}__*/net/ipv4/tcp_brutal/.source-revision" \
-	2>/dev/null || true)"
-if [[ -z "${revision_files}" ]]; then
-	_kernel_inject_log err "worktree 缺失" "no kernel ${kernel_major_minor} worktree under cache/sources/linux-kernel-worktree"
-	_kernel_inject_log debug "worktree 缺失" "existing worktrees:"
-	find cache/sources/linux-kernel-worktree -maxdepth 1 -mindepth 1 -print 2>/dev/null >&2 || true
-	exit 1
-fi
-while IFS= read -r revision_file; do
-	_kernel_inject_log debug "worktree 扫描" \
-		"候选: ${revision_file} -> commit=$(sed -n 's/^commit=//p' "${revision_file}" 2>/dev/null || echo '<unreadable>')"
-done <<< "${revision_files}"
-
-kernel_root=""
-while IFS= read -r revision_file; do
-	if [[ "$(sed -n 's/^commit=//p' "${revision_file}" 2>/dev/null)" == "${TCP_BRUTAL_COMMIT}" ]]; then
-		kernel_root="$(cd "$(dirname "${revision_file}")/../../.." && pwd -P)"
-		break
-	fi
-done <<< "${revision_files}"
-
-if [[ -z "${kernel_root}" ]]; then
-	_kernel_inject_log err "pin 校验失败" "kernel ${kernel_major_minor} worktree does not match pinned TCP-Brutal commit ${TCP_BRUTAL_COMMIT:0:12}"
-	_kernel_inject_log err "pin 校验失败" "the custom_kernel_config hook did not run in this build"
-	exit 1
-fi
-_kernel_inject_log info "worktree 定位" "构建树: ${kernel_root}"
-
-# A TCP-Brutal pin match does not prove the other two modules were injected
-# into the same tree at their pinned revisions.
-for revision_path in \
-	"drivers/net/amneziawg:${AMNEZIAWG_COMMIT}" \
-	"net/netfilter/nf_deaf:${NF_DEAF_COMMIT}"; do
-	relative_path="${revision_path%%:*}"
-	expected_commit="${revision_path##*:}"
-	actual_commit="$(sed -n 's/^commit=//p' "${kernel_root}/${relative_path}/.source-revision" 2>/dev/null || true)"
-	if [[ "${actual_commit}" != "${expected_commit}" ]]; then
-		_kernel_inject_log err "pin 校验失败" "${relative_path}: expected ${expected_commit:0:12}, got ${actual_commit:-missing}"
-		exit 1
-	fi
-	_kernel_inject_log debug "pin 校验" "${relative_path} = ${actual_commit:0:12} 通过"
-done
-
 # All three modules default to =m, so they ship in the kernel image package.
-# The worktree can outlive a build that never compiled them; the artifact
-# cannot lie.
-if command -v dpkg-deb >/dev/null 2>&1; then
-	module_manifest="$(mktemp "${TMPDIR:-/tmp}/kernel-image-modules.XXXXXX")"
-	if ! dpkg-deb -c "${image_deb}" > "${module_manifest}" 2>/dev/null; then
-		_kernel_inject_log err "模块产物校验" "无法读取 $(basename "${image_deb}") 的文件清单"
+# The package is the durable build result; Docker may discard its source
+# worktree before this wrapper regains control.
+if ! command -v dpkg-deb >/dev/null 2>&1; then
+	_kernel_inject_log err "产物校验失败" "dpkg-deb is required to verify $(basename "${image_deb}")"
+	exit 1
+fi
+module_manifest="$(mktemp "${TMPDIR:-/tmp}/kernel-image-modules.XXXXXX")"
+if ! dpkg-deb -c "${image_deb}" > "${module_manifest}" 2>/dev/null; then
+	_kernel_inject_log err "模块产物校验" "无法读取 $(basename "${image_deb}") 的文件清单"
+	exit 1
+fi
+for module in brutal amneziawg nf_deaf; do
+	if grep -Eq "/${module}\.ko(\.(gz|xz|zst))?$" "${module_manifest}"; then
+		_kernel_inject_log debug "模块产物校验" "${module}: 存在于 $(basename "${image_deb}")"
+	else
+		_kernel_inject_log err "模块产物校验" "module '${module}' missing from $(basename "${image_deb}")"
+		_kernel_inject_log err "模块产物校验" "source was injected but did not compile into the package"
 		exit 1
 	fi
-	for module in brutal amneziawg nf_deaf; do
-		if grep -Eq "/${module}\.ko(\.(gz|xz|zst))?$" "${module_manifest}"; then
-			_kernel_inject_log debug "模块产物校验" "${module}: 存在于 $(basename "${image_deb}")"
-		else
-			_kernel_inject_log err "模块产物校验" "module '${module}' missing from $(basename "${image_deb}")"
-			_kernel_inject_log err "模块产物校验" "source was injected but did not compile into the package"
-			exit 1
-		fi
-	done
-	_kernel_inject_log info "模块产物校验" "brutal / amneziawg / nf_deaf 均已编译进内核包"
-else
-	_kernel_inject_log warn "模块产物校验" "dpkg-deb unavailable; skipping module contents verification of $(basename "${image_deb}")"
+done
+_kernel_inject_log info "模块产物校验" "brutal / amneziawg / nf_deaf 均已编译进内核包"
+
+package_extract_root="$(mktemp -d "${TMPDIR:-/tmp}/kernel-image-evidence.XXXXXX")"
+if ! dpkg-deb -x "${image_deb}" "${package_extract_root}"; then
+	_kernel_inject_log err "构建证据缺失" "无法解包 $(basename "${image_deb}")"
+	exit 1
 fi
+mapfile -d '' -t evidence_manifests < <(
+	find "${package_extract_root}/usr/lib/armbian-kernel-build" -type f \
+		-name source-manifest.env -print0 2>/dev/null
+)
+if ((${#evidence_manifests[@]} != 1)); then
+	_kernel_inject_log err "构建证据缺失" \
+		"$(basename "${image_deb}") 必须包含且只包含一份 source-manifest.env，实际 ${#evidence_manifests[@]} 份"
+	_kernel_inject_log err "构建证据缺失" \
+		"该包可能来自旧缓存；新的 pre_package_kernel_image 钩子没有参与打包"
+	exit 1
+fi
+evidence_manifest="${evidence_manifests[0]}"
+evidence_dir="$(dirname "${evidence_manifest}")"
+final_config="${evidence_dir}/kernel.config"
+defined_symbols="${evidence_dir}/defined-symbols.txt"
+if [[ ! -s "${final_config}" || ! -s "${defined_symbols}" ]]; then
+	_kernel_inject_log err "构建证据损坏" "最终配置或 Kconfig 符号清单缺失"
+	exit 1
+fi
+
+manifest_format="$(require_manifest_value "${evidence_manifest}" evidence_format)" || exit 1
+manifest_branch="$(require_manifest_value "${evidence_manifest}" branch)" || exit 1
+manifest_family="$(require_manifest_value "${evidence_manifest}" linuxfamily)" || exit 1
+manifest_arch="$(require_manifest_value "${evidence_manifest}" debian_arch)" || exit 1
+manifest_kernel_major_minor="$(require_manifest_value "${evidence_manifest}" kernel_major_minor)" || exit 1
+package_arch="$(dpkg-deb -f "${image_deb}" Architecture 2>/dev/null || true)"
+if [[ "${manifest_format}" != 1 || "${manifest_branch}" != "${built_branch}" || \
+	"${manifest_family}" != rockchip64 || "${manifest_arch}" != "${package_arch}" || \
+	"${manifest_kernel_major_minor}" != "${kernel_major_minor}" ]]; then
+	_kernel_inject_log err "构建证据不匹配" \
+		"manifest(format=${manifest_format}, branch=${manifest_branch}, family=${manifest_family}, arch=${manifest_arch}, kernel=${manifest_kernel_major_minor})"
+	_kernel_inject_log err "构建证据不匹配" \
+		"artifact(branch=${built_branch}, family=rockchip64, arch=${package_arch:-unknown}, kernel=${kernel_major_minor})"
+	exit 1
+fi
+
+for pin_entry in \
+	"tcp_brutal_commit:${TCP_BRUTAL_COMMIT}" \
+	"amneziawg_commit:${AMNEZIAWG_COMMIT}" \
+	"nf_deaf_commit:${NF_DEAF_COMMIT}"; do
+	pin_key="${pin_entry%%:*}"
+	expected_commit="${pin_entry##*:}"
+	actual_commit="$(require_manifest_value "${evidence_manifest}" "${pin_key}")" || exit 1
+	if [[ "${actual_commit}" != "${expected_commit}" ]]; then
+		_kernel_inject_log err "pin 校验失败" \
+			"${pin_key}: expected ${expected_commit:0:12}, got ${actual_commit:-missing}"
+		exit 1
+	fi
+	_kernel_inject_log debug "pin 校验" "${pin_key}=${actual_commit:0:12} 通过"
+done
+_kernel_inject_log info "构建证据校验" \
+	"最终配置、Kconfig 符号清单和三项源码 pin 均来自 linux-image 包，不依赖临时 worktree"
+
+# Reuse the symbol inventory captured while the source tree still existed.
+_kernel_inject_cleanup_symbol_cache
+_KERNEL_INJECT_DEFINED_SYMBOLS_ROOT="${evidence_dir}"
+_KERNEL_INJECT_DEFINED_SYMBOLS_FILE="${defined_symbols}"
 
 if [[ "${ENABLE_FULL_EBPF}" == yes ]]; then
 	_kernel_inject_log info "最终配置校验" "开始 eBPF / BTF / CO-RE 校验"
-	_kernel_inject_verify_full_ebpf_config "${kernel_root}/.config"
+	_kernel_inject_verify_full_ebpf_config "${final_config}"
 fi
 if [[ "${ENABLE_FULL_NETWORKING}" == yes ]]; then
 	_kernel_inject_log info "最终配置校验" "开始完整网络功能校验"
-	_kernel_inject_verify_full_network_config "${kernel_root}/.config"
+	_kernel_inject_verify_full_network_config "${final_config}"
 fi
 
-generate_release_metadata "${kernel_root}" "${requested_branch:-unknown}" \
+generate_release_metadata "${evidence_dir}" "${requested_branch:-${built_branch}}" \
 	"${requested_board:-unknown}" "${userspace_release:-unknown}"

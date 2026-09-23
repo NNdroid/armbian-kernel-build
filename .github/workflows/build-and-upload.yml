@@ -50,7 +50,104 @@ jobs:
         run: chmod +x build.sh overwrite/build_with_diy.sh tests/test_kernel_injection.sh
 
       - name: Test kernel source injection
-        run: bash tests/test_kernel_injection.sh
+        run: |
+          bash tests/test_kernel_injection.sh
+          python3 tests/test_live_log_server.py
+
+      - name: Start authenticated ngrok live log
+        continue-on-error: true
+        env:
+          NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
+          LIVE_LOG_AUTH: ${{ secrets.NGROK_LOG_AUTH }}
+          CONFIGURED_NGROK_URL: ${{ secrets.NGROK_URL }}
+        run: |
+          set -Eeuo pipefail
+
+          live_dir="${RUNNER_TEMP}/kernel-live-log"
+          mkdir -p "${live_dir}"
+          : > "${live_dir}/build.log"
+          printf '{"state":"starting"}\n' > "${live_dir}/status.json"
+
+          if [[ -z "${NGROK_AUTHTOKEN}" || -z "${LIVE_LOG_AUTH}" || -z "${CONFIGURED_NGROK_URL}" ]]; then
+            echo "::warning title=Live build log disabled::Configure NGROK_AUTHTOKEN, NGROK_LOG_AUTH, and NGROK_URL repository secrets to enable it."
+            printf '{"state":"disabled"}\n' > "${live_dir}/status.json"
+            exit 0
+          fi
+
+          log_username="${LIVE_LOG_AUTH%%:*}"
+          log_password="${LIVE_LOG_AUTH#*:}"
+          if [[ "${LIVE_LOG_AUTH}" != *:* || -z "${log_username}" || -z "${log_password}" ]]; then
+            echo "::warning title=Live build log disabled::NGROK_LOG_AUTH must contain a non-empty username and password in username:password format."
+            printf '{"state":"disabled"}\n' > "${live_dir}/status.json"
+            exit 0
+          fi
+
+          if [[ "${CONFIGURED_NGROK_URL}" != https://* || "${CONFIGURED_NGROK_URL}" == *$'\n'* ]]; then
+            echo "::warning title=Live build log disabled::NGROK_URL must be one HTTPS URL without line breaks."
+            printf '{"state":"disabled"}\n' > "${live_dir}/status.json"
+            exit 0
+          fi
+
+          curl -fsSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc \
+            -o "${RUNNER_TEMP}/ngrok.asc"
+          sudo install -m 0644 "${RUNNER_TEMP}/ngrok.asc" /etc/apt/trusted.gpg.d/ngrok.asc
+          echo "deb https://ngrok-agent.s3.amazonaws.com bookworm main" \
+            | sudo tee /etc/apt/sources.list.d/ngrok.list >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y ngrok
+
+          nohup env LIVE_LOG_AUTH="${LIVE_LOG_AUTH}" \
+            python3 scripts/live_log_server.py \
+              --directory "${live_dir}" \
+              --host 127.0.0.1 \
+              --port 8080 \
+            > "${live_dir}/http-server.log" 2>&1 &
+          echo "$!" > "${live_dir}/http-server.pid"
+
+          server_ready=false
+          for _ in {1..30}; do
+            if curl -fsS http://127.0.0.1:8080/healthz >/dev/null; then
+              server_ready=true
+              break
+            fi
+            sleep 1
+          done
+          if [[ "${server_ready}" != true ]]; then
+            echo "::error title=Live log server failed::The local authenticated HTTP server did not become ready."
+            sed -n '1,120p' "${live_dir}/http-server.log" || true
+            exit 1
+          fi
+
+          live_url="${CONFIGURED_NGROK_URL}"
+          live_url="${live_url%/}"
+          nohup ngrok http 8080 \
+            --url "${live_url}" \
+            --authtoken "${NGROK_AUTHTOKEN}" \
+            --log stdout \
+            > "${live_dir}/ngrok.log" 2>&1 &
+          echo "$!" > "${live_dir}/ngrok.pid"
+
+          tunnel_ready=false
+          for _ in {1..45}; do
+            if curl -fsS "${live_url}/healthz" >/dev/null; then
+              tunnel_ready=true
+              break
+            fi
+            sleep 1
+          done
+          if [[ "${tunnel_ready}" != true ]]; then
+            echo "::error title=ngrok tunnel failed::The configured ngrok URL did not become reachable."
+            sed -n '1,160p' "${live_dir}/ngrok.log" || true
+            exit 1
+          fi
+
+          echo "::notice title=Live build log::The authenticated endpoint configured by the NGROK_URL repository secret is ready."
+          {
+            echo "### Live build log"
+            echo
+            echo "The authenticated endpoint configured by the \`NGROK_URL\` repository secret is ready."
+            echo "It exists only while the build job is running."
+          } >> "${GITHUB_STEP_SUMMARY}"
 
       # 6. 执行核心构建脚本 (自带版本比对和 Release 上传逻辑)
       - name: Run build script
@@ -58,7 +155,25 @@ jobs:
         # 安装宿主依赖时自行 sudo；GH_TOKEN 直接传给 runner 用户。
         env:
           GH_TOKEN: ${{ github.token }}
-        run: ./build.sh
+        run: |
+          set -Eeuo pipefail
+          live_dir="${RUNNER_TEMP}/kernel-live-log"
+          mkdir -p "${live_dir}"
+          printf '{"state":"running"}\n' > "${live_dir}/status.json"
+
+          set +e
+          ./build.sh 2>&1 | tee "${live_dir}/build.log"
+          build_exit_code=${PIPESTATUS[0]}
+          set -e
+
+          if (( build_exit_code == 0 )); then
+            build_state=success
+          else
+            build_state=failure
+          fi
+          printf '{"state":"%s","exit_code":%d}\n' \
+            "${build_state}" "${build_exit_code}" > "${live_dir}/status.json"
+          exit "${build_exit_code}"
 
       # 7. (可选) 上传 Artifacts 备份
       # 即使 build.sh 已经把 debs 上传到了 Release，在 Actions 本地留存一份 Artifact 也是个好习惯
@@ -70,3 +185,13 @@ jobs:
           path: build/output/debs/*
           if-no-files-found: ignore
           retention-days: 5
+
+      - name: Stop live build log endpoint
+        if: always()
+        run: |
+          live_dir="${RUNNER_TEMP}/kernel-live-log"
+          for pid_file in "${live_dir}/ngrok.pid" "${live_dir}/http-server.pid"; do
+            if [[ -s "${pid_file}" ]]; then
+              kill "$(cat "${pid_file}")" 2>/dev/null || true
+            fi
+          done

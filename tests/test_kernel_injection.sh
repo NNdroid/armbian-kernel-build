@@ -169,6 +169,47 @@ assert_array_contains opts_y USB_CONFIGFS_F_MIDI2
 assert_contains "${KERNEL_ROOT}/.config" \
 	'CONFIG_LSM="lockdown,yama,integrity,apparmor,bpf"'
 
+# Armbian calls this hook while the compiled source tree and final .config are
+# still available. Its evidence must be embedded in the package staging tree,
+# because Docker is allowed to discard the source tree after packaging.
+mkdir -p "${KERNEL_ROOT}/scripts"
+cat > "${KERNEL_ROOT}/Makefile" <<'SYNTHETIC_KERNEL_MAKEFILE'
+.PHONY: defconfig kernelrelease
+defconfig:
+	@mkdir -p "$(O)"
+	@printf 'CONFIG_SYNTHETIC_BASELINE=y\n' > "$(O)/.config"
+kernelrelease:
+	@printf '6.18.53-test\n'
+SYNTHETIC_KERNEL_MAKEFILE
+cat > "${KERNEL_ROOT}/scripts/diffconfig" <<'SYNTHETIC_DIFFCONFIG'
+#!/usr/bin/env bash
+diff -u "$1" "$2" || true
+SYNTHETIC_DIFFCONFIG
+chmod +x "${KERNEL_ROOT}/scripts/diffconfig"
+PACKAGE_STAGE="${TEST_ROOT}/package-stage"
+mkdir -p "${PACKAGE_STAGE}"
+kernel_work_dir="${KERNEL_ROOT}"
+package_directory="${PACKAGE_STAGE}"
+kernel_version_family="6.18.53-test"
+KERNEL_SRC_ARCH="arm64"
+ARCH="arm64"
+BRANCH="current"
+BOARD="fake"
+LINUXFAMILY="rockchip64"
+LINUXCONFIG="linux-rockchip64-current"
+KERNEL_MAJOR_MINOR="6.18"
+SRC="${REPO_ROOT}"
+WORKDIR="${TEST_ROOT}"
+pre_package_kernel_image__kernel_inject_evidence
+PACKAGED_EVIDENCE="${PACKAGE_STAGE}/usr/lib/armbian-kernel-build/6.18.53-test"
+assert_file "${PACKAGED_EVIDENCE}/kernel.config"
+assert_file "${PACKAGED_EVIDENCE}/defined-symbols.txt"
+assert_file "${PACKAGED_EVIDENCE}/config-vs-arm64-defconfig.txt"
+assert_file "${PACKAGED_EVIDENCE}/arm64-defconfig-build.log"
+assert_contains "${PACKAGED_EVIDENCE}/source-manifest.env" 'evidence_format=1'
+assert_contains "${PACKAGED_EVIDENCE}/source-manifest.env" \
+	'tcp_brutal_commit=fd3e540223c8d22adbed6d1f4fc54caa623d49c0'
+
 # 内核树已定义符号扫描：完整功能清单必须在目标内核树中真实存在。
 KCONFIG_SCAN_ROOT="${TEST_ROOT}/kconfig-scan"
 mkdir -p "${KCONFIG_SCAN_ROOT}"
@@ -355,8 +396,9 @@ mkdir -p "${WRAPPER_ROOT}/userpatches"
 cp "${REPO_ROOT}/overwrite/build_with_diy.sh" "${WRAPPER_ROOT}/build_with_diy.sh"
 cp "${REPO_ROOT}/userpatches/lib.config" "${WRAPPER_ROOT}/userpatches/lib.config"
 
-# Git Bash on Windows has no dpkg-deb. Provide a minimal manifest-compatible
-# stand-in so the exact module filename checks run locally as well as on CI.
+# Git Bash on Windows has no dpkg-deb. Use an uncompressed tar as the fake deb
+# payload so package listing, field lookup and extraction exercise the same
+# wrapper paths as a real Debian package.
 if ! command -v dpkg-deb >/dev/null 2>&1; then
 	FAKE_DPKG_BIN="${TEST_ROOT}/fake-dpkg-bin"
 	mkdir -p "${FAKE_DPKG_BIN}"
@@ -367,14 +409,19 @@ case "$1" in
 	--build)
 		stage="$2"
 		destination="$3"
-		(
-			cd "${stage}"
-			while IFS= read -r path; do
-				printf '%s\n' "-rw-r--r-- root/root 0 ./$(printf '%s' "${path}" | sed 's#^\./##')"
-			done < <(find . -type f -print | sort)
-		) > "${destination}"
+		tar -C "${stage}" -cf "${destination}" .
 		;;
-	-c) cat -- "$2" ;;
+	-c)
+		tar -tf "$2" | sed 's#^#-rw-r--r-- root/root 0 #'
+		;;
+	-x)
+		mkdir -p "$3"
+		tar -C "$3" -xf "$2"
+		;;
+	-f)
+		field="$3"
+		tar -xOf "$2" ./DEBIAN/control | awk -F': ' -v field="${field}" '$1 == field { print substr($0, length($1) + 3); exit }'
+		;;
 	*) exit 2 ;;
 esac
 FAKE_DPKG_DEB
@@ -385,38 +432,33 @@ fi
 cat > "${WRAPPER_ROOT}/compile.sh" <<'FAKE_COMPILE'
 #!/usr/bin/env bash
 set -Eeuo pipefail
-kernel_root="cache/sources/linux-kernel-worktree/6.18__fake__arm64"
-mkdir -p "${kernel_root}/net/ipv4/tcp_brutal" \
-	"${kernel_root}/drivers/net/amneziawg" \
-	"${kernel_root}/net/netfilter/nf_deaf" \
-	output/debs
-cp "${EFFECTIVE_CONFIG}" "${kernel_root}/.config"
-printf 'commit=%s\n' "${TCP_BRUTAL_COMMIT}" \
-	> "${kernel_root}/net/ipv4/tcp_brutal/.source-revision"
-printf 'commit=%s\n' "${AMNEZIAWG_COMMIT}" \
-	> "${kernel_root}/drivers/net/amneziawg/.source-revision"
-printf 'commit=%s\n' "${NF_DEAF_COMMIT}" \
-	> "${kernel_root}/net/netfilter/nf_deaf/.source-revision"
+mkdir -p output/debs
 cp "${FAKE_IMAGE_DEB_SOURCE}" \
 	output/debs/linux-image-fake-rockchip64_1.0_arm64__6.18.53-S9a8b-D7c6-P5e4-C3H2.deb
 FAKE_COMPILE
 chmod +x "${WRAPPER_ROOT}/compile.sh" "${WRAPPER_ROOT}/build_with_diy.sh"
 
-# The wrapper verifies the built artifact, not just the worktree. A real .deb
-# is needed when dpkg-deb is available (CI); a plain placeholder elsewhere.
+# The wrapper verifies the durable package and does not require a surviving
+# kernel worktree. CI builds a real .deb; the Git Bash shim builds a tar-backed
+# package with the same module, control-field and evidence layout.
 FAKE_DEB_TEMPLATE="${WRAPPER_ROOT}/fake-linux-image.deb"
 mkdir -p "${WRAPPER_ROOT}/output/debs"
-if command -v dpkg-deb >/dev/null 2>&1; then
-	DEB_STAGE="${WRAPPER_ROOT}/deb-stage"
-	rm -rf -- "${DEB_STAGE}"
-	mkdir -p "${DEB_STAGE}/usr/lib/modules/fake/kernel/net/ipv4/tcp_brutal" \
-		"${DEB_STAGE}/usr/lib/modules/fake/kernel/drivers/net/amneziawg" \
-		"${DEB_STAGE}/usr/lib/modules/fake/kernel/net/netfilter/nf_deaf" \
-		"${DEB_STAGE}/DEBIAN"
-	: > "${DEB_STAGE}/usr/lib/modules/fake/kernel/net/ipv4/tcp_brutal/brutal.ko"
-	: > "${DEB_STAGE}/usr/lib/modules/fake/kernel/drivers/net/amneziawg/amneziawg.ko"
-	: > "${DEB_STAGE}/usr/lib/modules/fake/kernel/net/netfilter/nf_deaf/nf_deaf.ko"
-	cat > "${DEB_STAGE}/DEBIAN/control" <<'CONTROL'
+DEB_STAGE="${WRAPPER_ROOT}/deb-stage"
+DEB_EVIDENCE="${DEB_STAGE}/usr/lib/armbian-kernel-build/6.18.53-fake"
+rm -rf -- "${DEB_STAGE}"
+mkdir -p "${DEB_STAGE}/usr/lib/modules/fake/kernel/net/ipv4/tcp_brutal" \
+	"${DEB_STAGE}/usr/lib/modules/fake/kernel/drivers/net/amneziawg" \
+	"${DEB_STAGE}/usr/lib/modules/fake/kernel/net/netfilter/nf_deaf" \
+	"${DEB_EVIDENCE}" "${DEB_STAGE}/DEBIAN"
+: > "${DEB_STAGE}/usr/lib/modules/fake/kernel/net/ipv4/tcp_brutal/brutal.ko"
+: > "${DEB_STAGE}/usr/lib/modules/fake/kernel/drivers/net/amneziawg/amneziawg.ko"
+: > "${DEB_STAGE}/usr/lib/modules/fake/kernel/net/netfilter/nf_deaf/nf_deaf.ko"
+cp "${EFFECTIVE_CONFIG}" "${DEB_EVIDENCE}/kernel.config"
+awk '/^(config|menuconfig) / { print $2 }' "${VERIFY_TREE}/Kconfig" | sort -u \
+	> "${DEB_EVIDENCE}/defined-symbols.txt"
+printf '+BPF y\n' > "${DEB_EVIDENCE}/config-vs-arm64-defconfig.txt"
+printf 'synthetic arm64 defconfig build\n' > "${DEB_EVIDENCE}/arm64-defconfig-build.log"
+cat > "${DEB_STAGE}/DEBIAN/control" <<'CONTROL'
 Package: linux-image-fake
 Version: 6.18.53-0-fake
 Section: kernel
@@ -425,10 +467,38 @@ Architecture: arm64
 Maintainer: NNdroid <nn@users.noreply.github.com>
 Description: fake modules package for wrapper verification
 CONTROL
+
+write_fake_evidence_manifest() {
+	local tcp_commit="${1:-${TCP_BRUTAL_COMMIT}}"
+	local config_sha256
+	config_sha256="$(sha256sum "${DEB_EVIDENCE}/kernel.config" | awk '{print $1}')"
+	cat > "${DEB_EVIDENCE}/source-manifest.env" <<EOF
+evidence_format=1
+branch=fake
+board=fake
+linuxfamily=rockchip64
+debian_arch=arm64
+kbuild_arch=arm64
+linuxconfig=linux-rockchip64-fake
+kernel_major_minor=6.18
+kernel_release=6.18.53-fake
+armbian_build_commit=0123456789abcdef0123456789abcdef01234567
+kernel_source_commit=1111111111111111111111111111111111111111
+tcp_brutal_commit=${tcp_commit}
+amneziawg_commit=${AMNEZIAWG_COMMIT}
+nf_deaf_commit=${NF_DEAF_COMMIT}
+config_sha256=${config_sha256}
+baseline_status=generated
+diff_count=1
+EOF
+}
+
+build_fake_image_deb() {
+	write_fake_evidence_manifest "${1:-${TCP_BRUTAL_COMMIT}}"
 	dpkg-deb --build "${DEB_STAGE}" "${FAKE_DEB_TEMPLATE}" >/dev/null
-else
-	printf 'brutal amneziawg nf_deaf\n' > "${FAKE_DEB_TEMPLATE}"
-fi
+}
+
+build_fake_image_deb
 
 (
 	cd "${WRAPPER_ROOT}"
@@ -439,17 +509,17 @@ fi
 	NF_DEAF_COMMIT="${NF_DEAF_COMMIT}" \
 	./build_with_diy.sh kernel BOARD=fake
 )
-assert_file "${WRAPPER_ROOT}/output/release-metadata/unknown/unknown-kernel.config"
-assert_file "${WRAPPER_ROOT}/output/release-metadata/unknown/unknown-config-vs-arm64-defconfig.txt"
-assert_contains "${WRAPPER_ROOT}/output/release-metadata/unknown/build-summary.md" \
+assert_file "${WRAPPER_ROOT}/output/release-metadata/fake/fake-kernel.config"
+assert_file "${WRAPPER_ROOT}/output/release-metadata/fake/fake-config-vs-arm64-defconfig.txt"
+assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
 	'eBPF / BTF / CO-RE'
-assert_contains "${WRAPPER_ROOT}/output/release-metadata/unknown/build-summary.md" \
+assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
 	'完整网络功能集'
-assert_contains "${WRAPPER_ROOT}/output/release-metadata/unknown/build-summary.md" \
+assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
 	'MPLS / SRv6'
-assert_contains "${WRAPPER_ROOT}/output/release-metadata/unknown/build-summary.md" \
+assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
 	'Armbian/build 基线提交'
-assert_contains "${WRAPPER_ROOT}/output/release-metadata/unknown/build-summary.md" \
+assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
 	'内核源码基线提交'
 
 # TCP-Brutal v2's Kbuild output is brutal.ko. A package containing only the old
@@ -458,7 +528,7 @@ assert_contains "${WRAPPER_ROOT}/output/release-metadata/unknown/build-summary.m
 if command -v dpkg-deb >/dev/null 2>&1; then
 	rm -f -- "${DEB_STAGE}/usr/lib/modules/fake/kernel/net/ipv4/tcp_brutal/brutal.ko"
 	: > "${DEB_STAGE}/usr/lib/modules/fake/kernel/net/ipv4/tcp_brutal/tcp_brutal.ko"
-	dpkg-deb --build "${DEB_STAGE}" "${FAKE_DEB_TEMPLATE}" >/dev/null
+	build_fake_image_deb
 	if (
 		cd "${WRAPPER_ROOT}"
 		EFFECTIVE_CONFIG="${EFFECTIVE_CONFIG}" \
@@ -472,13 +542,14 @@ if command -v dpkg-deb >/dev/null 2>&1; then
 	fi
 	rm -f -- "${DEB_STAGE}/usr/lib/modules/fake/kernel/net/ipv4/tcp_brutal/tcp_brutal.ko"
 	: > "${DEB_STAGE}/usr/lib/modules/fake/kernel/net/ipv4/tcp_brutal/brutal.ko"
-	dpkg-deb --build "${DEB_STAGE}" "${FAKE_DEB_TEMPLATE}" >/dev/null
+	build_fake_image_deb
 fi
 
-sed -i 's/^CONFIG_DEBUG_INFO_BTF=y$/# CONFIG_DEBUG_INFO_BTF is not set/' "${EFFECTIVE_CONFIG}"
+sed -i 's/^CONFIG_DEBUG_INFO_BTF=y$/# CONFIG_DEBUG_INFO_BTF is not set/' \
+	"${DEB_EVIDENCE}/kernel.config"
+build_fake_image_deb
 if (
 	cd "${WRAPPER_ROOT}"
-	EFFECTIVE_CONFIG="${EFFECTIVE_CONFIG}" \
 	FAKE_IMAGE_DEB_SOURCE="${FAKE_DEB_TEMPLATE}" \
 	TCP_BRUTAL_COMMIT="${TCP_BRUTAL_COMMIT}" \
 	AMNEZIAWG_COMMIT="${AMNEZIAWG_COMMIT}" \
@@ -487,41 +558,37 @@ if (
 ); then
 	fail "build wrapper accepted a final config without DEBUG_INFO_BTF"
 fi
-sed -i 's/^# CONFIG_DEBUG_INFO_BTF is not set$/CONFIG_DEBUG_INFO_BTF=y/' "${EFFECTIVE_CONFIG}"
+sed -i 's/^# CONFIG_DEBUG_INFO_BTF is not set$/CONFIG_DEBUG_INFO_BTF=y/' \
+	"${DEB_EVIDENCE}/kernel.config"
+build_fake_image_deb
 
-# A worktree left behind by another BRANCH shares cache/sources and must not
-# satisfy this build just because it carries a .source-revision at all.
+# The source-pin proof must come from the package produced by this build. A
+# mismatched manifest must fail even though no kernel worktree exists anymore.
 MISMATCH_ROOT="${TEST_ROOT}/wrapper-mismatch"
 mkdir -p "${MISMATCH_ROOT}/userpatches"
 cp "${REPO_ROOT}/overwrite/build_with_diy.sh" "${MISMATCH_ROOT}/build_with_diy.sh"
 cp "${REPO_ROOT}/userpatches/lib.config" "${MISMATCH_ROOT}/userpatches/lib.config"
+BAD_PIN_DEB="${MISMATCH_ROOT}/bad-pin-linux-image.deb"
+build_fake_image_deb 0000000000000000000000000000000000000000
+cp "${FAKE_DEB_TEMPLATE}" "${BAD_PIN_DEB}"
+build_fake_image_deb
 cat > "${MISMATCH_ROOT}/compile.sh" <<'FAKE_COMPILE'
 #!/usr/bin/env bash
 set -Eeuo pipefail
-kernel_root="cache/sources/linux-kernel-worktree/6.18__stale__arm64"
-mkdir -p "${kernel_root}/net/ipv4/tcp_brutal" \
-	"${kernel_root}/drivers/net/amneziawg" \
-	"${kernel_root}/net/netfilter/nf_deaf" output/debs
-cp "${EFFECTIVE_CONFIG}" "${kernel_root}/.config"
-printf 'commit=0000000000000000000000000000000000000000\n' \
-	> "${kernel_root}/net/ipv4/tcp_brutal/.source-revision"
-printf 'commit=0000000000000000000000000000000000000000\n' \
-	> "${kernel_root}/drivers/net/amneziawg/.source-revision"
-printf 'commit=0000000000000000000000000000000000000000\n' \
-	> "${kernel_root}/net/netfilter/nf_deaf/.source-revision"
-printf 'tcp_brutal amneziawg nf_deaf\n' \
-	> output/debs/linux-image-stale-rockchip64_1.0_arm64__6.18.53-S0.deb
+mkdir -p output/debs
+cp "${BAD_PIN_DEB_SOURCE}" \
+	output/debs/linux-image-fake-rockchip64_1.0_arm64__6.18.53-S0.deb
 FAKE_COMPILE
 chmod +x "${MISMATCH_ROOT}/compile.sh" "${MISMATCH_ROOT}/build_with_diy.sh"
 if (
 	cd "${MISMATCH_ROOT}"
-	EFFECTIVE_CONFIG="${EFFECTIVE_CONFIG}" \
+	BAD_PIN_DEB_SOURCE="${BAD_PIN_DEB}" \
 	TCP_BRUTAL_COMMIT="${TCP_BRUTAL_COMMIT}" \
 	AMNEZIAWG_COMMIT="${AMNEZIAWG_COMMIT}" \
 	NF_DEAF_COMMIT="${NF_DEAF_COMMIT}" \
 	./build_with_diy.sh kernel BOARD=fake
 ); then
-	fail "build wrapper accepted a worktree whose TCP-Brutal commit is not the pinned one"
+	fail "build wrapper accepted a package whose TCP-Brutal commit is not the pinned one"
 fi
 
 # A deb produced for another branch (e.g. a stale artifact from a previous

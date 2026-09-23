@@ -392,8 +392,8 @@ function upload_to_github_release() {
     mapfile -t upload_files < <(compgen -G "${files_pattern}" || true)
 	local -a metadata_files=()
 	mapfile -d '' -t metadata_files < <(find "${metadata_dir}" -maxdepth 1 -type f \
-		\( -name '*.config' -o -name '*config-vs-arm64-defconfig.txt' \
-			-o -name 'arm64-defconfig-build.log' \) -print0 2>/dev/null)
+		\( -name '*.config' -o -name '*-config-vs-*-defconfig.txt' \
+			-o -name '*-defconfig-build.log' \) -print0 2>/dev/null)
 
     # 检查数组长度是否为 0
     if [ ${#upload_files[@]} -eq 0 ]; then
