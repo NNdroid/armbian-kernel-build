@@ -99,6 +99,8 @@ class LiveLogServer(ThreadingHTTPServer):
             "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
             "runner_name": os.environ.get("RUNNER_NAME", ""),
         }
+        self.last_build_branch = ""
+        self.last_kernel_version = ""
         encoded = base64.b64encode(auth_spec.encode("utf-8")).decode("ascii")
         self.expected_authorization = f"Basic {encoded}"
 
@@ -117,10 +119,18 @@ class LiveLogHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header(
+            "Permissions-Policy",
+            "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+        )
         if content_type.startswith("text/html"):
             self.send_header(
                 "Content-Security-Policy",
-                "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'",
+                "default-src 'self'; connect-src 'self'; "
+                "script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+                "object-src 'none'; base-uri 'none'; form-action 'self'; "
+                "frame-ancestors 'none'",
             )
         self.end_headers()
 
@@ -144,6 +154,9 @@ class LiveLogHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Frame-Options", "DENY")
         self.end_headers()
         self.wfile.write(body)
         return False
@@ -203,10 +216,17 @@ class LiveLogHandler(BaseHTTPRequestHandler):
         branches = re.findall(r"\bBRANCH=([A-Za-z0-9._-]+)", tail)
         kernels = re.findall(r"__([0-9]+\.[0-9]+(?:\.[0-9]+)?)-[A-Za-z0-9]", tail)
         if not kernels:
-            kernels = re.findall(r"Built kernel major version:\s*([0-9]+\.[0-9]+(?:\.[0-9]+)?)", tail)
+            kernels = re.findall(
+                r"Built kernel major version:\s*([0-9]+\.[0-9]+(?:\.[0-9]+)?)",
+                tail,
+            )
+        if branches:
+            self.server.last_build_branch = branches[-1]
+        if kernels:
+            self.server.last_kernel_version = kernels[-1]
         return {
-            "branch": branches[-1] if branches else "",
-            "kernel": kernels[-1] if kernels else "",
+            "branch": self.server.last_build_branch,
+            "kernel": self.server.last_kernel_version,
         }
 
     def _metrics(self) -> dict[str, object]:
