@@ -23,11 +23,12 @@ STAGE_BEGIN_RE = re.compile(
     BUILD_LOG_PREFIX + r"────\s*(\d+\.\s+.+?)\s*────$"
 )
 ERROR_RE = re.compile(
-    r"(?:\[ERROR\]|\[💥\]|\[kernel-inject\]\[(?:err|error)\]|\berror(?:\s+\d+|\s*:)|\bfailed\b)",
+    r"(?:\[ERROR\]|\[💥\]|\[kernel-inject\]\[(?:err|error)\]|"
+    r"\bfatal\s*:|\berror(?:\s+\d+|\s*:)|(?:^|\s)FAILED(?:\s*:|\s*$))",
     re.IGNORECASE,
 )
 WARNING_RE = re.compile(
-    r"(?:\[WARN(?:ING)?\]|\[kernel-inject\]\[warn\]|\bwarning:)",
+    r"(?:\[WARN(?:ING)?\]|\[kernel-inject\]\[warn\]|\bwarning(?:\s*\([^)]*\))?\s*:)",
     re.IGNORECASE,
 )
 MAX_ANALYSIS_READ = 8 * 1024 * 1024
