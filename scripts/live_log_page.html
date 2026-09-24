@@ -257,6 +257,23 @@
     .log-row.is-selected { background: var(--selected); }
     .log-row.is-search-match { background: color-mix(in srgb, var(--mark) 20%, transparent); }
     .log-row.is-active-match { background: color-mix(in srgb, var(--mark-active) 30%, transparent); }
+    .log-row.is-group-hidden { display: none; }
+    .log-group-row {
+      background: color-mix(in srgb, var(--accent) 8%, var(--log-bg));
+      border-top: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+      border-bottom: 1px solid color-mix(in srgb, var(--accent) 15%, var(--border));
+      font-weight: 700;
+    }
+    .log-group-row:hover { background: color-mix(in srgb, var(--accent) 13%, var(--log-bg)); }
+    .log-group-row .log-text {
+      color: var(--text);
+      cursor: pointer;
+      user-select: none;
+    }
+    .log-group-row .log-text:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
+    }
     .line-number {
       min-height: 24px;
       height: 100%;
@@ -272,7 +289,7 @@
       user-select: none;
     }
     .line-number:hover { background: var(--panel-strong); color: var(--accent); border-color: var(--border); }
-    .log-text { display: block; padding: 2px 13px; color: var(--log-text); white-space: pre; tab-size: 4; overflow-wrap: normal; }
+    .log-text { display: block; padding: 2px 13px 2px calc(13px + (var(--group-depth, 0) * 14px)); color: var(--log-text); white-space: pre; tab-size: 4; overflow-wrap: normal; }
     .log-body.wrap { width: 100%; }
     .log-body.wrap .log-text { white-space: pre-wrap; overflow-wrap: anywhere; }
     mark.search-hit { color: inherit; background: var(--mark); border-radius: 3px; padding: 0 1px; }
@@ -773,6 +790,7 @@
         buildState: 'connecting', transport: 'sse', offset: 0, busy: false,
         eventSource: null, pollingTimer: null, metricsTimer: null, sseFailures: 0,
         nextLine: 1, rowCount: 0, charCount: 0, pendingRaw: '', pendingRow: null,
+        groupStack: [], collapsedGroups: new Set(), nextGroupId: 1,
         searchMatches: [], activeMatch: -1, selectedLine: '', metrics: null, searchTimer: null,
         activeView: 'dashboard', filesLoaded: false, filesPath: '', filesEntries: [], filesAvailable: false,
         filesEnabled: true, filesBusy: false, previewPayload: null, dashboard: null,
@@ -1436,6 +1454,14 @@
         }
       }
 
+      function groupPath() {
+        return state.groupStack.map((group) => group.id);
+      }
+      function decorateGroupedRow(row, path = groupPath()) {
+        row.dataset.groupPath = path.join(',');
+        row.style.setProperty('--group-depth', String(path.length));
+        return row;
+      }
       function createRow(number, value, pending = false) {
         const row = document.createElement('div');
         row.className = 'log-row';
@@ -1443,6 +1469,7 @@
         row.dataset.line = String(number);
         row.dataset.text = value;
         if (pending) row.dataset.pending = 'true';
+        decorateGroupedRow(row);
         const lineButton = document.createElement('button');
         lineButton.type = 'button';
         lineButton.className = 'line-number';
@@ -1455,18 +1482,69 @@
         row.append(lineButton, content);
         return row;
       }
+      function createGroupRow(number, title) {
+        const groupId = `group-${state.nextGroupId++}`;
+        const row = createRow(number, title);
+        row.classList.add('log-group-row');
+        row.dataset.groupId = groupId;
+        row.dataset.collapsed = 'false';
+        const content = row.querySelector('.log-text');
+        content.setAttribute('role', 'button');
+        content.setAttribute('tabindex', '0');
+        content.setAttribute('aria-expanded', 'true');
+        content.setAttribute('aria-label', `Toggle log group: ${title}`);
+        content.textContent = `▾ ${title}`;
+        return {id: groupId, row};
+      }
+      function groupIdsForRow(row) {
+        return (row?.dataset.groupPath || '').split(',').filter(Boolean);
+      }
+      function applyGroupVisibility() {
+        elements.body.querySelectorAll('.log-row').forEach((row) => {
+          const hidden = groupIdsForRow(row).some((groupId) => state.collapsedGroups.has(groupId));
+          row.classList.toggle('is-group-hidden', hidden);
+          if (row.dataset.groupId) {
+            const collapsed = state.collapsedGroups.has(row.dataset.groupId);
+            row.dataset.collapsed = String(collapsed);
+            const content = row.querySelector('.log-text');
+            if (content) {
+              content.setAttribute('aria-expanded', String(!collapsed));
+              content.textContent = `${collapsed ? '▸' : '▾'} ${row.dataset.text || ''}`;
+            }
+          }
+        });
+      }
+      function expandGroupsForRow(row) {
+        let changed = false;
+        for (const groupId of groupIdsForRow(row)) {
+          if (state.collapsedGroups.delete(groupId)) changed = true;
+        }
+        if (changed) applyGroupVisibility();
+      }
+      function toggleGroup(row) {
+        const groupId = row?.dataset.groupId;
+        if (!groupId) return;
+        if (state.collapsedGroups.has(groupId)) state.collapsedGroups.delete(groupId);
+        else state.collapsedGroups.add(groupId);
+        applyGroupVisibility();
+      }
       function removePendingRow() {
         if (state.pendingRow) state.pendingRow.remove();
         state.pendingRow = null;
       }
       function trimBuffer() {
+        let groupStateChanged = false;
         while ((state.charCount > maxChars || state.rowCount > maxLines) && state.rowCount > 1) {
           const first = elements.body.querySelector('.log-row:not([data-pending])');
           if (!first) break;
           state.charCount -= (first.dataset.text || '').length + 1;
           state.rowCount -= 1;
+          if (first.dataset.groupId && state.collapsedGroups.delete(first.dataset.groupId)) {
+            groupStateChanged = true;
+          }
           first.remove();
         }
+        if (groupStateChanged) applyGroupVisibility();
       }
       function appendLog(value) {
         if (!value) return;
@@ -1479,7 +1557,23 @@
         const fragment = document.createDocumentFragment();
         for (const rawLine of parts) {
           const cleanLine = rawLine.replace(ansi, '');
-          fragment.appendChild(createRow(state.nextLine, cleanLine));
+          if (cleanLine.startsWith('::group::')) {
+            const title = cleanLine.slice('::group::'.length).trim() || `Log group at line ${state.nextLine}`;
+            const group = createGroupRow(state.nextLine, title);
+            fragment.appendChild(group.row);
+            state.groupStack.push({id: group.id, line: state.nextLine});
+            state.charCount += title.length + 1;
+            state.rowCount += 1;
+            state.nextLine += 1;
+            continue;
+          }
+          if (cleanLine.startsWith('::endgroup::') && state.groupStack.length) {
+            state.groupStack.pop();
+            state.nextLine += 1;
+            continue;
+          }
+          const row = createRow(state.nextLine, cleanLine);
+          fragment.appendChild(row);
           state.charCount += cleanLine.length + 1;
           state.rowCount += 1;
           state.nextLine += 1;
@@ -1491,6 +1585,7 @@
           elements.body.appendChild(state.pendingRow);
           if (elements.empty?.isConnected) elements.empty.remove();
         }
+        applyGroupVisibility();
         trimBuffer();
         updateSummary();
         scheduleSearch();
@@ -1504,6 +1599,9 @@
         state.charCount = 0;
         state.pendingRaw = '';
         state.pendingRow = null;
+        state.groupStack = [];
+        state.collapsedGroups.clear();
+        state.nextGroupId = 1;
         state.searchMatches = [];
         state.activeMatch = -1;
         state.selectedLine = '';
@@ -1519,10 +1617,11 @@
       }
       function updateSummary() {
         const pending = state.pendingRaw ? 1 : 0;
-        elements.lineSummary.textContent = formatNumber(state.rowCount + pending);
+        elements.lineSummary.textContent = formatNumber((state.nextLine - 1) + pending);
         if (!state.metrics) elements.sizeSummary.textContent = formatBytes(state.offset);
       }
       function selectRow(row, mode = 'selected') {
+        expandGroupsForRow(row);
         elements.body.querySelectorAll('.is-selected').forEach((node) => node.classList.remove('is-selected'));
         row.classList.add('is-selected');
         state.selectedLine = row.dataset.line;
@@ -1573,7 +1672,7 @@
         state.searchMatches = [];
         state.activeMatch = -1;
         if (query) {
-          elements.body.querySelectorAll('.log-row').forEach((row) => {
+          elements.body.querySelectorAll('.log-row:not(.log-group-row)').forEach((row) => {
             const source = row.dataset.text || '';
             if (source.toLocaleLowerCase().includes(query.toLocaleLowerCase())) {
               row.classList.add('is-search-match');
@@ -1602,6 +1701,7 @@
         }
         state.activeMatch = (index + state.searchMatches.length) % state.searchMatches.length;
         const row = state.searchMatches[state.activeMatch];
+        expandGroupsForRow(row);
         row.classList.add('is-active-match');
         selectRow(row, 'search');
         row.scrollIntoView({block: 'center'});
@@ -1710,7 +1810,18 @@
       }, {passive: true});
       elements.body.addEventListener('click', (event) => {
         const button = event.target.closest('.line-number');
-        if (button) selectRow(button.closest('.log-row'));
+        if (button) {
+          selectRow(button.closest('.log-row'));
+          return;
+        }
+        const groupTitle = event.target.closest('.log-group-row .log-text');
+        if (groupTitle) toggleGroup(groupTitle.closest('.log-group-row'));
+      });
+      elements.body.addEventListener('keydown', (event) => {
+        const groupTitle = event.target.closest('.log-group-row .log-text');
+        if (!groupTitle || !['Enter', ' '].includes(event.key)) return;
+        event.preventDefault();
+        toggleGroup(groupTitle.closest('.log-group-row'));
       });
       elements.search.addEventListener('input', () => { clearTimeout(state.searchTimer); state.searchTimer = setTimeout(runSearch, 120); });
       elements.search.addEventListener('keydown', (event) => {
