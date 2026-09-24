@@ -92,12 +92,12 @@ printf 'CONFIG_LSM="lockdown,yama,integrity,apparmor"\n' > "${KERNEL_ROOT}/.conf
 
 cat > "${KERNEL_ROOT}/net/ipv4/tcp.c" <<'LEGACY_TCP_C'
 #include <net/tcp.h>
-// --- 新增: TCP Brutal 专属宏 ---
+// --- Added: TCP Brutal-specific macro ---
 #define TCP_BRUTAL_PARAMS 23301
 // -------------------------------------------
 static int tcp_setsockopt_test(void)
 {
-	case TCP_BRUTAL_PARAMS: { // --- 新增: TCP Brutal 专属处理分支 ---
+	case TCP_BRUTAL_PARAMS: { // --- Added: TCP Brutal-specific handling branch ---
 		return 0;
 	} // -------------------------------------------
 }
@@ -306,7 +306,6 @@ assert_contains "${PACKAGED_EVIDENCE}/source-manifest.env" 'evidence_format=1'
 assert_contains "${PACKAGED_EVIDENCE}/source-manifest.env" \
 	'tcp_brutal_commit=fd3e540223c8d22adbed6d1f4fc54caa623d49c0'
 
-# 内核树已定义符号扫描：完整功能清单必须在目标内核树中真实存在。
 KCONFIG_SCAN_ROOT="${TEST_ROOT}/kconfig-scan"
 mkdir -p "${KCONFIG_SCAN_ROOT}"
 printf 'config DEBUG_INFO_BTF\n\tbool "btf"\nmenuconfig WIREGUARD\nconfig MT792x_LIB\n\ttristate "mt792x"\n' > "${KCONFIG_SCAN_ROOT}/Kconfig"
@@ -321,8 +320,6 @@ if _kernel_inject_symbol_is_defined NOT_IN_THIS_TREE; then
 	fail "symbol scanner invented a symbol that no Kconfig defines"
 fi
 
-# 验证器会扫描"内核树"里 Kconfig 实际定义的符号，所以给最终配置准备一棵
-# 合成内核树：Kconfig 覆盖两份清单的全部符号，负向用例才仍然有效。
 VERIFY_TREE="${TEST_ROOT}/verify-tree"
 mkdir -p "${VERIFY_TREE}"
 : > "${VERIFY_TREE}/Kconfig"
@@ -385,7 +382,6 @@ printf '%s\n' "${KERNEL_INJECT_MISSING_SYMBOLS[@]}" | \
 	fail "strict-y verifier did not report the actual module value"
 sed -i 's/^CONFIG_NF_CONNTRACK=m$/CONFIG_NF_CONNTRACK=y/' "${EFFECTIVE_CONFIG}"
 
-# 清单里当前内核树并未定义的正向能力必须失败，不能发布功能缩水的内核。
 # Consumed through a nameref in _kernel_inject_verify_symbol_list.
 # shellcheck disable=SC2034
 custom_required=(VXLAN A_SYMBOL_NO_KCONFIG_DEFINES)
@@ -396,8 +392,6 @@ printf '%s\n' "${KERNEL_INJECT_MISSING_SYMBOLS[@]}" | \
 	grep -q 'A_SYMBOL_NO_KCONFIG_DEFINES.*undefined' || \
 	fail "undefined required symbol was not reported precisely"
 
-# 由 select/def_bool 决定且没有 prompt 的符号同样是最终能力契约：不存在或取值
-# 不正确都必须失败，不能因为 scripts/config 无法直接设置就静默放过。
 SELECT_ONLY_TREE="${TEST_ROOT}/select-only-tree"
 mkdir -p "${SELECT_ONLY_TREE}"
 printf 'config SELECT_ONLY_SYMBOL\n\ttristate\n' > "${SELECT_ONLY_TREE}/Kconfig"
@@ -412,7 +406,6 @@ printf 'CONFIG_SELECT_ONLY_SYMBOL=y\n' >> "${SELECT_ONLY_TREE}/.config"
 _kernel_inject_verify_symbol_list "${SELECT_ONLY_TREE}/.config" y select_required || \
 	fail "verifier rejected a satisfied prompt-less symbol"
 
-# 扫描不到任何 Kconfig 时必须退回严格模式（宁可失败也不能静默放过）。
 NO_KCONFIG_TREE="${TEST_ROOT}/no-kconfig-tree"
 mkdir -p "${NO_KCONFIG_TREE}"
 cp "${EFFECTIVE_CONFIG}" "${NO_KCONFIG_TREE}/.config"
@@ -437,7 +430,7 @@ RELEASE_TEST_ROOT="${TEST_ROOT}/release-notes"
 RELEASE_METADATA="${RELEASE_TEST_ROOT}/build/output/release-metadata/edge"
 RELEASE_DEBS="${RELEASE_TEST_ROOT}/build/output/debs"
 mkdir -p "${RELEASE_METADATA}" "${RELEASE_DEBS}"
-printf '# 动态构建摘要\n\neBPF 已校验。\n' > "${RELEASE_METADATA}/build-summary.md"
+printf '# Dynamic build summary\n\neBPF validated.\n' > "${RELEASE_METADATA}/build-summary.md"
 printf 'CONFIG_BPF=y\n' > "${RELEASE_METADATA}/edge-kernel.config"
 printf 'evidence_format=1\nbranch=edge\n' > \
 	"${RELEASE_METADATA}/edge-source-manifest.env"
@@ -495,7 +488,6 @@ printf 'must not upload\n' > \
 	upload_to_github_release edge-7.2.1 edge 7.2.1 7.2.0 \
 		'./build/output/debs/*-edge-rockchip64_*__7.2.1-*.deb'
 
-	# 版本必须从构建产物反解；日志不得混进捕获的返回值。
 	built_version="$(resolve_built_version edge)"
 	[[ "${built_version}" == '7.2.1' ]] || \
 		fail "resolve_built_version returned '${built_version}' instead of 7.2.1"
@@ -523,12 +515,12 @@ CWD_WRAPPER
 	[[ "$(cat "${CWD_TEST_ROOT}/wrapper-cwd.txt")" == "$(cd "${CWD_TEST_ROOT}/build" && pwd -P)" ]] || \
 		fail "run_armbian_build did not execute the wrapper from the Armbian root"
 )
-assert_contains "${RELEASE_TEST_ROOT}/captured-notes.md" '# 动态构建摘要'
+assert_contains "${RELEASE_TEST_ROOT}/captured-notes.md" '# Dynamic build summary'
 assert_contains "${RELEASE_TEST_ROOT}/captured-notes.md" 'linux-image-edge-rockchip64'
 assert_contains "${RELEASE_TEST_ROOT}/captured-notes.md" \
 	'0123456789abcdef0123456789abcdef01234567'
-assert_contains "${RELEASE_TEST_ROOT}/captured-notes.md" '内核版本（构建产物）：`7.2.1`'
-assert_contains "${RELEASE_TEST_ROOT}/captured-notes.md" 'kernel.org 上游版本：`7.2.0`'
+assert_contains "${RELEASE_TEST_ROOT}/captured-notes.md" 'Kernel version (artifact): `7.2.1`'
+assert_contains "${RELEASE_TEST_ROOT}/captured-notes.md" 'kernel.org upstream version: `7.2.0`'
 assert_not_contains "${RELEASE_TEST_ROOT}/captured-gh-args.txt" 'bleedingedge'
 assert_contains "${RELEASE_TEST_ROOT}/captured-gh-args.txt" 'edge-kernel.config'
 assert_contains "${RELEASE_TEST_ROOT}/captured-gh-args.txt" 'edge-source-manifest.env'
@@ -680,13 +672,13 @@ assert_file "${WRAPPER_ROOT}/output/release-metadata/fake/fake-config-vs-arm64-d
 assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
 	'eBPF / BTF / CO-RE'
 assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
-	'完整网络功能集'
+	'Full networking feature set'
 assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
 	'MPLS / SRv6'
 assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
-	'Armbian/build 基线提交'
+	'Armbian/build baseline commit'
 assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
-	'内核源码基线提交'
+	'Kernel source baseline commit'
 assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
 	'| TCP-Brutal v2 | `y` |'
 assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
@@ -694,7 +686,7 @@ assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" 
 assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
 	'| nf_deaf | `y` |'
 assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
-	'| 原生 WireGuard（默认由 AmneziaWG 取代） | `n` |'
+	'| Native WireGuard (replaced by AmneziaWG by default) | `n` |'
 assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
 	'`MT7921E=m`'
 assert_file \
@@ -738,7 +730,7 @@ assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/fake-loadable-modu
 assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/fake-loadable-modules.md" \
 	'sudo install -m 0644 ./fake-6.18.53-fake-arm64-brutal.ko "/lib/modules/${KERNEL_RELEASE}/extra/brutal.ko"'
 assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
-	'只安装独立模块附件'
+	'Install standalone module attachments only'
 assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/fake-loadable-modules-SHA256SUMS" \
 	'fake-6.18.53-fake-arm64-brutal.ko'
 (
@@ -823,7 +815,7 @@ if (
 	fail "build wrapper accepted a package whose TCP-Brutal commit is not the pinned one"
 fi
 assert_contains "${BAD_PIN_LOG}" \
-	'pin 校验失败: tcp_brutal_commit: expected fd3e540223c8, got 0000000000000000000000000000000000000000'
+	'Pin validation failed: tcp_brutal_commit: expected fd3e540223c8, got 0000000000000000000000000000000000000000'
 
 # A deb produced for another branch (e.g. a stale artifact from a previous
 # build in the same output/debs) must never satisfy this build's BRANCH.
