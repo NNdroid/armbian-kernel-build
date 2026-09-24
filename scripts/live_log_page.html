@@ -31,6 +31,10 @@
       --mark: #ffe28a;
       --mark-active: #ffb545;
       --selected: #e8f1ff;
+      --scrollbar-track: #edf2f7;
+      --scrollbar-thumb: #b5c1d0;
+      --scrollbar-thumb-hover: #8fa2b8;
+      --scrollbar-thumb-active: #6f88a6;
       --shadow: 0 14px 40px rgba(23, 32, 51, .09);
       --radius: 14px;
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -61,10 +65,43 @@
       --mark: #6f5719;
       --mark-active: #a96008;
       --selected: #162b4d;
+      --scrollbar-track: #0d1520;
+      --scrollbar-thumb: #34465d;
+      --scrollbar-thumb-hover: #4b6381;
+      --scrollbar-thumb-active: #6682a5;
       --shadow: 0 18px 55px rgba(0, 0, 0, .32);
     }
 
-    * { box-sizing: border-box; }
+    * {
+      box-sizing: border-box;
+      scrollbar-width: thin;
+      scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+    }
+    *::-webkit-scrollbar {
+      width: 10px;
+      height: 10px;
+    }
+    *::-webkit-scrollbar-track {
+      background: var(--scrollbar-track);
+    }
+    *::-webkit-scrollbar-thumb {
+      min-height: 36px;
+      border: 2px solid var(--scrollbar-track);
+      border-radius: 999px;
+      background: var(--scrollbar-thumb);
+      background-clip: padding-box;
+    }
+    *::-webkit-scrollbar-thumb:hover {
+      background: var(--scrollbar-thumb-hover);
+      background-clip: padding-box;
+    }
+    *::-webkit-scrollbar-thumb:active {
+      background: var(--scrollbar-thumb-active);
+      background-clip: padding-box;
+    }
+    *::-webkit-scrollbar-corner {
+      background: var(--scrollbar-track);
+    }
     html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); }
     button, input, select { font: inherit; }
     button, select, input, a { outline: none; }
@@ -250,7 +287,20 @@
     }
     .log-meta strong { color: var(--text); font-weight: 650; }
     .log-meta .right { margin-left: auto; font-variant-numeric: tabular-nums; }
-    .log-viewport { flex: 1; min-height: 0; overflow: auto; background: var(--log-bg); overscroll-behavior: contain; }
+    .log-viewport {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      background: var(--log-bg);
+      overscroll-behavior: contain;
+      scrollbar-gutter: stable;
+    }
+    .log-viewport::-webkit-scrollbar-track {
+      background: color-mix(in srgb, var(--log-bg) 82%, var(--scrollbar-track));
+    }
+    .log-viewport::-webkit-scrollbar-thumb {
+      border-color: color-mix(in srgb, var(--log-bg) 82%, var(--scrollbar-track));
+    }
     .log-body { min-width: 100%; width: max-content; font: 12.5px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
     .log-row { display: grid; grid-template-columns: 70px minmax(0, 1fr); min-height: 24px; }
     .log-row:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
