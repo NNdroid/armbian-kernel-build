@@ -40,7 +40,7 @@ def main() -> int:
             sys.stdout.buffer.flush()
         return 0
 
-    overlap = max(len(value) for value in values) - 1
+    overlap = max(len(value) for value in values)
     pending = b""
     while chunk := sys.stdin.buffer.read(64 * 1024):
         pending += chunk
