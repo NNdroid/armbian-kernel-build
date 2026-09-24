@@ -146,6 +146,17 @@ LEGACY_NF_MAKEFILE
 touch "${KERNEL_ROOT}/net/netfilter/nf_deaf.c"
 
 reset_hook_arrays
+
+# Reproduce representative Armbian core-hook requests that run before
+# custom_kernel_config. The custom hook must remove conflicting mode requests,
+# not merely append another value: Armbian applies opts_n -> opts_y -> opts_m.
+opts_m+=(
+	NF_CONNTRACK VLAN_8021Q NET_IPGRE_DEMUX NET_IPGRE IPV6_GRE
+	VXLAN GENEVE NF_NAT NF_TABLES NF_TABLES_BRIDGE
+	NETFILTER_XTABLES BRIDGE_NF_EBTABLES
+)
+opts_y+=(BT CFG80211 MAC80211)
+
 original_pwd="$(pwd -P)"
 cd "${KERNEL_ROOT}"
 # Reproduce Armbian's nounset-unsafe display_alert contract. The injector must
@@ -213,6 +224,23 @@ assert_array_contains opts_y USB_GADGET
 assert_array_contains opts_y USB_CONFIGFS
 assert_array_contains opts_y USB_FUNCTIONFS
 assert_array_contains opts_y USB_CONFIGFS_F_MIDI2
+
+# The synthetic Armbian core requests above must be fully overridden.
+for overridden_builtin in NF_CONNTRACK VLAN_8021Q NET_IPGRE_DEMUX NET_IPGRE \
+	IPV6_GRE VXLAN GENEVE NF_NAT NF_TABLES NF_TABLES_BRIDGE \
+	NETFILTER_XTABLES BRIDGE_NF_EBTABLES; do
+	assert_array_contains opts_y "${overridden_builtin}"
+	assert_array_not_contains opts_m "${overridden_builtin}"
+	assert_array_not_contains opts_n "${overridden_builtin}"
+done
+
+# Radio stacks deliberately remain modules even if an upstream hook requested y.
+for overridden_module in BT CFG80211 MAC80211; do
+	assert_array_contains opts_m "${overridden_module}"
+	assert_array_not_contains opts_y "${overridden_module}"
+	assert_array_not_contains opts_n "${overridden_module}"
+done
+
 for builtin_symbol in MPLS_ROUTING VXLAN GENEVE NET_IPGRE IPV6_GRE NET_FOU \
 	NF_TABLES NFT_TPROXY NFT_SYNPROXY IP6_NF_TARGET_NPT TCP_CONG_BBR \
 	USB_CONFIGFS USB_FUNCTIONFS; do
@@ -783,6 +811,7 @@ cp "${BAD_PIN_DEB_SOURCE}" \
 	output/debs/linux-image-fake-rockchip64_1.0_arm64__6.18.53-S0.deb
 FAKE_COMPILE
 chmod +x "${MISMATCH_ROOT}/compile.sh" "${MISMATCH_ROOT}/build_with_diy.sh"
+BAD_PIN_LOG="${MISMATCH_ROOT}/bad-pin.log"
 if (
 	cd "${MISMATCH_ROOT}"
 	BAD_PIN_DEB_SOURCE="${BAD_PIN_DEB}" \
@@ -790,9 +819,11 @@ if (
 	AMNEZIAWG_COMMIT="${AMNEZIAWG_COMMIT}" \
 	NF_DEAF_COMMIT="${NF_DEAF_COMMIT}" \
 	./build_with_diy.sh kernel BOARD=fake
-); then
+) >"${BAD_PIN_LOG}" 2>&1; then
 	fail "build wrapper accepted a package whose TCP-Brutal commit is not the pinned one"
 fi
+assert_contains "${BAD_PIN_LOG}" \
+	'pin 校验失败: tcp_brutal_commit: expected fd3e540223c8, got 0000000000000000000000000000000000000000'
 
 # A deb produced for another branch (e.g. a stale artifact from a previous
 # build in the same output/debs) must never satisfy this build's BRANCH.
