@@ -18,13 +18,11 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      # 1. 检出代码
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      # 2. 清理磁盘空间 (防止编译内核时空间不足)
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6 # v2.0.0
         with:
@@ -35,17 +33,14 @@ jobs:
           preinstalled-runtimes: true
           swap-storage: false
 
-      # 3. 设置 QEMU (为 Armbian 跨平台编译构建环境)
       - name: Set up QEMU
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
 
-      # 4. 安装基础依赖
       - name: Install Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y git curl sudo qemu-user-static jq gh
 
-      # 5. 赋予脚本执行权限
       - name: Make script executable
         run: chmod +x build.sh overwrite/build_with_diy.sh tests/test_kernel_injection.sh
 
@@ -154,10 +149,7 @@ jobs:
             echo "It exists only while the build job is running."
           } >> "${GITHUB_STEP_SUMMARY}"
 
-      # 6. 执行核心构建脚本 (自带版本比对和 Release 上传逻辑)
       - name: Run build script
-        # Armbian 明确要求不要以 root/sudo 运行 compile.sh。build.sh 只在
-        # 安装宿主依赖时自行 sudo；GH_TOKEN 直接传给 runner 用户。
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -180,8 +172,6 @@ jobs:
             "${build_state}" "${build_exit_code}" > "${live_dir}/status.json"
           exit "${build_exit_code}"
 
-      # 7. (可选) 上传 Artifacts 备份
-      # 即使 build.sh 已经把 debs 上传到了 Release，在 Actions 本地留存一份 Artifact 也是个好习惯
       - name: Upload Artifacts Backup
         if: success()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
