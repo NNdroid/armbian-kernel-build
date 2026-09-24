@@ -576,6 +576,23 @@ def main() -> int:
             }, dashboard
             assert dashboard["resources"], dashboard
 
+            with (log_root / "build.log").open("ab") as log_file:
+                for index in range(130):
+                    log_file.write(
+                        f"[WARN] warning flood {index}\n".encode("utf-8")
+                    )
+            status, body, _ = request(
+                f"{base_url}/api/dashboard", authenticated=True
+            )
+            assert status == 200, status
+            flooded_dashboard = json.loads(body)
+            assert any(
+                item["severity"] == "error"
+                and "synthetic failure evidence" in item["message"]
+                for item in flooded_dashboard["diagnostics"]
+            ), flooded_dashboard["diagnostics"]
+            assert len(flooded_dashboard["diagnostics"]) <= 120
+
             status, _, _ = request(f"{base_url}/api/packages")
             assert status == 401, status
             status, body, _ = request(
