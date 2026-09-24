@@ -1767,7 +1767,7 @@
         } catch (_) {
           resetLog(0, 1);
         }
-        bootstrapLog();
+        startEventStream();
       }
 
       function startEventStream() {
@@ -1910,7 +1910,7 @@
       applyTheme();
       applyLocale();
       setView('dashboard');
-      startEventStream();
+      bootstrapLog();
     })();
   </script>
 </body>
