@@ -424,6 +424,17 @@ def main() -> int:
             assert status == 200, status
             metrics = json.loads(body)
             assert metrics["target"]["branch"] == "current", metrics
+
+            with (log_root / "build.log").open("ab") as log_file:
+                log_file.write(
+                    b"\n[INFO] Build wrapper Arguments: target=kernel BRANCH=edge BOARD=test\n"
+                )
+            status, body, _ = request(f"{base_url}/api/metrics", authenticated=True)
+            assert status == 200, status
+            metrics = json.loads(body)
+            assert metrics["target"]["branch"] == "edge", metrics
+            assert metrics["target"]["kernel"] == "", metrics
+
             (log_root / "build.log").write_bytes(b"first line\n")
 
             status, _, _ = request(f"{base_url}/api/events")
