@@ -215,8 +215,46 @@ class DashboardAnalyzer:
                 "line": self._line_number,
                 "message": line[:800],
             }
-            if not self._diagnostics or self._diagnostics[-1] != diagnostic:
-                self._diagnostics.append(diagnostic)
+            self._append_diagnostic(diagnostic)
+
+    def _append_diagnostic(self, diagnostic: dict[str, Any]) -> None:
+        if self._diagnostics:
+            previous = self._diagnostics[-1]
+            if (
+                previous["severity"] == diagnostic["severity"]
+                and previous["message"] == diagnostic["message"]
+            ):
+                previous["line"] = diagnostic["line"]
+                previous["count"] = int(previous.get("count", 1)) + 1
+                return
+
+        if len(self._diagnostics) >= MAX_DIAGNOSTICS:
+            if diagnostic["severity"] == "warning":
+                oldest_warning = next(
+                    (
+                        item
+                        for item in self._diagnostics
+                        if item["severity"] == "warning"
+                    ),
+                    None,
+                )
+                if oldest_warning is None:
+                    return
+                self._diagnostics.remove(oldest_warning)
+            else:
+                oldest_warning = next(
+                    (
+                        item
+                        for item in self._diagnostics
+                        if item["severity"] == "warning"
+                    ),
+                    None,
+                )
+                if oldest_warning is not None:
+                    self._diagnostics.remove(oldest_warning)
+                else:
+                    self._diagnostics.popleft()
+        self._diagnostics.append(diagnostic)
 
     def _consume_log(self) -> None:
         try:
