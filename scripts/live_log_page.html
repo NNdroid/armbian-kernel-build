@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN" data-theme="auto" data-resolved-theme="dark">
+<html lang="en" data-theme="auto" data-resolved-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -456,27 +456,26 @@
       <div class="brand">
         <div class="brand-mark" aria-hidden="true">A</div>
         <div class="brand-copy">
-          <h1 data-i18n="title">Armbian 内核构建</h1>
-          <p><span data-i18n="subtitle">安全的实时构建控制台</span> · <span id="elapsed">00:00:00</span></p>
+          <h1 data-i18n="title">Armbian Kernel Build</h1>
+          <p><span data-i18n="subtitle">Secure live build console</span> · <span id="elapsed">00:00:00</span></p>
         </div>
       </div>
       <div class="header-status">
-        <span id="status" class="status-pill" data-state="connecting">正在连接</span>
+        <span id="status" class="status-pill" data-state="connecting">Connecting</span>
         <span id="transport" class="transport-pill">SSE</span>
       </div>
       <div class="header-spacer"></div>
       <div class="header-controls">
-        <button id="notifications" class="notification-button" type="button" aria-pressed="false" data-i18n="enableNotifications">启用通知</button>
-        <label class="select-label"><span data-i18n="themeLabel">显示主题</span>
-          <select id="theme" data-i18n-aria="themeLabel" aria-label="显示主题">
-            <option value="auto" data-i18n="themeAuto">自动</option>
-            <option value="light" data-i18n="themeLight">浅色</option>
-            <option value="dark" data-i18n="themeDark">深色</option>
+        <button id="notifications" class="notification-button" type="button" aria-pressed="false" data-i18n="enableNotifications">Enable notifications</button>
+        <label class="select-label"><span data-i18n="themeLabel">Display theme</span>
+          <select id="theme" data-i18n-aria="themeLabel" aria-label="Display theme">
+            <option value="auto" data-i18n="themeAuto">Auto</option>
+            <option value="light" data-i18n="themeLight">Light</option>
+            <option value="dark" data-i18n="themeDark">Dark</option>
           </select>
         </label>
-        <label class="select-label"><span data-i18n="languageLabel">界面语言</span>
-          <select id="locale" data-i18n-aria="languageLabel" aria-label="界面语言">
-            <option value="zh-CN">中文</option>
+        <label class="select-label"><span data-i18n="languageLabel">Interface language</span>
+          <select id="locale" data-i18n-aria="languageLabel" aria-label="Interface language">
             <option value="ja">日本語</option>
             <option value="en">English</option>
             <option value="fr">Français</option>
@@ -486,155 +485,155 @@
       </div>
     </header>
 
-    <section class="overview" data-i18n-aria="overviewLabel" aria-label="目标与构建资源概览">
+    <section class="overview" data-i18n-aria="overviewLabel" aria-label="Target and build resource overview">
       <article class="overview-card">
-        <div class="card-label" data-i18n="target">目标设备</div>
+        <div class="card-label" data-i18n="target">Target device</div>
         <div id="target-board" class="card-main">nanopi-r5s</div>
         <div id="target-details" class="card-sub">arm64 · trixie</div>
       </article>
       <article class="overview-card">
-        <div class="card-label" data-i18n="build">构建信息</div>
+        <div class="card-label" data-i18n="build">Build information</div>
         <div id="build-main" class="card-main">linux-rockchip64</div>
         <div id="build-details" class="card-sub">—</div>
       </article>
       <article class="overview-card">
-        <div class="card-label" data-i18n="runner">Runner 信息</div>
+        <div class="card-label" data-i18n="runner">Runner information</div>
         <div id="runner-main" class="card-main">—</div>
         <div id="runner-details" class="card-sub">—</div>
-        <div class="meter-row"><span data-i18n="load">负载</span><div class="meter"><i id="load-meter"></i></div><output id="load-value">0%</output></div>
+        <div class="meter-row"><span data-i18n="load">Load</span><div class="meter"><i id="load-meter"></i></div><output id="load-value">0%</output></div>
       </article>
       <article class="overview-card">
-        <div class="card-label" data-i18n="resources">资源占用</div>
-        <div class="meter-row"><span data-i18n="memory">内存</span><div class="meter"><i id="memory-meter"></i></div><output id="memory-value">0%</output></div>
-        <div class="meter-row"><span data-i18n="disk">磁盘</span><div class="meter"><i id="disk-meter"></i></div><output id="disk-value">0%</output></div>
+        <div class="card-label" data-i18n="resources">Resource usage</div>
+        <div class="meter-row"><span data-i18n="memory">Memory</span><div class="meter"><i id="memory-meter"></i></div><output id="memory-value">0%</output></div>
+        <div class="meter-row"><span data-i18n="disk">Disk</span><div class="meter"><i id="disk-meter"></i></div><output id="disk-value">0%</output></div>
         <div id="resource-details" class="card-sub">—</div>
       </article>
     </section>
 
     <section class="workspace">
-      <nav class="workspace-tabs" role="tablist" data-i18n-aria="workspaceTabsLabel" aria-label="工作区视图">
-        <button id="tab-dashboard" type="button" role="tab" aria-selected="true" aria-controls="dashboard-panel" data-i18n="dashboardTab">构建概览</button>
-        <button id="tab-log" type="button" role="tab" aria-selected="false" aria-controls="log-panel" data-i18n="logTab">实时日志</button>
-        <button id="tab-files" type="button" role="tab" aria-selected="false" aria-controls="files-panel" data-i18n="filesTab">构建文件</button>
-        <button id="tab-config" type="button" role="tab" aria-selected="false" aria-controls="config-panel" data-i18n="configTab">配置差异</button>
-        <button id="tab-packages" type="button" role="tab" aria-selected="false" aria-controls="packages-panel" data-i18n="packagesTab">DEB 检查</button>
+      <nav class="workspace-tabs" role="tablist" data-i18n-aria="workspaceTabsLabel" aria-label="Workspace views">
+        <button id="tab-dashboard" type="button" role="tab" aria-selected="true" aria-controls="dashboard-panel" data-i18n="dashboardTab">Build overview</button>
+        <button id="tab-log" type="button" role="tab" aria-selected="false" aria-controls="log-panel" data-i18n="logTab">Live log</button>
+        <button id="tab-files" type="button" role="tab" aria-selected="false" aria-controls="files-panel" data-i18n="filesTab">Build files</button>
+        <button id="tab-config" type="button" role="tab" aria-selected="false" aria-controls="config-panel" data-i18n="configTab">Config diff</button>
+        <button id="tab-packages" type="button" role="tab" aria-selected="false" aria-controls="packages-panel" data-i18n="packagesTab">DEB inspector</button>
       </nav>
       <div id="dashboard-panel" class="workspace-panel" role="tabpanel" aria-labelledby="tab-dashboard">
         <div class="toolbar">
-          <strong data-i18n="dashboardTitle">构建与证据中心</strong>
+          <strong data-i18n="dashboardTitle">Build and evidence center</strong>
           <span class="header-spacer"></span>
-          <button id="dashboard-refresh" type="button" data-i18n="refreshDashboard">刷新概览</button>
+          <button id="dashboard-refresh" type="button" data-i18n="refreshDashboard">Refresh overview</button>
         </div>
         <div class="dashboard-scroll">
           <div class="dashboard-grid">
             <article class="dashboard-card wide">
-              <div class="dashboard-heading"><strong data-i18n="timelineTitle">构建阶段时间线</strong><span id="timeline-summary">—</span></div>
-              <div id="timeline" class="dashboard-content timeline"><div class="empty-state" data-i18n="dashboardLoading">正在分析构建信息…</div></div>
+              <div class="dashboard-heading"><strong data-i18n="timelineTitle">Build stage timeline</strong><span id="timeline-summary">—</span></div>
+              <div id="timeline" class="dashboard-content timeline"><div class="empty-state" data-i18n="dashboardLoading">Analyzing build information…</div></div>
             </article>
             <article class="dashboard-card wide">
-              <div class="dashboard-heading"><strong data-i18n="featuresTitle">内核功能矩阵</strong><select id="feature-branch" class="feature-branch" data-i18n-aria="featureBranchLabel" aria-label="内核分支"></select></div>
-              <div class="dashboard-content"><table class="data-table"><thead><tr><th data-i18n="featureGroup">功能组</th><th data-i18n="configSymbol">配置符号</th><th data-i18n="configMode">模式</th></tr></thead><tbody id="feature-list"></tbody></table><div id="features-empty" class="empty-state" data-i18n="evidenceWaiting">等待构建证据…</div></div>
+              <div class="dashboard-heading"><strong data-i18n="featuresTitle">Kernel feature matrix</strong><select id="feature-branch" class="feature-branch" data-i18n-aria="featureBranchLabel" aria-label="Kernel branch"></select></div>
+              <div class="dashboard-content"><table class="data-table"><thead><tr><th data-i18n="featureGroup">Feature group</th><th data-i18n="configSymbol">Config symbol</th><th data-i18n="configMode">Mode</th></tr></thead><tbody id="feature-list"></tbody></table><div id="features-empty" class="empty-state" data-i18n="evidenceWaiting">Waiting for build evidence…</div></div>
             </article>
             <article class="dashboard-card">
-              <div class="dashboard-heading"><strong data-i18n="diagnosticsTitle">故障诊断中心</strong><span id="diagnostics-summary">0</span></div>
-              <div id="diagnostics" class="dashboard-content"><div class="empty-state" data-i18n="noDiagnostics">尚未检测到警告或错误</div></div>
+              <div class="dashboard-heading"><strong data-i18n="diagnosticsTitle">Failure diagnostics</strong><span id="diagnostics-summary">0</span></div>
+              <div id="diagnostics" class="dashboard-content"><div class="empty-state" data-i18n="noDiagnostics">No warnings or errors detected</div></div>
             </article>
             <article class="dashboard-card">
-              <div class="dashboard-heading"><strong data-i18n="resourcesTrendTitle">资源趋势</strong><span data-i18n="recentSamples">最近采样</span></div>
-              <div class="dashboard-content"><svg id="resource-chart" class="resource-chart" viewBox="0 0 600 180" preserveAspectRatio="none" role="img" data-i18n-aria="resourcesTrendTitle" aria-label="资源趋势"></svg><div class="chart-legend"><span style="color:var(--accent)"><i class="legend-dot"></i><span data-i18n="load">负载</span></span><span style="color:#8a67ee"><i class="legend-dot"></i><span data-i18n="memory">内存</span></span><span style="color:var(--success)"><i class="legend-dot"></i><span data-i18n="disk">磁盘</span></span></div></div>
+              <div class="dashboard-heading"><strong data-i18n="resourcesTrendTitle">Resource trends</strong><span data-i18n="recentSamples">Recent samples</span></div>
+              <div class="dashboard-content"><svg id="resource-chart" class="resource-chart" viewBox="0 0 600 180" preserveAspectRatio="none" role="img" data-i18n-aria="resourcesTrendTitle" aria-label="Resource trends"></svg><div class="chart-legend"><span style="color:var(--accent)"><i class="legend-dot"></i><span data-i18n="load">Load</span></span><span style="color:#8a67ee"><i class="legend-dot"></i><span data-i18n="memory">Memory</span></span><span style="color:var(--success)"><i class="legend-dot"></i><span data-i18n="disk">Disk</span></span></div></div>
             </article>
             <article class="dashboard-card">
-              <div class="dashboard-heading"><strong data-i18n="sourcesTitle">源码版本</strong><span data-i18n="pinnedSources">固定提交</span></div>
-              <div id="sources" class="dashboard-content source-list"><div class="empty-state" data-i18n="evidenceWaiting">等待构建证据…</div></div>
+              <div class="dashboard-heading"><strong data-i18n="sourcesTitle">Source versions</strong><span data-i18n="pinnedSources">Pinned commits</span></div>
+              <div id="sources" class="dashboard-content source-list"><div class="empty-state" data-i18n="evidenceWaiting">Waiting for build evidence…</div></div>
             </article>
             <article class="dashboard-card">
-              <div class="dashboard-heading"><strong data-i18n="integrityTitle">完整性中心</strong><span id="integrity-summary">—</span></div>
-              <div id="integrity" class="dashboard-content integrity-list"><div class="empty-state" data-i18n="evidenceWaiting">等待构建证据…</div></div>
+              <div class="dashboard-heading"><strong data-i18n="integrityTitle">Integrity center</strong><span id="integrity-summary">—</span></div>
+              <div id="integrity" class="dashboard-content integrity-list"><div class="empty-state" data-i18n="evidenceWaiting">Waiting for build evidence…</div></div>
             </article>
           </div>
         </div>
       </div>
       <div id="log-panel" class="workspace-panel" role="tabpanel" aria-labelledby="tab-log" hidden>
-        <div class="toolbar" data-i18n-aria="logToolsLabel" aria-label="日志搜索与行跳转">
+        <div class="toolbar" data-i18n-aria="logToolsLabel" aria-label="Log search and line navigation">
           <div class="search-tools">
-            <input id="search" type="search" autocomplete="off" data-i18n-placeholder="searchPlaceholder" data-i18n-aria="searchPlaceholder" placeholder="搜索日志" aria-label="搜索日志">
+            <input id="search" type="search" autocomplete="off" data-i18n-placeholder="searchPlaceholder" data-i18n-aria="searchPlaceholder" placeholder="Search logs" aria-label="Search logs">
             <output id="search-count" class="search-count" aria-live="polite">0 / 0</output>
-            <button id="search-prev" class="icon-button" type="button" data-i18n-aria="previousMatch" aria-label="上一个匹配项" disabled>↑</button>
-            <button id="search-next" class="icon-button" type="button" data-i18n-aria="nextMatch" aria-label="下一个匹配项" disabled>↓</button>
+            <button id="search-prev" class="icon-button" type="button" data-i18n-aria="previousMatch" aria-label="Previous match" disabled>↑</button>
+            <button id="search-next" class="icon-button" type="button" data-i18n-aria="nextMatch" aria-label="Next match" disabled>↓</button>
           </div>
           <form id="jump-form" class="jump-tools">
-            <input id="jump-line" type="number" min="1" inputmode="numeric" data-i18n-placeholder="linePlaceholder" data-i18n-aria="linePlaceholder" placeholder="行号" aria-label="行号">
-            <button type="submit" data-i18n="goLine">跳转</button>
+            <input id="jump-line" type="number" min="1" inputmode="numeric" data-i18n-placeholder="linePlaceholder" data-i18n-aria="linePlaceholder" placeholder="Line number" aria-label="Line number">
+            <button type="submit" data-i18n="goLine">Go</button>
           </form>
           <div class="toolbar-actions">
-            <button id="wrap" type="button" aria-pressed="true" data-i18n="wrap">自动换行</button>
-            <button id="follow" type="button" aria-pressed="true" data-i18n="follow">跟随末尾</button>
-            <a class="button-link" href="/download" data-i18n="download">下载日志</a>
+            <button id="wrap" type="button" aria-pressed="true" data-i18n="wrap">Wrap lines</button>
+            <button id="follow" type="button" aria-pressed="true" data-i18n="follow">Follow tail</button>
+            <a class="button-link" href="/download" data-i18n="download">Download log</a>
           </div>
         </div>
         <div class="log-meta">
-          <strong data-i18n="liveOutput">实时输出</strong>
+          <strong data-i18n="liveOutput">Live output</strong>
           <span class="phase" id="phase">—</span>
-          <span class="right"><span id="line-summary">0</span> <span data-i18n="lines">行</span> · <span id="size-summary">0 B</span></span>
+          <span class="right"><span id="line-summary">0</span> <span data-i18n="lines">lines</span> · <span id="size-summary">0 B</span></span>
         </div>
         <div id="log-viewport" class="log-viewport">
-          <div id="log-body" class="log-body wrap" role="log" aria-live="off" data-i18n-aria="liveOutput" aria-label="实时输出">
-            <div id="empty-state" class="empty-state" data-i18n="waiting">等待构建日志…</div>
+          <div id="log-body" class="log-body wrap" role="log" aria-live="off" data-i18n-aria="liveOutput" aria-label="Live output">
+            <div id="empty-state" class="empty-state" data-i18n="waiting">Waiting for build output…</div>
           </div>
         </div>
         <footer class="footer">
-          <output id="selection" aria-live="polite" data-i18n="noSelection">尚未选择日志行</output>
-          <span class="right" data-i18n="footer">界面已本地化 · 原始日志不会翻译 · Basic Auth</span>
+          <output id="selection" aria-live="polite" data-i18n="noSelection">No log line selected</output>
+          <span class="right" data-i18n="footer">Localized UI · raw logs stay untranslated · Basic Auth</span>
         </footer>
       </div>
       <div id="files-panel" class="workspace-panel" role="tabpanel" aria-labelledby="tab-files" hidden>
-        <div class="toolbar" data-i18n-aria="fileToolsLabel" aria-label="构建文件工具">
+        <div class="toolbar" data-i18n-aria="fileToolsLabel" aria-label="Build file tools">
           <label class="file-filter">
-            <input id="file-filter" type="search" autocomplete="off" data-i18n-placeholder="fileFilterPlaceholder" data-i18n-aria="fileFilterPlaceholder" placeholder="筛选当前目录" aria-label="筛选当前目录">
+            <input id="file-filter" type="search" autocomplete="off" data-i18n-placeholder="fileFilterPlaceholder" data-i18n-aria="fileFilterPlaceholder" placeholder="Filter this directory" aria-label="Filter this directory">
           </label>
-          <button id="file-refresh" type="button" data-i18n="refreshFiles">刷新</button>
+          <button id="file-refresh" type="button" data-i18n="refreshFiles">Refresh</button>
         </div>
-        <nav id="breadcrumbs" class="breadcrumbs" data-i18n-aria="breadcrumbsLabel" aria-label="文件路径"></nav>
+        <nav id="breadcrumbs" class="breadcrumbs" data-i18n-aria="breadcrumbsLabel" aria-label="File path"></nav>
         <div class="log-meta">
-          <strong data-i18n="artifactRoot">构建产物</strong>
-          <span class="phase" data-i18n="readOnly">只读</span>
+          <strong data-i18n="artifactRoot">Build artifacts</strong>
+          <span class="phase" data-i18n="readOnly">Read only</span>
           <span class="right" id="file-summary">0</span>
         </div>
         <div class="files-viewport">
           <table class="files-table">
-            <thead><tr><th data-i18n="fileName">名称</th><th data-i18n="fileSize">大小</th><th data-i18n="fileModified">修改时间</th><th data-i18n="fileActions">操作</th></tr></thead>
+            <thead><tr><th data-i18n="fileName">Name</th><th data-i18n="fileSize">Size</th><th data-i18n="fileModified">Modified</th><th data-i18n="fileActions">Actions</th></tr></thead>
             <tbody id="file-list"></tbody>
           </table>
-          <div id="files-empty" class="empty-state" data-i18n="filesLoading">正在读取构建文件…</div>
+          <div id="files-empty" class="empty-state" data-i18n="filesLoading">Reading build files…</div>
         </div>
         <footer class="footer">
-          <output id="file-message" class="file-message" aria-live="polite" data-i18n="filesSafeNote">仅公开 build/output；不允许上传、修改或删除</output>
-          <span class="right" data-i18n="filesFooter">路径隔离 · Basic Auth · 断点续传</span>
+          <output id="file-message" class="file-message" aria-live="polite" data-i18n="filesSafeNote">Only build/output is published; upload, modification and deletion are disabled</output>
+          <span class="right" data-i18n="filesFooter">Path confined · Basic Auth · resumable downloads</span>
         </footer>
       </div>
       <div id="config-panel" class="workspace-panel" role="tabpanel" aria-labelledby="tab-config" hidden>
         <div class="toolbar">
-          <div class="search-tools"><input id="config-filter" type="search" autocomplete="off" data-i18n-placeholder="configFilterPlaceholder" data-i18n-aria="configFilterPlaceholder" placeholder="筛选配置差异" aria-label="筛选配置差异"></div>
-          <button id="config-refresh" type="button" data-i18n="refreshDashboard">刷新概览</button>
+          <div class="search-tools"><input id="config-filter" type="search" autocomplete="off" data-i18n-placeholder="configFilterPlaceholder" data-i18n-aria="configFilterPlaceholder" placeholder="Filter configuration differences" aria-label="Filter configuration differences"></div>
+          <button id="config-refresh" type="button" data-i18n="refreshDashboard">Refresh overview</button>
         </div>
         <div class="config-layout">
-          <nav id="config-list" class="inspector-list" data-i18n-aria="configDiffsTitle" aria-label="配置差异文件"></nav>
+          <nav id="config-list" class="inspector-list" data-i18n-aria="configDiffsTitle" aria-label="Configuration diff files"></nav>
           <section class="inspector-view">
-            <div id="config-meta" class="inspector-meta" data-i18n="selectConfigDiff">请选择一份配置差异</div>
+            <div id="config-meta" class="inspector-meta" data-i18n="selectConfigDiff">Select a configuration diff</div>
             <div id="config-content" class="inspector-pre config-diff-body"></div>
           </section>
         </div>
       </div>
       <div id="packages-panel" class="workspace-panel" role="tabpanel" aria-labelledby="tab-packages" hidden>
         <div class="toolbar">
-          <strong data-i18n="packagesTitle">DEB 包检查器</strong>
+          <strong data-i18n="packagesTitle">DEB package inspector</strong>
           <span class="header-spacer"></span>
-          <button id="packages-refresh" type="button" data-i18n="refreshPackages">刷新包列表</button>
+          <button id="packages-refresh" type="button" data-i18n="refreshPackages">Refresh packages</button>
         </div>
         <div class="package-layout">
-          <nav id="package-list" class="inspector-list" data-i18n-aria="packagesTitle" aria-label="DEB 包检查器"></nav>
+          <nav id="package-list" class="inspector-list" data-i18n-aria="packagesTitle" aria-label="DEB package inspector"></nav>
           <section class="inspector-view">
-            <div id="package-meta" class="inspector-meta" data-i18n="selectPackage">请选择一个 DEB 包</div>
+            <div id="package-meta" class="inspector-meta" data-i18n="selectPackage">Select a DEB package</div>
             <div id="package-control" class="package-control"></div>
             <pre id="package-content" class="inspector-pre"></pre>
           </section>
@@ -646,14 +645,14 @@
   <dialog id="file-preview" class="preview-dialog">
     <div class="preview-shell">
       <header class="preview-header">
-        <strong id="preview-title" data-i18n="previewTitle">文件预览</strong>
-        <button id="preview-close" type="button" data-i18n="close">关闭</button>
+        <strong id="preview-title" data-i18n="previewTitle">File preview</strong>
+        <button id="preview-close" type="button" data-i18n="close">Close</button>
       </header>
       <div id="preview-meta" class="preview-meta">—</div>
       <pre id="preview-text" class="preview-text"></pre>
       <footer class="preview-footer">
         <span id="preview-note"></span>
-        <a id="preview-download" class="button-link" href="#" data-i18n="downloadFile">下载文件</a>
+        <a id="preview-download" class="button-link" href="#" data-i18n="downloadFile">Download file</a>
       </footer>
     </div>
   </dialog>
@@ -694,23 +693,6 @@
       };
 
       const translations = {
-        'zh-CN': {
-          title: 'Armbian 内核构建', subtitle: '安全的实时构建控制台', themeLabel: '显示主题', themeAuto: '自动', themeLight: '浅色', themeDark: '深色', languageLabel: '界面语言',
-          overviewLabel: '目标与构建资源概览', target: '目标设备', build: '构建信息', runner: 'Runner 信息', resources: '资源占用', load: '负载', memory: '内存', disk: '磁盘',
-          logToolsLabel: '日志搜索与行跳转', searchPlaceholder: '搜索日志', previousMatch: '上一个匹配项', nextMatch: '下一个匹配项', linePlaceholder: '行号', goLine: '跳转', wrap: '自动换行', follow: '跟随末尾', download: '下载日志',
-          liveOutput: '实时输出', lines: '行', waiting: '等待构建日志…', noSelection: '尚未选择日志行', footer: '界面已本地化 · 原始日志不会翻译 · Basic Auth',
-          connecting: '正在连接', running: '构建中', success: '构建成功', failure: '构建失败', disabled: '日志已停用', reconnecting: '正在重连', polling: '轮询回退', disconnected: '连接中断',
-          sse: 'SSE 实时', poll: '增量轮询', selectLine: '选择第 {line} 行', selectedLine: '已选择第 {line} 行', searchResult: '匹配 {current} / {total} · 第 {line} 行', noMatches: '没有匹配的日志', lineNotFound: '当前缓存中没有第 {line} 行',
-          branch: '分支', kernel: '内核', attempt: '尝试', unknown: '未知', workspaceTabsLabel: '工作区视图', logTab: '实时日志', filesTab: '构建文件',
-          fileToolsLabel: '构建文件工具', fileFilterPlaceholder: '筛选当前目录', refreshFiles: '刷新', breadcrumbsLabel: '文件路径', artifactRoot: '构建产物', readOnly: '只读',
-          fileName: '名称', fileSize: '大小', fileModified: '修改时间', fileActions: '操作', filesLoading: '正在读取构建文件…', filesSafeNote: '仅公开 build/output；不允许上传、修改或删除', filesFooter: '路径隔离 · Basic Auth · 断点续传',
-          previewTitle: '文件预览', close: '关闭', downloadFile: '下载文件', root: '产物根目录', filesUnavailable: '产物目录尚未创建', filesDisabled: '文件浏览未启用', filesEmpty: '当前目录为空', filteredEmpty: '没有匹配的文件', directory: '目录', preview: '预览', sha256: 'SHA-256', hashCalculating: '正在计算 SHA-256…', hashReady: '{name} · SHA-256', fileLoadError: '无法读取构建文件', previewError: '此文件无法预览', truncatedPreview: '仅显示前 {size}', completePreview: '完整文本 · {size}', fileCount: '{count} 项',
-          dashboardTab: '构建概览', configTab: '配置差异', packagesTab: 'DEB 检查', enableNotifications: '启用通知', notificationsEnabled: '通知已启用', notificationsDenied: '通知被拒绝', notificationsUnsupported: '浏览器不支持通知', notificationSuccessTitle: '内核构建成功', notificationFailureTitle: '内核构建失败', notificationBody: '打开构建控制台查看详情。',
-          dashboardTitle: '构建与证据中心', refreshDashboard: '刷新概览', timelineTitle: '构建阶段时间线', dashboardLoading: '正在分析构建信息…', featuresTitle: '内核功能矩阵', featureBranchLabel: '内核分支', featureGroup: '功能组', configSymbol: '配置符号', configMode: '模式', evidenceWaiting: '等待构建证据…', diagnosticsTitle: '故障诊断中心', noDiagnostics: '尚未检测到警告或错误', resourcesTrendTitle: '资源趋势', recentSamples: '最近采样', sourcesTitle: '源码版本', pinnedSources: '固定提交', integrityTitle: '完整性中心',
-          configFilterPlaceholder: '筛选配置差异', configDiffsTitle: '配置差异文件', selectConfigDiff: '请选择一份配置差异', packagesTitle: 'DEB 包检查器', refreshPackages: '刷新包列表', selectPackage: '请选择一个 DEB 包', configLoading: '正在读取配置差异…', packageLoading: '正在检查 DEB 内容…', packageToolUnavailable: 'Runner 没有可用的 dpkg-deb', packageInvalid: '无法解析这个 DEB 包', packageTruncated: '文件清单过长，已截断', packageFiles: '{count} 个文件条目',
-          feature_custom: '注入组件', feature_ebpf: 'eBPF / BTF', feature_mplsSrv6: 'MPLS / SRv6', feature_overlay: 'Overlay / 隧道', feature_netfilter: 'Netfilter', feature_transport: 'BBR / Bridge', feature_usbGadget: 'USB Gadget', feature_bluetooth: '蓝牙', feature_wifi: 'Wi-Fi / MT7921E',
-          verified: '已验证', mismatch: '不匹配', integrityUnavailable: '证据不足', configured: '当前配置', packaged: '包内证据', stageCount: '{count} 个阶段', diagnosticCount: '{count} 项', integrityCount: '{verified}/{total} 已验证', diffSummary: '+{added} / -{removed} · {lines} 行', jumpToLine: '跳转到日志', package: '包名', version: '版本', architecture: '架构', installedSize: '安装大小', depends: '依赖', description: '说明', errorLabel: '错误', warningLabel: '警告'
-        },
         ja: {
           title: 'Armbian カーネルビルド', subtitle: '安全なライブビルドコンソール', themeLabel: '表示テーマ', themeAuto: '自動', themeLight: 'ライト', themeDark: 'ダーク', languageLabel: '表示言語',
           overviewLabel: 'ターゲットとビルドリソースの概要', target: '対象デバイス', build: 'ビルド情報', runner: 'Runner 情報', resources: 'リソース使用量', load: '負荷', memory: 'メモリ', disk: 'ディスク',
@@ -809,7 +791,7 @@
         const saved = loadPreference('locale', '');
         if (translations[saved]) return saved;
         const language = (navigator.language || 'en').toLowerCase();
-        if (language.startsWith('zh')) return 'zh-CN';
+        if (language.startsWith('zh')) return 'en';
         if (language.startsWith('ja')) return 'ja';
         if (language.startsWith('fr')) return 'fr';
         if (language.startsWith('de')) return 'de';
