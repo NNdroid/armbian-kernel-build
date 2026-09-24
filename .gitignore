@@ -1,6 +1,6 @@
-# Armbian 构建树与下载的版本解析文件都是运行时产物
-/build/
-/rockchip64_common.inc
+# Runtime artifacts from the Armbian build tree and downloaded version metadata
+build/
+rockchip64_common.inc
 
-# WorkBuddy 工作区数据（记忆、本地测试镜像等）
+# Local workspace data (memory, test images, etc.)
 .workbuddy/
