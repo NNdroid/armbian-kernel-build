@@ -899,19 +899,30 @@ after="$(sha256sum \
 	"${KERNEL_ROOT}/net/netfilter/Makefile")"
 [[ "${before}" == "${after}" ]] || fail "second injection changed parent Kconfig/Makefiles"
 
+NEGATIVE_CASE_LOG="${TEST_ROOT}/negative-config-cases.log"
+: > "${NEGATIVE_CASE_LOG}"
+
 reset_hook_arrays
-if AMNEZIAWG_MODE=y WIREGUARD_MODE=y custom_kernel_config; then
+if AMNEZIAWG_MODE=y WIREGUARD_MODE=y custom_kernel_config >>"${NEGATIVE_CASE_LOG}" 2>&1; then
 	fail "unsafe built-in AmneziaWG/WireGuard combination was accepted"
 fi
+assert_contains "${NEGATIVE_CASE_LOG}" \
+	"Invalid built-in combination: AMNEZIAWG_MODE=y and WIREGUARD_MODE=y can collide; disable native WireGuard or keep one implementation modular"
 
+: > "${NEGATIVE_CASE_LOG}"
 reset_hook_arrays
-if WIREGUARD_MODE=invalid custom_kernel_config; then
+if WIREGUARD_MODE=invalid custom_kernel_config >>"${NEGATIVE_CASE_LOG}" 2>&1; then
 	fail "invalid WIREGUARD_MODE value was accepted"
 fi
+assert_contains "${NEGATIVE_CASE_LOG}" \
+	"Invalid configuration: CONFIG_WIREGUARD: invalid mode 'invalid'"
 
+: > "${NEGATIVE_CASE_LOG}"
 reset_hook_arrays
-if ENABLE_FULL_NETWORKING=invalid custom_kernel_config; then
+if ENABLE_FULL_NETWORKING=invalid custom_kernel_config >>"${NEGATIVE_CASE_LOG}" 2>&1; then
 	fail "invalid ENABLE_FULL_NETWORKING value was accepted"
 fi
+assert_contains "${NEGATIVE_CASE_LOG}" \
+	"Invalid configuration: ENABLE_FULL_NETWORKING must be yes or no, got 'invalid'"
 
 printf '[PASS] kernel injection is pinned/idempotent; full eBPF and networking are enforced\n'
