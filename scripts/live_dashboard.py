@@ -14,7 +14,7 @@ from typing import Any
 
 
 ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-_])")
-STAGE_END_RE = re.compile(r"────\s*(.+?)\s+完成\s*\(耗时\s*(\d+)s\)\s*────")
+STAGE_END_RE = re.compile(r"────\s*(.+?)\s+completed\s*\(elapsed\s*(\d+)s\)\s*────")
 STAGE_BEGIN_RE = re.compile(r"────\s*(.+?)\s*────")
 ERROR_RE = re.compile(
     r"(?:\[ERROR\]|\[💥\]|\[kernel-inject\]\[(?:err|error)\]|\berror(?:\s+\d+|\s*:)|\bfailed\b)",
