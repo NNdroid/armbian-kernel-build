@@ -492,6 +492,8 @@ def main() -> int:
                     "[INFO] ──── Armbian internal banner ────\n"
                     "──── another internal separator ────\n"
                     "[WARN] synthetic warning\n"
+                    "[🐳|🔨] test.dtb: Warning (spi_bus_reg): Failed prerequisite 'reg_format'\n"
+                    "[🐳|🔨] patch title: keep reset deasserted on failed resume\n"
                     "[ERROR] synthetic failure evidence\n"
                     "\x1b[32m[INFO]\x1b[0m \x1b[2m2026-09-24T03:30:03Z\x1b[0m ──── 1. Environment initialization completed (elapsed 3s) ────\n".encode(
                         "utf-8"
@@ -506,10 +508,19 @@ def main() -> int:
             assert dashboard["timeline"][0]["status"] == "success", dashboard
             assert dashboard["timeline"][0]["duration_seconds"] == 3, dashboard
             assert len(dashboard["timeline"]) == 1, dashboard
-            assert {item["severity"] for item in dashboard["diagnostics"]} == {
+            diagnostics = dashboard["diagnostics"]
+            assert {item["severity"] for item in diagnostics} == {
                 "warning",
                 "error",
             }, dashboard
+            assert len(diagnostics) == 3, diagnostics
+            dtc_warning = next(
+                item for item in diagnostics if "Failed prerequisite" in item["message"]
+            )
+            assert dtc_warning["severity"] == "warning", dtc_warning
+            assert not any(
+                "failed resume" in item["message"] for item in diagnostics
+            ), diagnostics
             assert dashboard["features"][0]["branch"] == "current", dashboard
             custom_group = next(
                 group
