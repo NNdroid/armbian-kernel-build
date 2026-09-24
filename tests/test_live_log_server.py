@@ -482,10 +482,10 @@ def main() -> int:
             assert status == 401, status
             with (log_root / "build.log").open("ab") as log_file:
                 log_file.write(
-                    "\x1b[32m[INFO]\x1b[0m ──── 1. 环境初始化 ────\n"
+                    "\x1b[32m[INFO]\x1b[0m ──── 1. Environment initialization ────\n"
                     "[WARN] synthetic warning\n"
                     "[ERROR] synthetic failure evidence\n"
-                    "[INFO] ──── 1. 环境初始化 完成 (耗时 3s) ────\n".encode(
+                    "[INFO] ──── 1. Environment initialization completed (elapsed 3s) ────\n".encode(
                         "utf-8"
                     )
                 )
@@ -494,7 +494,7 @@ def main() -> int:
             )
             assert status == 200, status
             dashboard = json.loads(body)
-            assert dashboard["timeline"][0]["label"] == "1. 环境初始化", dashboard
+            assert dashboard["timeline"][0]["label"] == "1. Environment initialization", dashboard
             assert dashboard["timeline"][0]["status"] == "success", dashboard
             assert dashboard["timeline"][0]["duration_seconds"] == 3, dashboard
             assert {item["severity"] for item in dashboard["diagnostics"]} == {
