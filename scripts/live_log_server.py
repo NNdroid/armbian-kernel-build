@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import hmac
 import json
+import mimetypes
 import os
 import platform
 import re
@@ -16,12 +18,46 @@ import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 
 MAX_CHUNK_BYTES = 512 * 1024
+MAX_PREVIEW_BYTES = 512 * 1024
+MAX_DIRECTORY_ENTRIES = 2000
+STREAM_CHUNK_BYTES = 64 * 1024
 TERMINAL_STATES = frozenset({"success", "failure", "disabled"})
 INDEX_HTML_PATH = Path(__file__).with_name("live_log_page.html")
+PREVIEWABLE_SUFFIXES = frozenset(
+    {
+        ".conf",
+        ".config",
+        ".csv",
+        ".env",
+        ".ini",
+        ".json",
+        ".log",
+        ".md",
+        ".sha256",
+        ".sha512",
+        ".sums",
+        ".toml",
+        ".tsv",
+        ".txt",
+        ".xml",
+        ".yaml",
+        ".yml",
+    }
+)
+PREVIEWABLE_NAMES = frozenset({"sha256sums", "sha512sums"})
+
+
+class ArtifactPathError(ValueError):
+    """A requested artifact path is invalid or outside the published root."""
+
+
+class ArtifactNotFoundError(FileNotFoundError):
+    """A requested artifact path does not exist."""
+
 
 class LiveLogServer(ThreadingHTTPServer):
     daemon_threads = True
@@ -32,12 +68,14 @@ class LiveLogServer(ThreadingHTTPServer):
         root: Path,
         auth_spec: str,
         *,
+        files_root: Path | None,
         sse_poll_interval: float,
         sse_heartbeat_interval: float,
         metrics_interval: float,
     ):
         super().__init__(address, LiveLogHandler)
         self.root = root
+        self.files_root = files_root
         self.sse_poll_interval = sse_poll_interval
         self.sse_heartbeat_interval = sse_heartbeat_interval
         self.metrics_interval = metrics_interval
@@ -83,6 +121,12 @@ class LiveLogHandler(BaseHTTPRequestHandler):
     def _write(self, status: HTTPStatus, content_type: str, body: bytes) -> None:
         self._send_headers(status, content_type, len(body))
         self.wfile.write(body)
+
+    def _write_json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(
+            "utf-8"
+        )
+        self._write(status, "application/json; charset=utf-8", body)
 
     def _authorized(self) -> bool:
         supplied = self.headers.get("Authorization", "")
@@ -208,6 +252,170 @@ class LiveLogHandler(BaseHTTPRequestHandler):
     def _serve_metrics(self) -> None:
         payload = json.dumps(self._metrics(), ensure_ascii=False).encode("utf-8")
         self._write(HTTPStatus.OK, "application/json; charset=utf-8", payload)
+
+    @staticmethod
+    def _previewable(path: Path) -> bool:
+        return (
+            path.suffix.casefold() in PREVIEWABLE_SUFFIXES
+            or path.name.casefold() in PREVIEWABLE_NAMES
+        )
+
+    def _artifact_path(
+        self, query: str, *, require_exists: bool = True
+    ) -> tuple[Path, str]:
+        root = self.server.files_root
+        if root is None:
+            raise ArtifactNotFoundError("Artifact browsing is disabled")
+        raw_path = parse_qs(query, keep_blank_values=True).get("path", [""])[0]
+        if not isinstance(raw_path, str):
+            raise ArtifactPathError("Invalid path")
+        if "\x00" in raw_path or "\\" in raw_path or raw_path.startswith("/"):
+            raise ArtifactPathError("Invalid path")
+        parts = [] if raw_path == "" else raw_path.split("/")
+        if any(
+            not part or part in {".", ".."} or part.startswith(".") or ":" in part
+            for part in parts
+        ):
+            raise ArtifactPathError("Invalid path")
+
+        candidate = root.joinpath(*parts)
+        current = root
+        for part in parts:
+            current = current / part
+            if current.is_symlink():
+                raise ArtifactPathError("Symbolic links are not published")
+        try:
+            resolved = candidate.resolve(strict=False)
+            resolved.relative_to(root)
+        except (OSError, RuntimeError, ValueError) as error:
+            raise ArtifactPathError("Path escapes the published root") from error
+        if require_exists and not resolved.exists():
+            raise ArtifactNotFoundError("Artifact not found")
+        return resolved, "/".join(parts)
+
+    def _serve_files(self, query: str) -> None:
+        if self.server.files_root is None:
+            self._write_json(
+                HTTPStatus.OK,
+                {"enabled": False, "available": False, "path": "", "entries": []},
+            )
+            return
+        directory, relative = self._artifact_path(query, require_exists=False)
+        if not directory.exists():
+            if relative:
+                raise ArtifactNotFoundError("Directory not found")
+            self._write_json(
+                HTTPStatus.OK,
+                {"enabled": True, "available": False, "path": "", "entries": []},
+            )
+            return
+        if not directory.is_dir():
+            raise ArtifactPathError("The requested path is not a directory")
+
+        entries: list[dict[str, object]] = []
+        try:
+            children = [
+                child
+                for child in directory.iterdir()
+                if not child.name.startswith(".") and not child.is_symlink()
+            ]
+            children.sort(key=lambda item: (not item.is_dir(), item.name.casefold()))
+        except OSError as error:
+            raise ArtifactNotFoundError("Directory is not readable") from error
+        truncated = len(children) > MAX_DIRECTORY_ENTRIES
+        for child in children[:MAX_DIRECTORY_ENTRIES]:
+            try:
+                stat_result = child.stat()
+            except OSError:
+                continue
+            if child.is_dir():
+                kind = "directory"
+                size: int | None = None
+            elif child.is_file():
+                kind = "file"
+                size = stat_result.st_size
+            else:
+                continue
+            child_relative = child.relative_to(self.server.files_root).as_posix()
+            entries.append(
+                {
+                    "name": child.name,
+                    "path": child_relative,
+                    "kind": kind,
+                    "size": size,
+                    "modified": int(stat_result.st_mtime),
+                    "previewable": kind == "file" and self._previewable(child),
+                }
+            )
+        self._write_json(
+            HTTPStatus.OK,
+            {
+                "enabled": True,
+                "available": True,
+                "path": relative,
+                "entries": entries,
+                "truncated": truncated,
+                "limit": MAX_DIRECTORY_ENTRIES,
+            },
+        )
+
+    def _serve_file_preview(self, query: str) -> None:
+        path, relative = self._artifact_path(query)
+        if not path.is_file() or not self._previewable(path):
+            self._write_json(
+                HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+                {"error": "preview_unavailable"},
+            )
+            return
+        try:
+            size = path.stat().st_size
+            with path.open("rb") as artifact:
+                data = artifact.read(MAX_PREVIEW_BYTES + 1)
+        except OSError as error:
+            raise ArtifactNotFoundError("Artifact is not readable") from error
+        truncated = len(data) > MAX_PREVIEW_BYTES
+        data = data[:MAX_PREVIEW_BYTES]
+        if b"\x00" in data:
+            self._write_json(
+                HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+                {"error": "preview_unavailable"},
+            )
+            return
+        self._write_json(
+            HTTPStatus.OK,
+            {
+                "path": relative,
+                "name": path.name,
+                "size": size,
+                "modified": int(path.stat().st_mtime),
+                "text": data.decode("utf-8", errors="replace"),
+                "truncated": truncated,
+                "limit": MAX_PREVIEW_BYTES,
+            },
+        )
+
+    def _serve_file_hash(self, query: str) -> None:
+        path, relative = self._artifact_path(query)
+        if not path.is_file():
+            raise ArtifactPathError("The requested path is not a file")
+        digest = hashlib.sha256()
+        try:
+            with path.open("rb") as artifact:
+                while chunk := artifact.read(STREAM_CHUNK_BYTES):
+                    digest.update(chunk)
+            size = path.stat().st_size
+        except OSError as error:
+            raise ArtifactNotFoundError("Artifact is not readable") from error
+        self._write_json(
+            HTTPStatus.OK,
+            {
+                "path": relative,
+                "name": path.name,
+                "size": size,
+                "algorithm": "sha256",
+                "digest": digest.hexdigest(),
+            },
+        )
 
     def _read_log_chunk(self, offset: int) -> tuple[int, bool, str]:
         log_path = self.server.root / "build.log"
@@ -342,20 +550,87 @@ class LiveLogHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
             return
 
-    def _serve_download(self) -> None:
-        log_path = self.server.root / "build.log"
+    @staticmethod
+    def _download_name(name: str) -> str:
+        fallback = re.sub(r"[^A-Za-z0-9._-]", "_", name).strip(".") or "download"
+        return f'attachment; filename="{fallback}"; filename*=UTF-8\'\'{quote(name, safe="")}'
+
+    @staticmethod
+    def _byte_range(value: str, size: int) -> tuple[int, int] | None:
+        if not value:
+            return None
+        match = re.fullmatch(r"bytes=(\d*)-(\d*)", value.strip())
+        if not match or not (match.group(1) or match.group(2)) or size <= 0:
+            raise ValueError("Invalid byte range")
+        start_text, end_text = match.groups()
+        if start_text:
+            start = int(start_text)
+            end = int(end_text) if end_text else size - 1
+            if start >= size or end < start:
+                raise ValueError("Unsatisfiable byte range")
+            return start, min(end, size - 1)
+        suffix_length = int(end_text)
+        if suffix_length <= 0:
+            raise ValueError("Invalid byte range")
+        return max(size - suffix_length, 0), size - 1
+
+    def _stream_download(self, path: Path, download_name: str, content_type: str) -> None:
         try:
-            body = log_path.read_bytes()
+            size = path.stat().st_size
+            byte_range = self._byte_range(self.headers.get("Range", ""), size)
         except FileNotFoundError:
-            body = b""
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.send_header("Content-Disposition", 'attachment; filename="armbian-kernel-build.log"')
-        self.send_header("Content-Length", str(len(body)))
+            size = 0
+            byte_range = None
+        except ValueError:
+            self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+            self.send_header("Content-Range", f"bytes */{size}")
+            self.send_header("Content-Length", "0")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return
+
+        start, end = byte_range if byte_range is not None else (0, max(size - 1, -1))
+        length = max(end - start + 1, 0)
+        self.send_response(
+            HTTPStatus.PARTIAL_CONTENT if byte_range is not None else HTTPStatus.OK
+        )
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Disposition", self._download_name(download_name))
+        self.send_header("Content-Length", str(length))
+        self.send_header("Accept-Ranges", "bytes")
+        if byte_range is not None:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
-        self.wfile.write(body)
+        if not length:
+            return
+        try:
+            with path.open("rb") as artifact:
+                artifact.seek(start)
+                remaining = length
+                while remaining:
+                    chunk = artifact.read(min(STREAM_CHUNK_BYTES, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            return
+
+    def _serve_download(self) -> None:
+        self._stream_download(
+            self.server.root / "build.log",
+            "armbian-kernel-build.log",
+            "text/plain; charset=utf-8",
+        )
+
+    def _serve_artifact_download(self, query: str) -> None:
+        path, _ = self._artifact_path(query)
+        if not path.is_file():
+            raise ArtifactPathError("The requested path is not a file")
+        content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        self._stream_download(path, path.name, content_type)
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         target = urlsplit(self.path)
@@ -364,23 +639,49 @@ class LiveLogHandler(BaseHTTPRequestHandler):
             return
         if not self._authorized():
             return
-        if target.path == "/":
-            self._write(HTTPStatus.OK, "text/html; charset=utf-8", self.server.index_html)
-        elif target.path == "/api/events":
-            self._serve_events(target.query)
-        elif target.path == "/api/log":
-            self._serve_increment(target.query)
-        elif target.path == "/api/metrics":
-            self._serve_metrics()
-        elif target.path == "/download":
-            self._serve_download()
-        else:
-            self._write(HTTPStatus.NOT_FOUND, "text/plain; charset=utf-8", b"Not found\n")
+        try:
+            if target.path == "/":
+                self._write(
+                    HTTPStatus.OK, "text/html; charset=utf-8", self.server.index_html
+                )
+            elif target.path == "/api/events":
+                self._serve_events(target.query)
+            elif target.path == "/api/log":
+                self._serve_increment(target.query)
+            elif target.path == "/api/metrics":
+                self._serve_metrics()
+            elif target.path == "/api/files":
+                self._serve_files(target.query)
+            elif target.path == "/api/file":
+                self._serve_file_preview(target.query)
+            elif target.path == "/api/file-hash":
+                self._serve_file_hash(target.query)
+            elif target.path == "/files/download":
+                self._serve_artifact_download(target.query)
+            elif target.path == "/download":
+                self._serve_download()
+            else:
+                self._write(HTTPStatus.NOT_FOUND, "text/plain; charset=utf-8", b"Not found\n")
+        except ArtifactPathError as error:
+            self._write_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": "invalid_path", "detail": str(error)},
+            )
+        except ArtifactNotFoundError as error:
+            self._write_json(
+                HTTPStatus.NOT_FOUND,
+                {"error": "not_found", "detail": str(error)},
+            )
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--directory", required=True, type=Path)
+    parser.add_argument(
+        "--files-directory",
+        type=Path,
+        help="optional read-only root exposed by the build artifact browser",
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=8080, type=int)
     parser.add_argument("--sse-poll-interval", default=0.25, type=float)
@@ -402,15 +703,19 @@ def main() -> int:
         raise SystemExit("SSE and metrics intervals must be greater than zero")
     root = args.directory.resolve()
     root.mkdir(parents=True, exist_ok=True)
+    files_root = args.files_directory.resolve() if args.files_directory else None
     server = LiveLogServer(
         (args.host, args.port),
         root,
         auth_spec,
+        files_root=files_root,
         sse_poll_interval=args.sse_poll_interval,
         sse_heartbeat_interval=args.sse_heartbeat_interval,
         metrics_interval=args.metrics_interval,
     )
     print(f"[live-log-http] listening on http://{args.host}:{args.port}", flush=True)
+    if files_root is not None:
+        print(f"[live-log-http] read-only files root: {files_root}", flush=True)
     try:
         server.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:

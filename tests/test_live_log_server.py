@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import socket
@@ -12,6 +13,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -28,9 +30,16 @@ def reserve_port() -> int:
         return int(listener.getsockname()[1])
 
 
-def request(url: str, *, authenticated: bool = False) -> tuple[int, bytes, dict[str, str]]:
-    headers = {"Authorization": AUTH_HEADER} if authenticated else {}
-    req = urllib.request.Request(url, headers=headers)
+def request(
+    url: str,
+    *,
+    authenticated: bool = False,
+    headers: dict[str, str] | None = None,
+) -> tuple[int, bytes, dict[str, str]]:
+    request_headers = dict(headers or {})
+    if authenticated:
+        request_headers["Authorization"] = AUTH_HEADER
+    req = urllib.request.Request(url, headers=request_headers)
     try:
         with urllib.request.urlopen(req, timeout=2) as response:
             return response.status, response.read(), dict(response.headers.items())
@@ -129,7 +138,27 @@ def wait_until_ready(base_url: str, process: subprocess.Popen[bytes]) -> None:
 
 def main() -> int:
     with tempfile.TemporaryDirectory(prefix="live-log-test-") as temp_directory:
-        log_root = Path(temp_directory)
+        log_root = Path(temp_directory) / "live"
+        files_root = Path(temp_directory) / "artifacts"
+        log_root.mkdir()
+        (files_root / "debs").mkdir(parents=True)
+        (files_root / "release-metadata").mkdir()
+        package = b"\x00ar-test-package\xffpayload"
+        summary = "# Build summary\n\nKernel: 6.18\n"
+        (files_root / "debs" / "linux-image-test.deb").write_bytes(package)
+        (files_root / "release-metadata" / "build-summary.md").write_bytes(
+            summary.encode("utf-8")
+        )
+        (files_root / "release-metadata" / "large.log").write_bytes(
+            b"x" * (512 * 1024 + 17)
+        )
+        (files_root / ".secret").write_text("must not be listed", encoding="utf-8")
+        symlink_path = files_root / "linked-summary.md"
+        try:
+            symlink_path.symlink_to(files_root / "release-metadata" / "build-summary.md")
+            symlink_created = True
+        except OSError:
+            symlink_created = False
         (log_root / "build.log").write_bytes(b"first line\n")
         (log_root / "status.json").write_text(
             json.dumps({"state": "running"}), encoding="utf-8"
@@ -149,6 +178,8 @@ def main() -> int:
                 str(SERVER_SCRIPT),
                 "--directory",
                 str(log_root),
+                "--files-directory",
+                str(files_root),
                 "--port",
                 str(port),
                 "--sse-poll-interval",
@@ -178,9 +209,113 @@ def main() -> int:
             assert b'id="search"' in body
             assert b'id="jump-line"' in body
             assert b'id="theme"' in body
+            assert b'id="tab-files"' in body
+            assert b'id="file-filter"' in body
+            assert b'id="file-preview"' in body
+            assert b"/api/file-hash" in body
             assert b'value="ja"' in body
             assert b'value="fr"' in body
             assert b'value="de"' in body
+
+            status, _, _ = request(f"{base_url}/api/files")
+            assert status == 401, status
+            status, body, _ = request(f"{base_url}/api/files", authenticated=True)
+            assert status == 200, status
+            listing = json.loads(body)
+            assert listing["enabled"] is True, listing
+            assert listing["available"] is True, listing
+            assert listing["path"] == "", listing
+            assert [entry["name"] for entry in listing["entries"]] == [
+                "debs",
+                "release-metadata",
+            ], listing
+
+            nested_path = urllib.parse.quote("release-metadata", safe="")
+            status, body, _ = request(
+                f"{base_url}/api/files?path={nested_path}", authenticated=True
+            )
+            assert status == 200, status
+            nested = json.loads(body)
+            assert nested["path"] == "release-metadata", nested
+            assert nested["entries"][0]["name"] == "build-summary.md", nested
+            assert nested["entries"][0]["previewable"] is True, nested
+
+            summary_path = urllib.parse.quote(
+                "release-metadata/build-summary.md", safe=""
+            )
+            status, body, _ = request(
+                f"{base_url}/api/file?path={summary_path}", authenticated=True
+            )
+            assert status == 200, status
+            preview = json.loads(body)
+            assert preview["text"] == summary, preview
+            assert preview["truncated"] is False, preview
+
+            large_path = urllib.parse.quote("release-metadata/large.log", safe="")
+            status, body, _ = request(
+                f"{base_url}/api/file?path={large_path}", authenticated=True
+            )
+            assert status == 200, status
+            large_preview = json.loads(body)
+            assert large_preview["truncated"] is True, large_preview
+            assert len(large_preview["text"]) == 512 * 1024, len(
+                large_preview["text"]
+            )
+
+            package_path = urllib.parse.quote("debs/linux-image-test.deb", safe="")
+            status, body, _ = request(
+                f"{base_url}/api/file?path={package_path}", authenticated=True
+            )
+            assert status == 415, (status, body)
+
+            status, body, headers = request(
+                f"{base_url}/files/download?path={package_path}", authenticated=True
+            )
+            assert status == 200, status
+            assert body == package, body
+            assert headers.get("Accept-Ranges") == "bytes", headers
+            assert "linux-image-test.deb" in headers.get("Content-Disposition", "")
+
+            status, body, headers = request(
+                f"{base_url}/files/download?path={package_path}",
+                authenticated=True,
+                headers={"Range": "bytes=2-7"},
+            )
+            assert status == 206, status
+            assert body == package[2:8], body
+            assert headers.get("Content-Range") == f"bytes 2-7/{len(package)}", headers
+
+            status, body, headers = request(
+                f"{base_url}/files/download?path={package_path}",
+                authenticated=True,
+                headers={"Range": "bytes=999-1000"},
+            )
+            assert status == 416, status
+            assert headers.get("Content-Range") == f"bytes */{len(package)}", headers
+
+            status, body, _ = request(
+                f"{base_url}/api/file-hash?path={package_path}", authenticated=True
+            )
+            assert status == 200, status
+            checksum = json.loads(body)
+            assert checksum["digest"] == hashlib.sha256(package).hexdigest(), checksum
+
+            status, body, _ = request(
+                f"{base_url}/api/files?path=..%2Flive", authenticated=True
+            )
+            assert status == 400, (status, body)
+            assert b"first line" not in body
+            status, body, _ = request(
+                f"{base_url}/api/file?path=.secret", authenticated=True
+            )
+            assert status == 400, (status, body)
+            assert b"must not be listed" not in body
+            if symlink_created:
+                status, body, _ = request(
+                    f"{base_url}/api/file?path=linked-summary.md", authenticated=True
+                )
+                assert status == 400, (status, body)
+                assert b"Build summary" not in body
 
             status, _, _ = request(f"{base_url}/api/metrics")
             assert status == 401, status

@@ -192,6 +192,32 @@
       background: var(--panel);
       box-shadow: var(--shadow);
     }
+    .workspace-tabs {
+      display: flex;
+      gap: 4px;
+      min-height: 45px;
+      padding: 6px 10px 0;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel-soft);
+    }
+    .workspace-tabs button {
+      min-height: 38px;
+      padding: 0 18px;
+      border-color: transparent;
+      border-bottom-left-radius: 0;
+      border-bottom-right-radius: 0;
+      background: transparent;
+      color: var(--muted);
+      font-weight: 650;
+    }
+    .workspace-tabs button[aria-selected="true"] {
+      color: var(--accent);
+      border-color: var(--border);
+      border-bottom-color: var(--panel);
+      background: var(--panel);
+    }
+    .workspace-panel { display: flex; flex: 1; min-height: 0; flex-direction: column; }
+    .workspace-panel[hidden] { display: none; }
     .toolbar {
       display: flex;
       align-items: center;
@@ -263,6 +289,65 @@
     }
     .footer output { color: var(--text); }
     .footer .right { margin-left: auto; }
+    .file-filter { flex: 1 1 320px; min-width: 220px; }
+    .file-filter input { width: 100%; }
+    .breadcrumbs {
+      min-height: 40px;
+      padding: 5px 12px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      overflow-x: auto;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel-soft);
+    }
+    .breadcrumb-button { min-height: 28px; padding: 0 8px; border-color: transparent; background: transparent; white-space: nowrap; }
+    .breadcrumb-separator { color: var(--faint); }
+    .files-viewport { flex: 1; min-height: 0; overflow: auto; background: var(--log-bg); }
+    .files-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+    .files-table th {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      padding: 9px 12px;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel-soft);
+      color: var(--muted);
+      text-align: left;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+    }
+    .files-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    .files-table tbody tr:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+    .file-name-button { min-height: 30px; padding: 0; border: 0; background: transparent; justify-content: flex-start; font-weight: 650; text-align: left; }
+    .file-name-button:hover { border: 0; background: transparent; color: var(--accent); }
+    .file-icon { width: 22px; text-align: center; }
+    .file-size, .file-modified { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .file-actions { display: flex; justify-content: flex-end; gap: 5px; white-space: nowrap; }
+    .file-actions button, .file-actions a { min-height: 30px; padding: 0 9px; font-size: 11px; }
+    .file-message { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .file-message code { user-select: all; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+    .preview-dialog {
+      width: min(1100px, calc(100vw - 32px));
+      height: min(760px, calc(100vh - 32px));
+      padding: 0;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--panel);
+      color: var(--text);
+      box-shadow: 0 24px 80px rgba(0, 0, 0, .35);
+    }
+    .preview-dialog::backdrop { background: rgba(4, 9, 18, .68); backdrop-filter: blur(3px); }
+    .preview-shell { display: flex; height: 100%; flex-direction: column; }
+    .preview-header, .preview-footer { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--panel-soft); }
+    .preview-header { border-bottom: 1px solid var(--border); }
+    .preview-header strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .preview-header button { margin-left: auto; }
+    .preview-meta { padding: 7px 12px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 11px; }
+    .preview-text { flex: 1; min-height: 0; margin: 0; padding: 14px; overflow: auto; background: var(--log-bg); color: var(--log-text); font: 12.5px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .preview-footer { border-top: 1px solid var(--border); color: var(--muted); font-size: 11px; }
+    .preview-footer .button-link { margin-left: auto; }
 
     @media (max-width: 1100px) {
       .overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -286,6 +371,9 @@
       .jump-tools input { flex: 1; width: auto; }
       .toolbar-actions { width: 100%; }
       .toolbar-actions > * { flex: 1; }
+      .files-table .file-modified, .files-table th:nth-child(3) { display: none; }
+      .file-actions { flex-wrap: wrap; }
+      .file-actions button, .file-actions a { flex: 1; }
       .log-row { grid-template-columns: 58px minmax(0, 1fr); }
       .log-meta .phase { display: none; }
       .footer .right { display: none; }
@@ -354,39 +442,85 @@
     </section>
 
     <section class="workspace">
-      <div class="toolbar" data-i18n-aria="logToolsLabel" aria-label="日志搜索与行跳转">
-        <div class="search-tools">
-          <input id="search" type="search" autocomplete="off" data-i18n-placeholder="searchPlaceholder" data-i18n-aria="searchPlaceholder" placeholder="搜索日志" aria-label="搜索日志">
-          <output id="search-count" class="search-count" aria-live="polite">0 / 0</output>
-          <button id="search-prev" class="icon-button" type="button" data-i18n-aria="previousMatch" aria-label="上一个匹配项" disabled>↑</button>
-          <button id="search-next" class="icon-button" type="button" data-i18n-aria="nextMatch" aria-label="下一个匹配项" disabled>↓</button>
+      <nav class="workspace-tabs" role="tablist" data-i18n-aria="workspaceTabsLabel" aria-label="工作区视图">
+        <button id="tab-log" type="button" role="tab" aria-selected="true" aria-controls="log-panel" data-i18n="logTab">实时日志</button>
+        <button id="tab-files" type="button" role="tab" aria-selected="false" aria-controls="files-panel" data-i18n="filesTab">构建文件</button>
+      </nav>
+      <div id="log-panel" class="workspace-panel" role="tabpanel" aria-labelledby="tab-log">
+        <div class="toolbar" data-i18n-aria="logToolsLabel" aria-label="日志搜索与行跳转">
+          <div class="search-tools">
+            <input id="search" type="search" autocomplete="off" data-i18n-placeholder="searchPlaceholder" data-i18n-aria="searchPlaceholder" placeholder="搜索日志" aria-label="搜索日志">
+            <output id="search-count" class="search-count" aria-live="polite">0 / 0</output>
+            <button id="search-prev" class="icon-button" type="button" data-i18n-aria="previousMatch" aria-label="上一个匹配项" disabled>↑</button>
+            <button id="search-next" class="icon-button" type="button" data-i18n-aria="nextMatch" aria-label="下一个匹配项" disabled>↓</button>
+          </div>
+          <form id="jump-form" class="jump-tools">
+            <input id="jump-line" type="number" min="1" inputmode="numeric" data-i18n-placeholder="linePlaceholder" data-i18n-aria="linePlaceholder" placeholder="行号" aria-label="行号">
+            <button type="submit" data-i18n="goLine">跳转</button>
+          </form>
+          <div class="toolbar-actions">
+            <button id="wrap" type="button" aria-pressed="true" data-i18n="wrap">自动换行</button>
+            <button id="follow" type="button" aria-pressed="true" data-i18n="follow">跟随末尾</button>
+            <a class="button-link" href="/download" data-i18n="download">下载日志</a>
+          </div>
         </div>
-        <form id="jump-form" class="jump-tools">
-          <input id="jump-line" type="number" min="1" inputmode="numeric" data-i18n-placeholder="linePlaceholder" data-i18n-aria="linePlaceholder" placeholder="行号" aria-label="行号">
-          <button type="submit" data-i18n="goLine">跳转</button>
-        </form>
-        <div class="toolbar-actions">
-          <button id="wrap" type="button" aria-pressed="true" data-i18n="wrap">自动换行</button>
-          <button id="follow" type="button" aria-pressed="true" data-i18n="follow">跟随末尾</button>
-          <a class="button-link" href="/download" data-i18n="download">下载日志</a>
+        <div class="log-meta">
+          <strong data-i18n="liveOutput">实时输出</strong>
+          <span class="phase" id="phase">—</span>
+          <span class="right"><span id="line-summary">0</span> <span data-i18n="lines">行</span> · <span id="size-summary">0 B</span></span>
         </div>
-      </div>
-      <div class="log-meta">
-        <strong data-i18n="liveOutput">实时输出</strong>
-        <span class="phase" id="phase">—</span>
-        <span class="right"><span id="line-summary">0</span> <span data-i18n="lines">行</span> · <span id="size-summary">0 B</span></span>
-      </div>
-      <div id="log-viewport" class="log-viewport">
-        <div id="log-body" class="log-body wrap" role="log" aria-live="off" data-i18n-aria="liveOutput" aria-label="实时输出">
-          <div id="empty-state" class="empty-state" data-i18n="waiting">等待构建日志…</div>
+        <div id="log-viewport" class="log-viewport">
+          <div id="log-body" class="log-body wrap" role="log" aria-live="off" data-i18n-aria="liveOutput" aria-label="实时输出">
+            <div id="empty-state" class="empty-state" data-i18n="waiting">等待构建日志…</div>
+          </div>
         </div>
+        <footer class="footer">
+          <output id="selection" aria-live="polite" data-i18n="noSelection">尚未选择日志行</output>
+          <span class="right" data-i18n="footer">界面已本地化 · 原始日志不会翻译 · Basic Auth</span>
+        </footer>
       </div>
-      <footer class="footer">
-        <output id="selection" aria-live="polite" data-i18n="noSelection">尚未选择日志行</output>
-        <span class="right" data-i18n="footer">界面已本地化 · 原始日志不会翻译 · Basic Auth</span>
-      </footer>
+      <div id="files-panel" class="workspace-panel" role="tabpanel" aria-labelledby="tab-files" hidden>
+        <div class="toolbar" data-i18n-aria="fileToolsLabel" aria-label="构建文件工具">
+          <label class="file-filter">
+            <input id="file-filter" type="search" autocomplete="off" data-i18n-placeholder="fileFilterPlaceholder" data-i18n-aria="fileFilterPlaceholder" placeholder="筛选当前目录" aria-label="筛选当前目录">
+          </label>
+          <button id="file-refresh" type="button" data-i18n="refreshFiles">刷新</button>
+        </div>
+        <nav id="breadcrumbs" class="breadcrumbs" data-i18n-aria="breadcrumbsLabel" aria-label="文件路径"></nav>
+        <div class="log-meta">
+          <strong data-i18n="artifactRoot">构建产物</strong>
+          <span class="phase" data-i18n="readOnly">只读</span>
+          <span class="right" id="file-summary">0</span>
+        </div>
+        <div class="files-viewport">
+          <table class="files-table">
+            <thead><tr><th data-i18n="fileName">名称</th><th data-i18n="fileSize">大小</th><th data-i18n="fileModified">修改时间</th><th data-i18n="fileActions">操作</th></tr></thead>
+            <tbody id="file-list"></tbody>
+          </table>
+          <div id="files-empty" class="empty-state" data-i18n="filesLoading">正在读取构建文件…</div>
+        </div>
+        <footer class="footer">
+          <output id="file-message" class="file-message" aria-live="polite" data-i18n="filesSafeNote">仅公开 build/output；不允许上传、修改或删除</output>
+          <span class="right" data-i18n="filesFooter">路径隔离 · Basic Auth · 断点续传</span>
+        </footer>
+      </div>
     </section>
   </main>
+
+  <dialog id="file-preview" class="preview-dialog">
+    <div class="preview-shell">
+      <header class="preview-header">
+        <strong id="preview-title" data-i18n="previewTitle">文件预览</strong>
+        <button id="preview-close" type="button" data-i18n="close">关闭</button>
+      </header>
+      <div id="preview-meta" class="preview-meta">—</div>
+      <pre id="preview-text" class="preview-text"></pre>
+      <footer class="preview-footer">
+        <span id="preview-note"></span>
+        <a id="preview-download" class="button-link" href="#" data-i18n="downloadFile">下载文件</a>
+      </footer>
+    </div>
+  </dialog>
 
   <script>
     (() => {
@@ -405,7 +539,13 @@
         searchNext: $('search-next'), jumpForm: $('jump-form'), jumpLine: $('jump-line'),
         wrap: $('wrap'), follow: $('follow'), viewport: $('log-viewport'), body: $('log-body'),
         empty: $('empty-state'), phase: $('phase'), lineSummary: $('line-summary'),
-        sizeSummary: $('size-summary'), selection: $('selection')
+        sizeSummary: $('size-summary'), selection: $('selection'), tabLog: $('tab-log'),
+        tabFiles: $('tab-files'), logPanel: $('log-panel'), filesPanel: $('files-panel'),
+        fileFilter: $('file-filter'), fileRefresh: $('file-refresh'), breadcrumbs: $('breadcrumbs'),
+        fileSummary: $('file-summary'), fileList: $('file-list'), filesEmpty: $('files-empty'),
+        fileMessage: $('file-message'), preview: $('file-preview'), previewTitle: $('preview-title'),
+        previewClose: $('preview-close'), previewMeta: $('preview-meta'), previewText: $('preview-text'),
+        previewNote: $('preview-note'), previewDownload: $('preview-download')
       };
 
       const translations = {
@@ -416,7 +556,10 @@
           liveOutput: '实时输出', lines: '行', waiting: '等待构建日志…', noSelection: '尚未选择日志行', footer: '界面已本地化 · 原始日志不会翻译 · Basic Auth',
           connecting: '正在连接', running: '构建中', success: '构建成功', failure: '构建失败', disabled: '日志已停用', reconnecting: '正在重连', polling: '轮询回退', disconnected: '连接中断',
           sse: 'SSE 实时', poll: '增量轮询', selectLine: '选择第 {line} 行', selectedLine: '已选择第 {line} 行', searchResult: '匹配 {current} / {total} · 第 {line} 行', noMatches: '没有匹配的日志', lineNotFound: '当前缓存中没有第 {line} 行',
-          branch: '分支', kernel: '内核', attempt: '尝试', unknown: '未知'
+          branch: '分支', kernel: '内核', attempt: '尝试', unknown: '未知', workspaceTabsLabel: '工作区视图', logTab: '实时日志', filesTab: '构建文件',
+          fileToolsLabel: '构建文件工具', fileFilterPlaceholder: '筛选当前目录', refreshFiles: '刷新', breadcrumbsLabel: '文件路径', artifactRoot: '构建产物', readOnly: '只读',
+          fileName: '名称', fileSize: '大小', fileModified: '修改时间', fileActions: '操作', filesLoading: '正在读取构建文件…', filesSafeNote: '仅公开 build/output；不允许上传、修改或删除', filesFooter: '路径隔离 · Basic Auth · 断点续传',
+          previewTitle: '文件预览', close: '关闭', downloadFile: '下载文件', root: '产物根目录', filesUnavailable: '产物目录尚未创建', filesDisabled: '文件浏览未启用', filesEmpty: '当前目录为空', filteredEmpty: '没有匹配的文件', directory: '目录', preview: '预览', sha256: 'SHA-256', hashCalculating: '正在计算 SHA-256…', hashReady: '{name} · SHA-256', fileLoadError: '无法读取构建文件', previewError: '此文件无法预览', truncatedPreview: '仅显示前 {size}', completePreview: '完整文本 · {size}', fileCount: '{count} 项'
         },
         ja: {
           title: 'Armbian カーネルビルド', subtitle: '安全なライブビルドコンソール', themeLabel: '表示テーマ', themeAuto: '自動', themeLight: 'ライト', themeDark: 'ダーク', languageLabel: '表示言語',
@@ -425,7 +568,10 @@
           liveOutput: 'ライブ出力', lines: '行', waiting: 'ビルドログを待機中…', noSelection: 'ログ行は未選択です', footer: 'ローカライズ済み UI · 生ログは翻訳しません · Basic Auth',
           connecting: '接続中', running: 'ビルド中', success: '成功', failure: '失敗', disabled: 'ログ無効', reconnecting: '再接続中', polling: 'ポーリングへ切替', disconnected: '切断',
           sse: 'SSE ライブ', poll: '差分ポーリング', selectLine: '{line} 行目を選ぶ', selectedLine: '{line} 行目を選択', searchResult: '一致 {current} / {total} · {line} 行目', noMatches: '一致するログはありません', lineNotFound: '現在のバッファに {line} 行目はありません',
-          branch: 'ブランチ', kernel: 'カーネル', attempt: '試行', unknown: '不明'
+          branch: 'ブランチ', kernel: 'カーネル', attempt: '試行', unknown: '不明', workspaceTabsLabel: 'ワークスペース表示', logTab: 'ライブログ', filesTab: 'ビルドファイル',
+          fileToolsLabel: 'ビルドファイルツール', fileFilterPlaceholder: '現在のフォルダーを絞り込む', refreshFiles: '更新', breadcrumbsLabel: 'ファイルパス', artifactRoot: 'ビルド成果物', readOnly: '読み取り専用',
+          fileName: '名前', fileSize: 'サイズ', fileModified: '更新日時', fileActions: '操作', filesLoading: 'ビルドファイルを読み込み中…', filesSafeNote: 'build/output のみ公開。アップロード、変更、削除はできません', filesFooter: 'パス分離 · Basic Auth · 再開可能ダウンロード',
+          previewTitle: 'ファイルプレビュー', close: '閉じる', downloadFile: 'ファイルをダウンロード', root: '成果物ルート', filesUnavailable: '成果物ディレクトリはまだ作成されていません', filesDisabled: 'ファイル閲覧は無効です', filesEmpty: 'このフォルダーは空です', filteredEmpty: '一致するファイルはありません', directory: 'フォルダー', preview: 'プレビュー', sha256: 'SHA-256', hashCalculating: 'SHA-256 を計算中…', hashReady: '{name} · SHA-256', fileLoadError: 'ビルドファイルを読み込めません', previewError: 'このファイルはプレビューできません', truncatedPreview: '先頭 {size} のみ表示', completePreview: '全文 · {size}', fileCount: '{count} 件'
         },
         en: {
           title: 'Armbian Kernel Build', subtitle: 'Secure live build console', themeLabel: 'Display theme', themeAuto: 'Auto', themeLight: 'Light', themeDark: 'Dark', languageLabel: 'Interface language',
@@ -434,7 +580,10 @@
           liveOutput: 'Live output', lines: 'lines', waiting: 'Waiting for build output…', noSelection: 'No log line selected', footer: 'Localized UI · raw logs stay untranslated · Basic Auth',
           connecting: 'Connecting', running: 'Building', success: 'Build succeeded', failure: 'Build failed', disabled: 'Log disabled', reconnecting: 'Reconnecting', polling: 'Polling fallback', disconnected: 'Disconnected',
           sse: 'Live SSE', poll: 'Incremental polling', selectLine: 'Select line {line}', selectedLine: 'Line {line} selected', searchResult: 'Match {current} / {total} · line {line}', noMatches: 'No matching log lines', lineNotFound: 'Line {line} is not in the current buffer',
-          branch: 'Branch', kernel: 'Kernel', attempt: 'Attempt', unknown: 'Unknown'
+          branch: 'Branch', kernel: 'Kernel', attempt: 'Attempt', unknown: 'Unknown', workspaceTabsLabel: 'Workspace views', logTab: 'Live log', filesTab: 'Build files',
+          fileToolsLabel: 'Build file tools', fileFilterPlaceholder: 'Filter this directory', refreshFiles: 'Refresh', breadcrumbsLabel: 'File path', artifactRoot: 'Build artifacts', readOnly: 'Read only',
+          fileName: 'Name', fileSize: 'Size', fileModified: 'Modified', fileActions: 'Actions', filesLoading: 'Reading build files…', filesSafeNote: 'Only build/output is published; upload, modification and deletion are disabled', filesFooter: 'Path confined · Basic Auth · resumable downloads',
+          previewTitle: 'File preview', close: 'Close', downloadFile: 'Download file', root: 'Artifact root', filesUnavailable: 'The artifact directory has not been created yet', filesDisabled: 'File browsing is not enabled', filesEmpty: 'This directory is empty', filteredEmpty: 'No matching files', directory: 'Directory', preview: 'Preview', sha256: 'SHA-256', hashCalculating: 'Calculating SHA-256…', hashReady: '{name} · SHA-256', fileLoadError: 'Unable to read build files', previewError: 'This file cannot be previewed', truncatedPreview: 'Showing only the first {size}', completePreview: 'Complete text · {size}', fileCount: '{count} items'
         },
         fr: {
           title: 'Compilation du noyau Armbian', subtitle: 'Console de compilation sécurisée en direct', themeLabel: 'Thème d’affichage', themeAuto: 'Auto', themeLight: 'Clair', themeDark: 'Sombre', languageLabel: 'Langue de l’interface',
@@ -443,7 +592,10 @@
           liveOutput: 'Sortie en direct', lines: 'lignes', waiting: 'En attente du journal…', noSelection: 'Aucune ligne sélectionnée', footer: 'Interface localisée · journaux bruts non traduits · Basic Auth',
           connecting: 'Connexion', running: 'Compilation', success: 'Compilation réussie', failure: 'Échec', disabled: 'Journal désactivé', reconnecting: 'Reconnexion', polling: 'Repli par interrogation', disconnected: 'Déconnecté',
           sse: 'SSE en direct', poll: 'Interrogation différentielle', selectLine: 'Sélectionner la ligne {line}', selectedLine: 'Ligne {line} sélectionnée', searchResult: 'Résultat {current} / {total} · ligne {line}', noMatches: 'Aucune ligne correspondante', lineNotFound: 'La ligne {line} n’est pas dans le tampon actuel',
-          branch: 'Branche', kernel: 'Noyau', attempt: 'Tentative', unknown: 'Inconnu'
+          branch: 'Branche', kernel: 'Noyau', attempt: 'Tentative', unknown: 'Inconnu', workspaceTabsLabel: 'Vues de l’espace de travail', logTab: 'Journal en direct', filesTab: 'Fichiers de compilation',
+          fileToolsLabel: 'Outils des fichiers de compilation', fileFilterPlaceholder: 'Filtrer ce dossier', refreshFiles: 'Actualiser', breadcrumbsLabel: 'Chemin du fichier', artifactRoot: 'Artefacts de compilation', readOnly: 'Lecture seule',
+          fileName: 'Nom', fileSize: 'Taille', fileModified: 'Modification', fileActions: 'Actions', filesLoading: 'Lecture des fichiers de compilation…', filesSafeNote: 'Seul build/output est publié ; téléversement, modification et suppression désactivés', filesFooter: 'Chemin isolé · Basic Auth · téléchargements reprenables',
+          previewTitle: 'Aperçu du fichier', close: 'Fermer', downloadFile: 'Télécharger le fichier', root: 'Racine des artefacts', filesUnavailable: 'Le dossier des artefacts n’est pas encore créé', filesDisabled: 'La navigation des fichiers n’est pas activée', filesEmpty: 'Ce dossier est vide', filteredEmpty: 'Aucun fichier correspondant', directory: 'Dossier', preview: 'Aperçu', sha256: 'SHA-256', hashCalculating: 'Calcul du SHA-256…', hashReady: '{name} · SHA-256', fileLoadError: 'Impossible de lire les fichiers de compilation', previewError: 'Ce fichier ne peut pas être prévisualisé', truncatedPreview: 'Seuls les premiers {size} sont affichés', completePreview: 'Texte complet · {size}', fileCount: '{count} éléments'
         },
         de: {
           title: 'Armbian-Kernel-Build', subtitle: 'Sichere Live-Build-Konsole', themeLabel: 'Darstellung', themeAuto: 'Automatisch', themeLight: 'Hell', themeDark: 'Dunkel', languageLabel: 'Sprache der Oberfläche',
@@ -452,7 +604,10 @@
           liveOutput: 'Live-Ausgabe', lines: 'Zeilen', waiting: 'Warte auf Build-Ausgabe…', noSelection: 'Keine Protokollzeile ausgewählt', footer: 'Lokalisierte Oberfläche · Rohprotokolle bleiben unübersetzt · Basic Auth',
           connecting: 'Verbinden', running: 'Build läuft', success: 'Build erfolgreich', failure: 'Build fehlgeschlagen', disabled: 'Protokoll deaktiviert', reconnecting: 'Neu verbinden', polling: 'Polling-Fallback', disconnected: 'Getrennt',
           sse: 'Live-SSE', poll: 'Inkrementelles Polling', selectLine: 'Zeile {line} auswählen', selectedLine: 'Zeile {line} ausgewählt', searchResult: 'Treffer {current} / {total} · Zeile {line}', noMatches: 'Keine passenden Protokollzeilen', lineNotFound: 'Zeile {line} ist nicht im aktuellen Puffer',
-          branch: 'Branch', kernel: 'Kernel', attempt: 'Versuch', unknown: 'Unbekannt'
+          branch: 'Branch', kernel: 'Kernel', attempt: 'Versuch', unknown: 'Unbekannt', workspaceTabsLabel: 'Arbeitsbereichsansichten', logTab: 'Live-Protokoll', filesTab: 'Build-Dateien',
+          fileToolsLabel: 'Werkzeuge für Build-Dateien', fileFilterPlaceholder: 'Diesen Ordner filtern', refreshFiles: 'Aktualisieren', breadcrumbsLabel: 'Dateipfad', artifactRoot: 'Build-Artefakte', readOnly: 'Schreibgeschützt',
+          fileName: 'Name', fileSize: 'Größe', fileModified: 'Geändert', fileActions: 'Aktionen', filesLoading: 'Build-Dateien werden gelesen…', filesSafeNote: 'Nur build/output wird veröffentlicht; Hochladen, Ändern und Löschen sind deaktiviert', filesFooter: 'Pfadbegrenzung · Basic Auth · fortsetzbare Downloads',
+          previewTitle: 'Dateivorschau', close: 'Schließen', downloadFile: 'Datei herunterladen', root: 'Artefaktwurzel', filesUnavailable: 'Das Artefaktverzeichnis wurde noch nicht erstellt', filesDisabled: 'Dateibrowser ist nicht aktiviert', filesEmpty: 'Dieser Ordner ist leer', filteredEmpty: 'Keine passenden Dateien', directory: 'Ordner', preview: 'Vorschau', sha256: 'SHA-256', hashCalculating: 'SHA-256 wird berechnet…', hashReady: '{name} · SHA-256', fileLoadError: 'Build-Dateien können nicht gelesen werden', previewError: 'Für diese Datei ist keine Vorschau verfügbar', truncatedPreview: 'Nur die ersten {size} werden angezeigt', completePreview: 'Vollständiger Text · {size}', fileCount: '{count} Einträge'
         }
       };
 
@@ -466,7 +621,9 @@
         buildState: 'connecting', transport: 'sse', offset: 0, busy: false,
         eventSource: null, pollingTimer: null, metricsTimer: null, sseFailures: 0,
         nextLine: 1, rowCount: 0, charCount: 0, pendingRaw: '', pendingRow: null,
-        searchMatches: [], activeMatch: -1, selectedLine: '', metrics: null, searchTimer: null
+        searchMatches: [], activeMatch: -1, selectedLine: '', metrics: null, searchTimer: null,
+        activeView: 'log', filesLoaded: false, filesPath: '', filesEntries: [], filesAvailable: false,
+        filesEnabled: true, filesBusy: false, previewPayload: null
       };
 
       function loadPreference(key, fallback) {
@@ -506,6 +663,10 @@
         const secs = Math.floor(total % 60);
         return [hours, minutes, secs].map((part) => String(part).padStart(2, '0')).join(':');
       }
+      function formatDate(seconds) {
+        if (!Number.isFinite(seconds)) return '—';
+        return new Intl.DateTimeFormat(state.locale, {dateStyle: 'medium', timeStyle: 'medium'}).format(new Date(seconds * 1000));
+      }
       function percent(value) { return `${Math.max(0, Math.min(Number(value) || 0, 100)).toFixed(0)}%`; }
 
       function applyTheme() {
@@ -526,6 +687,9 @@
         updateSelection();
         updateMetrics(state.metrics);
         updateSummary();
+        renderBreadcrumbs();
+        renderFiles();
+        updatePreview(state.previewPayload);
       }
       function updateBuildState(value) {
         state.buildState = value || 'running';
@@ -567,6 +731,186 @@
         setMeter(elements.diskMeter, elements.diskValue, usage.disk_percent);
         elements.resourceDetails.textContent = `${formatBytes(usage.memory_used)} / ${formatBytes(usage.memory_total)} · ${formatBytes(usage.disk_used)} / ${formatBytes(usage.disk_total)}`;
         if (Number.isFinite(metrics.log_bytes)) elements.sizeSummary.textContent = formatBytes(metrics.log_bytes);
+      }
+
+      function fileUrl(endpoint, path) { return `${endpoint}?path=${encodeURIComponent(path)}`; }
+      function resetFileMessage() {
+        elements.fileMessage.replaceChildren(document.createTextNode(text('filesSafeNote')));
+      }
+      function setView(view) {
+        state.activeView = view === 'files' ? 'files' : 'log';
+        const filesActive = state.activeView === 'files';
+        elements.tabLog.setAttribute('aria-selected', String(!filesActive));
+        elements.tabFiles.setAttribute('aria-selected', String(filesActive));
+        elements.logPanel.hidden = filesActive;
+        elements.filesPanel.hidden = !filesActive;
+        if (filesActive && !state.filesLoaded) loadFiles('');
+      }
+      function renderBreadcrumbs() {
+        elements.breadcrumbs.replaceChildren();
+        const root = document.createElement('button');
+        root.type = 'button';
+        root.className = 'breadcrumb-button';
+        root.dataset.path = '';
+        root.textContent = text('root');
+        elements.breadcrumbs.appendChild(root);
+        let current = '';
+        for (const part of state.filesPath.split('/').filter(Boolean)) {
+          const separator = document.createElement('span');
+          separator.className = 'breadcrumb-separator';
+          separator.textContent = '/';
+          current = current ? `${current}/${part}` : part;
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'breadcrumb-button';
+          button.dataset.path = current;
+          button.textContent = part;
+          elements.breadcrumbs.append(separator, button);
+        }
+      }
+      function fileAction(label, action, path) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.dataset.action = action;
+        button.dataset.path = path;
+        button.textContent = label;
+        return button;
+      }
+      function renderFiles() {
+        if (!elements.fileList) return;
+        elements.fileList.replaceChildren();
+        elements.filesEmpty.hidden = true;
+        renderBreadcrumbs();
+        if (!state.filesLoaded) {
+          elements.filesEmpty.textContent = text('filesLoading');
+          elements.filesEmpty.hidden = false;
+          elements.fileSummary.textContent = text('fileCount', {count: 0});
+          return;
+        }
+        if (!state.filesEnabled) {
+          elements.filesEmpty.textContent = text('filesDisabled');
+          elements.filesEmpty.hidden = false;
+          elements.fileSummary.textContent = text('fileCount', {count: 0});
+          return;
+        }
+        if (!state.filesAvailable) {
+          elements.filesEmpty.textContent = text('filesUnavailable');
+          elements.filesEmpty.hidden = false;
+          elements.fileSummary.textContent = text('fileCount', {count: 0});
+          return;
+        }
+        const query = elements.fileFilter.value.trim().toLocaleLowerCase();
+        const entries = state.filesEntries.filter((entry) => !query || entry.name.toLocaleLowerCase().includes(query));
+        elements.fileSummary.textContent = text('fileCount', {count: formatNumber(entries.length)});
+        if (!entries.length) {
+          elements.filesEmpty.textContent = text(query ? 'filteredEmpty' : 'filesEmpty');
+          elements.filesEmpty.hidden = false;
+          return;
+        }
+        const fragment = document.createDocumentFragment();
+        entries.forEach((entry) => {
+          const row = document.createElement('tr');
+          const nameCell = document.createElement('td');
+          const nameButton = document.createElement('button');
+          nameButton.type = 'button';
+          nameButton.className = 'file-name-button';
+          nameButton.dataset.action = entry.kind === 'directory' ? 'directory' : (entry.previewable ? 'preview' : 'download');
+          nameButton.dataset.path = entry.path;
+          const icon = document.createElement('span');
+          icon.className = 'file-icon';
+          icon.setAttribute('aria-hidden', 'true');
+          icon.textContent = entry.kind === 'directory' ? '📁' : '📄';
+          const name = document.createElement('span');
+          name.textContent = entry.name;
+          nameButton.append(icon, name);
+          nameCell.appendChild(nameButton);
+
+          const sizeCell = document.createElement('td');
+          sizeCell.className = 'file-size';
+          sizeCell.textContent = entry.kind === 'file' ? formatBytes(entry.size) : '—';
+          const modifiedCell = document.createElement('td');
+          modifiedCell.className = 'file-modified';
+          modifiedCell.textContent = formatDate(entry.modified);
+          const actionsCell = document.createElement('td');
+          actionsCell.className = 'file-actions';
+          if (entry.kind === 'directory') {
+            actionsCell.appendChild(fileAction(text('directory'), 'directory', entry.path));
+          } else {
+            if (entry.previewable) actionsCell.appendChild(fileAction(text('preview'), 'preview', entry.path));
+            const download = document.createElement('a');
+            download.className = 'button-link';
+            download.href = fileUrl('/files/download', entry.path);
+            download.textContent = text('downloadFile');
+            actionsCell.append(download, fileAction(text('sha256'), 'hash', entry.path));
+          }
+          row.append(nameCell, sizeCell, modifiedCell, actionsCell);
+          fragment.appendChild(row);
+        });
+        elements.fileList.appendChild(fragment);
+      }
+      async function loadFiles(path = state.filesPath) {
+        if (state.filesBusy) return;
+        state.filesBusy = true;
+        elements.fileRefresh.disabled = true;
+        elements.filesEmpty.textContent = text('filesLoading');
+        elements.filesEmpty.hidden = false;
+        resetFileMessage();
+        try {
+          const response = await fetch(fileUrl('/api/files', path), {cache: 'no-store'});
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const payload = await response.json();
+          state.filesLoaded = true;
+          state.filesEnabled = payload.enabled !== false;
+          state.filesAvailable = payload.available === true;
+          state.filesPath = payload.path || '';
+          state.filesEntries = Array.isArray(payload.entries) ? payload.entries : [];
+          renderFiles();
+        } catch (_) {
+          state.filesLoaded = true;
+          state.filesAvailable = true;
+          state.filesEntries = [];
+          renderFiles();
+          elements.filesEmpty.textContent = text('fileLoadError');
+          elements.filesEmpty.hidden = false;
+        } finally {
+          state.filesBusy = false;
+          elements.fileRefresh.disabled = false;
+        }
+      }
+      function updatePreview(payload) {
+        if (!payload) return;
+        elements.previewTitle.textContent = payload.name || text('previewTitle');
+        elements.previewMeta.textContent = `${formatBytes(payload.size)} · ${formatDate(payload.modified)}`;
+        elements.previewText.textContent = payload.text || '';
+        elements.previewNote.textContent = text(payload.truncated ? 'truncatedPreview' : 'completePreview', {size: formatBytes(payload.truncated ? payload.limit : payload.size)});
+        elements.previewDownload.href = fileUrl('/files/download', payload.path || '');
+      }
+      async function previewFile(path) {
+        elements.fileMessage.textContent = text('filesLoading');
+        try {
+          const response = await fetch(fileUrl('/api/file', path), {cache: 'no-store'});
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          state.previewPayload = await response.json();
+          updatePreview(state.previewPayload);
+          resetFileMessage();
+          elements.preview.showModal();
+        } catch (_) {
+          elements.fileMessage.textContent = text('previewError');
+        }
+      }
+      async function hashFile(path) {
+        elements.fileMessage.textContent = text('hashCalculating');
+        try {
+          const response = await fetch(fileUrl('/api/file-hash', path), {cache: 'no-store'});
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const payload = await response.json();
+          const label = document.createTextNode(`${text('hashReady', {name: payload.name})}: `);
+          const value = document.createElement('code');
+          value.textContent = payload.digest;
+          elements.fileMessage.replaceChildren(label, value);
+        } catch (_) {
+          elements.fileMessage.textContent = text('fileLoadError');
+        }
       }
 
       function createRow(number, value, pending = false) {
@@ -852,6 +1196,27 @@
       });
       elements.searchPrev.addEventListener('click', () => activateMatch(state.activeMatch - 1));
       elements.searchNext.addEventListener('click', () => activateMatch(state.activeMatch + 1));
+      elements.tabLog.addEventListener('click', () => setView('log'));
+      elements.tabFiles.addEventListener('click', () => setView('files'));
+      elements.fileRefresh.addEventListener('click', () => loadFiles(state.filesPath));
+      elements.fileFilter.addEventListener('input', renderFiles);
+      elements.breadcrumbs.addEventListener('click', (event) => {
+        const button = event.target.closest('.breadcrumb-button');
+        if (button) loadFiles(button.dataset.path || '');
+      });
+      elements.fileList.addEventListener('click', (event) => {
+        const control = event.target.closest('[data-action]');
+        if (!control) return;
+        const path = control.dataset.path || '';
+        if (control.dataset.action === 'directory') loadFiles(path);
+        else if (control.dataset.action === 'preview') previewFile(path);
+        else if (control.dataset.action === 'hash') hashFile(path);
+        else if (control.dataset.action === 'download') window.location.assign(fileUrl('/files/download', path));
+      });
+      elements.previewClose.addEventListener('click', () => elements.preview.close());
+      elements.preview.addEventListener('click', (event) => {
+        if (event.target === elements.preview) elements.preview.close();
+      });
       elements.jumpForm.addEventListener('submit', (event) => {
         event.preventDefault();
         const wanted = elements.jumpLine.value.trim();

@@ -103,6 +103,7 @@ jobs:
             LIVE_LOG_RELEASE="trixie" \
             python3 scripts/live_log_server.py \
               --directory "${live_dir}" \
+              --files-directory "${GITHUB_WORKSPACE}/build/output" \
               --host 127.0.0.1 \
               --port 8080 \
             > "${live_dir}/http-server.log" 2>&1 &
