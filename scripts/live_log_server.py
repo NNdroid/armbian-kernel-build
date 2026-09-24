@@ -221,7 +221,10 @@ class LiveLogHandler(BaseHTTPRequestHandler):
                 tail,
             )
         if branches:
-            self.server.last_build_branch = branches[-1]
+            branch = branches[-1]
+            if branch != self.server.last_build_branch:
+                self.server.last_build_branch = branch
+                self.server.last_kernel_version = ""
         if kernels:
             self.server.last_kernel_version = kernels[-1]
         return {
