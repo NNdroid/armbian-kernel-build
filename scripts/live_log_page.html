@@ -1095,7 +1095,8 @@
           severity.textContent = text(diagnostic.severity === 'error' ? 'errorLabel' : 'warningLabel');
           const message = document.createElement('span');
           message.className = 'diagnostic-message';
-          message.textContent = diagnostic.message;
+          const repeatCount = Math.max(Number(diagnostic.count) || 1, 1);
+          message.textContent = repeatCount > 1 ? `${diagnostic.message} ×${repeatCount}` : diagnostic.message;
           const jump = document.createElement('button');
           jump.type = 'button';
           jump.dataset.line = diagnostic.line;
