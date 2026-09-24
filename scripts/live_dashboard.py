@@ -14,8 +14,14 @@ from typing import Any
 
 
 ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-_])")
-STAGE_END_RE = re.compile(r"────\s*(.+?)\s+completed\s*\(elapsed\s*(\d+)s\)\s*────")
-STAGE_BEGIN_RE = re.compile(r"────\s*(.+?)\s*────")
+BUILD_LOG_PREFIX = r"^\[INFO\]\s+\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\s+"
+STAGE_END_RE = re.compile(
+    BUILD_LOG_PREFIX
+    + r"────\s*(\d+\.\s+.+?)\s+completed\s*\(elapsed\s*(\d+)s\)\s*────$"
+)
+STAGE_BEGIN_RE = re.compile(
+    BUILD_LOG_PREFIX + r"────\s*(\d+\.\s+.+?)\s*────$"
+)
 ERROR_RE = re.compile(
     r"(?:\[ERROR\]|\[💥\]|\[kernel-inject\]\[(?:err|error)\]|\berror(?:\s+\d+|\s*:)|\bfailed\b)",
     re.IGNORECASE,
@@ -174,7 +180,7 @@ class DashboardAnalyzer:
         if not line:
             return
 
-        end_match = STAGE_END_RE.search(line)
+        end_match = STAGE_END_RE.match(line)
         if end_match:
             label = end_match.group(1).strip()
             for stage in reversed(self._stages):
@@ -187,7 +193,7 @@ class DashboardAnalyzer:
                     stage["duration_seconds"] = int(end_match.group(2))
                     break
         else:
-            begin_match = STAGE_BEGIN_RE.search(line)
+            begin_match = STAGE_BEGIN_RE.match(line)
             if begin_match:
                 label = begin_match.group(1).strip()
                 self._stages.append(
