@@ -289,7 +289,7 @@
       user-select: none;
     }
     .line-number:hover { background: var(--panel-strong); color: var(--accent); border-color: var(--border); }
-    .log-text { display: block; padding: 2px 13px 2px calc(13px + (var(--group-depth, 0) * 14px)); color: var(--log-text); white-space: pre; tab-size: 4; overflow-wrap: normal; }
+    .log-text { display: block; padding: 2px 13px 2px calc(13px + var(--group-indent, 0px)); color: var(--log-text); white-space: pre; tab-size: 4; overflow-wrap: normal; }
     .log-body.wrap { width: 100%; }
     .log-body.wrap .log-text { white-space: pre-wrap; overflow-wrap: anywhere; }
     mark.search-hit { color: inherit; background: var(--mark); border-radius: 3px; padding: 0 1px; }
@@ -1459,7 +1459,7 @@
       }
       function decorateGroupedRow(row, path = groupPath()) {
         row.dataset.groupPath = path.join(',');
-        row.style.setProperty('--group-depth', String(path.length));
+        row.style.setProperty('--group-indent', `${path.length * 14}px`);
         return row;
       }
       function createRow(number, value, pending = false) {
@@ -1642,7 +1642,7 @@
         }
       }
       function clearHighlights() {
-        elements.body.querySelectorAll('.log-row').forEach((row) => {
+        elements.body.querySelectorAll('.log-row:not(.log-group-row)').forEach((row) => {
           row.classList.remove('is-search-match', 'is-active-match');
           const content = row.querySelector('.log-text');
           if (content) content.textContent = row.dataset.text || '';
