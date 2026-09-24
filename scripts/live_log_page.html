@@ -781,8 +781,9 @@
       };
 
       const ansi = /\x1B(?:\[[0-?]*[ -/]*[@-~]|[@-_])/g;
-      const maxChars = 5 * 1024 * 1024;
-      const maxLines = 50000;
+      const maxChars = 3 * 1024 * 1024;
+      const maxLines = 15000;
+      const initialTailBytes = maxChars;
       const mediaTheme = window.matchMedia('(prefers-color-scheme: dark)');
       const state = {
         locale: detectLocale(), theme: loadPreference('theme', 'auto'),
@@ -1568,8 +1569,8 @@
             state.nextLine += 1;
             continue;
           }
-          if (cleanLine.startsWith('::endgroup::') && state.groupStack.length) {
-            state.groupStack.pop();
+          if (cleanLine.startsWith('::endgroup::')) {
+            if (state.groupStack.length) state.groupStack.pop();
             state.nextLine += 1;
             continue;
           }
@@ -1592,10 +1593,10 @@
         scheduleSearch();
         if (state.follow && (wasNearBottom || parts.length)) elements.viewport.scrollTop = elements.viewport.scrollHeight;
       }
-      function resetLog(nextOffset = 0) {
+      function resetLog(nextOffset = 0, nextLine = 1) {
         elements.body.replaceChildren();
         state.offset = nextOffset;
-        state.nextLine = 1;
+        state.nextLine = Math.max(Number(nextLine) || 1, 1);
         state.rowCount = 0;
         state.charCount = 0;
         state.pendingRaw = '';
@@ -1754,6 +1755,21 @@
       function parseEvent(event, callback) {
         try { callback(JSON.parse(event.data)); } catch (_) { /* malformed frame is ignored */ }
       }
+      async function bootstrapLog() {
+        try {
+          const response = await fetch(`/api/log?tail_bytes=${initialTailBytes}`, {cache: 'no-store'});
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const payload = await response.json();
+          resetLog(payload.start_offset || 0, payload.start_line || 1);
+          state.offset = payload.offset || 0;
+          appendLog(payload.text || '');
+          updateBuildState(payload.state || 'running');
+        } catch (_) {
+          resetLog(0, 1);
+        }
+        bootstrapLog();
+      }
+
       function startEventStream() {
         if (!window.EventSource) { startPolling(); return; }
         updateTransport('sse');
