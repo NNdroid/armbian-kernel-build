@@ -488,10 +488,12 @@ def main() -> int:
             assert status == 401, status
             with (log_root / "build.log").open("ab") as log_file:
                 log_file.write(
-                    "\x1b[32m[INFO]\x1b[0m ──── 1. Environment initialization ────\n"
+                    "\x1b[32m[INFO]\x1b[0m \x1b[2m2026-09-24T03:30:00Z\x1b[0m ──── 1. Environment initialization ────\n"
+                    "[INFO] ──── Armbian internal banner ────\n"
+                    "──── another internal separator ────\n"
                     "[WARN] synthetic warning\n"
                     "[ERROR] synthetic failure evidence\n"
-                    "[INFO] ──── 1. Environment initialization completed (elapsed 3s) ────\n".encode(
+                    "\x1b[32m[INFO]\x1b[0m \x1b[2m2026-09-24T03:30:03Z\x1b[0m ──── 1. Environment initialization completed (elapsed 3s) ────\n".encode(
                         "utf-8"
                     )
                 )
@@ -503,6 +505,7 @@ def main() -> int:
             assert dashboard["timeline"][0]["label"] == "1. Environment initialization", dashboard
             assert dashboard["timeline"][0]["status"] == "success", dashboard
             assert dashboard["timeline"][0]["duration_seconds"] == 3, dashboard
+            assert len(dashboard["timeline"]) == 1, dashboard
             assert {item["severity"] for item in dashboard["diagnostics"]} == {
                 "warning",
                 "error",
