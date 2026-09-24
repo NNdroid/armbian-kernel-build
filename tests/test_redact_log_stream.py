@@ -30,9 +30,10 @@ def run_redactor(data: bytes, **extra_env: str) -> bytes:
 def main() -> int:
     token = "super-secret-token-123456"
     auth_token = "compound-auth-token-654321"
-    prefix = b"x" * (64 * 1024 - 7)
+    header = b"normal output\n"
+    prefix = b"x" * (64 * 1024 - len(header) - 7)
     payload = (
-        b"normal output\n"
+        header
         + prefix
         + token.encode("ascii")
         + b"\nsecond="
