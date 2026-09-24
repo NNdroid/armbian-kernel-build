@@ -424,6 +424,7 @@ def main() -> int:
             assert status == 200, status
             metrics = json.loads(body)
             assert metrics["target"]["branch"] == "current", metrics
+            (log_root / "build.log").write_bytes(b"first line\n")
 
             status, _, _ = request(f"{base_url}/api/events")
             assert status == 401, status
