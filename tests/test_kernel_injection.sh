@@ -188,6 +188,8 @@ assert_array_contains opts_y IP6_NF_TARGET_NPT
 assert_array_contains opts_y TCP_CONG_BBR
 assert_array_contains opts_y NF_CONNTRACK
 assert_array_contains opts_y VLAN_8021Q
+assert_array_contains opts_y CRYPTO_LIB_CURVE25519
+assert_array_contains opts_y CRYPTO_LIB_CHACHA20POLY1305
 assert_array_contains opts_y BRIDGE
 assert_array_contains opts_m BT
 assert_array_contains opts_m BT_RFCOMM
@@ -823,10 +825,14 @@ assert_contains "${KERNEL_ROOT}/net/ipv4/Kconfig" 'config TCP_AFTER_LEGACY'
 assert_file "${KERNEL_ROOT}/drivers/net/amneziawg/Kbuild"
 assert_file "${KERNEL_ROOT}/drivers/net/amneziawg/compat/Kbuild.include"
 assert_absent "${KERNEL_ROOT}/drivers/net/amneziawg/stale.c"
+assert_contains "${KERNEL_ROOT}/drivers/net/amneziawg/Kconfig" \
+	'select CRYPTO_LIB_CURVE25519'
+assert_contains "${KERNEL_ROOT}/drivers/net/amneziawg/Kconfig" \
+	'select CRYPTO_LIB_CHACHA20POLY1305'
 assert_contains "${KERNEL_ROOT}/drivers/net/amneziawg/uapi/wireguard.h" \
 	'#define WG_GENL_NAME "amneziawg"'
 assert_contains "${KERNEL_ROOT}/drivers/net/amneziawg/.source-revision" \
-	'commit=85fcc17788ed8afd929e3a4ea02edafeaa1769cc'
+	'commit=1a735221a62c75ad788f8229623dd4d2098bbaa8'
 
 assert_file "${KERNEL_ROOT}/net/netfilter/nf_deaf/nf_deaf.c"
 assert_file "${KERNEL_ROOT}/net/netfilter/nf_deaf/Kconfig"
