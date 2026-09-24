@@ -48,6 +48,7 @@ jobs:
         run: |
           bash tests/test_kernel_injection.sh
           python3 tests/test_live_log_server.py
+          python3 tests/test_redact_log_stream.py
 
       - name: Start authenticated ngrok live log
         continue-on-error: true
