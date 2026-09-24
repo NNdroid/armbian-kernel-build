@@ -159,18 +159,30 @@ jobs:
           printf '{"state":"running"}\n' > "${live_dir}/status.json"
 
           set +e
-          ./build.sh 2>&1 | tee "${live_dir}/build.log"
-          build_exit_code=${PIPESTATUS[0]}
+          ./build.sh 2>&1 \
+            | python3 -u scripts/redact_log_stream.py \
+            | tee "${live_dir}/build.log"
+          pipeline_status=("${PIPESTATUS[@]}")
+          build_exit_code=${pipeline_status[0]}
+          redact_exit_code=${pipeline_status[1]}
+          tee_exit_code=${pipeline_status[2]}
           set -e
 
-          if (( build_exit_code == 0 )); then
+          if (( build_exit_code == 0 && redact_exit_code == 0 && tee_exit_code == 0 )); then
             build_state=success
           else
             build_state=failure
           fi
+          effective_exit_code=${build_exit_code}
+          if (( effective_exit_code == 0 && redact_exit_code != 0 )); then
+            effective_exit_code=${redact_exit_code}
+          fi
+          if (( effective_exit_code == 0 && tee_exit_code != 0 )); then
+            effective_exit_code=${tee_exit_code}
+          fi
           printf '{"state":"%s","exit_code":%d}\n' \
-            "${build_state}" "${build_exit_code}" > "${live_dir}/status.json"
-          exit "${build_exit_code}"
+            "${build_state}" "${effective_exit_code}" > "${live_dir}/status.json"
+          exit "${effective_exit_code}"
 
       - name: Upload Artifacts Backup
         if: success()
