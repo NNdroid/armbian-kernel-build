@@ -279,6 +279,8 @@ def main() -> int:
             assert b"log-group-row" in body
             assert b"collapsedGroups" in body
             assert b"expandGroupsForRow" in body
+            assert b"tail_bytes=" in body
+            assert b"const maxLines = 15000" in body
             for translation_key in (
                 b"dashboardTab:",
                 b"timelineTitle:",
@@ -498,6 +500,8 @@ def main() -> int:
             payload = json.loads(body)
             assert payload == {
                 "offset": final_offset,
+                "start_offset": 0,
+                "start_line": 1,
                 "reset": False,
                 "state": "success",
                 "text": "first line\nsecond line\n",
@@ -510,6 +514,21 @@ def main() -> int:
             payload = json.loads(body)
             assert payload["text"] == "second line\n", payload
             assert payload["state"] == "success", payload
+
+            large_log = b"".join(
+                f"line-{index:05d}\n".encode("ascii") for index in range(5000)
+            )
+            (log_root / "build.log").write_bytes(large_log)
+            status, body, _ = request(
+                f"{base_url}/api/log?tail_bytes=4096", authenticated=True
+            )
+            assert status == 200, status
+            tail_payload = json.loads(body)
+            assert tail_payload["start_offset"] > 0, tail_payload
+            assert tail_payload["start_line"] > 1, tail_payload
+            assert tail_payload["text"].startswith("line-"), tail_payload
+            assert "line-00000" not in tail_payload["text"], tail_payload
+            (log_root / "build.log").write_bytes(b"first line\nsecond line\n")
 
             status, body, headers = request(f"{base_url}/download", authenticated=True)
             assert status == 200, status
