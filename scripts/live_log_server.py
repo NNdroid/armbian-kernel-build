@@ -24,6 +24,7 @@ from live_dashboard import DashboardAnalyzer, inspect_deb, list_deb_packages
 
 
 MAX_CHUNK_BYTES = 512 * 1024
+MAX_INITIAL_TAIL_BYTES = 8 * 1024 * 1024
 MAX_PREVIEW_BYTES = 512 * 1024
 MAX_DIRECTORY_ENTRIES = 2000
 STREAM_CHUNK_BYTES = 64 * 1024
@@ -502,18 +503,69 @@ class LiveLogHandler(BaseHTTPRequestHandler):
         except FileNotFoundError:
             return 0, reset, ""
 
+    def _tail_position(self, wanted_bytes: int) -> tuple[int, int]:
+        log_path = self.server.root / "build.log"
+        try:
+            size = log_path.stat().st_size
+        except FileNotFoundError:
+            return 0, 1
+        if size <= wanted_bytes:
+            return 0, 1
+
+        raw_start = max(size - wanted_bytes, 0)
+        try:
+            with log_path.open("rb") as log_file:
+                start = raw_start
+                if raw_start > 0:
+                    log_file.seek(raw_start - 1)
+                    if log_file.read(1) != b"\n":
+                        log_file.seek(raw_start)
+                        log_file.readline()
+                        start = log_file.tell()
+
+                line_number = 1
+                remaining = start
+                log_file.seek(0)
+                while remaining > 0:
+                    chunk = log_file.read(min(STREAM_CHUNK_BYTES, remaining))
+                    if not chunk:
+                        break
+                    line_number += chunk.count(b"\n")
+                    remaining -= len(chunk)
+                return start, line_number
+        except OSError:
+            return 0, 1
+
     def _serve_increment(self, query: str) -> None:
         values = parse_qs(query)
-        try:
-            offset = int(values.get("offset", ["0"])[0])
-        except ValueError:
-            offset = 0
-        offset = max(offset, 0)
+        start_line = 1
+        start_offset = 0
+        if "offset" not in values and "tail_bytes" in values:
+            try:
+                tail_bytes = int(values.get("tail_bytes", ["0"])[0])
+            except ValueError:
+                tail_bytes = 0
+            tail_bytes = min(max(tail_bytes, 0), MAX_INITIAL_TAIL_BYTES)
+            if tail_bytes:
+                start_offset, start_line = self._tail_position(tail_bytes)
+                offset = start_offset
+            else:
+                offset = 0
+        else:
+            try:
+                offset = int(values.get("offset", ["0"])[0])
+            except ValueError:
+                offset = 0
+            offset = max(offset, 0)
+            start_offset = offset
+
         next_offset, reset, text = self._read_log_chunk(offset)
         status = self._status()
         payload = json.dumps(
             {
                 "offset": next_offset,
+                "start_offset": start_offset,
+                "start_line": start_line,
                 "reset": reset,
                 "state": status["state"],
                 "text": text,
