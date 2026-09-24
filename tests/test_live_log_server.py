@@ -269,6 +269,12 @@ def main() -> int:
             assert b'value="ja"' in body
             assert b'value="fr"' in body
             assert b'value="de"' in body
+            assert b'value="zh-CN"' not in body
+            assert b"::group::" in body
+            assert b"::endgroup::" in body
+            assert b"log-group-row" in body
+            assert b"collapsedGroups" in body
+            assert b"expandGroupsForRow" in body
             for translation_key in (
                 b"dashboardTab:",
                 b"timelineTitle:",
@@ -279,7 +285,7 @@ def main() -> int:
                 b"packagesTitle:",
                 b"enableNotifications:",
             ):
-                assert body.count(translation_key) == 5, translation_key
+                assert body.count(translation_key) == 4, translation_key
 
             status, _, _ = request(f"{base_url}/api/files")
             assert status == 401, status
