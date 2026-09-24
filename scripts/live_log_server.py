@@ -203,7 +203,7 @@ class LiveLogHandler(BaseHTTPRequestHandler):
         branches = re.findall(r"\bBRANCH=([A-Za-z0-9._-]+)", tail)
         kernels = re.findall(r"__([0-9]+\.[0-9]+(?:\.[0-9]+)?)-[A-Za-z0-9]", tail)
         if not kernels:
-            kernels = re.findall(r"实际构建内核大版本:\s*([0-9]+\.[0-9]+(?:\.[0-9]+)?)", tail)
+            kernels = re.findall(r"Built kernel major version:\s*([0-9]+\.[0-9]+(?:\.[0-9]+)?)", tail)
         return {
             "branch": branches[-1] if branches else "",
             "kernel": kernels[-1] if kernels else "",
