@@ -20,6 +20,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlsplit
 
+from live_dashboard import DashboardAnalyzer, inspect_deb, list_deb_packages
+
 
 MAX_CHUNK_BYTES = 512 * 1024
 MAX_PREVIEW_BYTES = 512 * 1024
@@ -27,6 +29,7 @@ MAX_DIRECTORY_ENTRIES = 2000
 STREAM_CHUNK_BYTES = 64 * 1024
 TERMINAL_STATES = frozenset({"success", "failure", "disabled"})
 INDEX_HTML_PATH = Path(__file__).with_name("live_log_page.html")
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 PREVIEWABLE_SUFFIXES = frozenset(
     {
         ".conf",
@@ -81,6 +84,9 @@ class LiveLogServer(ThreadingHTTPServer):
         self.metrics_interval = metrics_interval
         self.started_at = time.monotonic()
         self.index_html = INDEX_HTML_PATH.read_bytes()
+        self.dashboard = DashboardAnalyzer(
+            root / "build.log", files_root, REPOSITORY_ROOT
+        )
         self.target = {
             "board": os.environ.get("LIVE_LOG_BOARD", "nanopi-r5s"),
             "arch": os.environ.get("LIVE_LOG_ARCH", "arm64"),
@@ -220,7 +226,7 @@ class LiveLogHandler(BaseHTTPRequestHandler):
         except OSError:
             log_bytes = 0
         build = self._build_details()
-        return {
+        result = {
             "generated_at": int(time.time()),
             "elapsed_seconds": max(int(time.monotonic() - self.server.started_at), 0),
             "state": self._status()["state"],
@@ -248,10 +254,30 @@ class LiveLogHandler(BaseHTTPRequestHandler):
             "run": self.server.run,
             "log_bytes": log_bytes,
         }
+        self.server.dashboard.record_metrics(result)
+        return result
 
     def _serve_metrics(self) -> None:
         payload = json.dumps(self._metrics(), ensure_ascii=False).encode("utf-8")
         self._write(HTTPStatus.OK, "application/json; charset=utf-8", payload)
+
+    def _serve_dashboard(self) -> None:
+        status = self._status()
+        self._write_json(
+            HTTPStatus.OK,
+            self.server.dashboard.snapshot(str(status.get("state", "running"))),
+        )
+
+    def _serve_packages(self) -> None:
+        self._write_json(HTTPStatus.OK, list_deb_packages(self.server.files_root))
+
+    def _serve_package(self, query: str) -> None:
+        path, relative = self._artifact_path(query)
+        if not path.is_file() or path.suffix.casefold() != ".deb":
+            raise ArtifactPathError("The requested path is not a Debian package")
+        payload = inspect_deb(path)
+        payload.update({"path": relative, "name": path.name})
+        self._write_json(HTTPStatus.OK, payload)
 
     @staticmethod
     def _previewable(path: Path) -> bool:
@@ -650,6 +676,12 @@ class LiveLogHandler(BaseHTTPRequestHandler):
                 self._serve_increment(target.query)
             elif target.path == "/api/metrics":
                 self._serve_metrics()
+            elif target.path == "/api/dashboard":
+                self._serve_dashboard()
+            elif target.path == "/api/packages":
+                self._serve_packages()
+            elif target.path == "/api/package":
+                self._serve_package(target.query)
             elif target.path == "/api/files":
                 self._serve_files(target.query)
             elif target.path == "/api/file":

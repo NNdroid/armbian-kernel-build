@@ -155,7 +155,7 @@
     .status-pill[data-state="disconnected"] { color: var(--danger); background: var(--danger-soft); }
     .transport-pill { min-height: 24px; padding: 0 8px; font-weight: 550; color: var(--muted); background: var(--panel-strong); }
     .header-spacer { flex: 1; }
-    .header-controls { display: flex; align-items: center; gap: 8px; }
+    .header-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
     .select-label { position: relative; }
     .select-label span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
     .select-label select { min-width: 112px; }
@@ -195,12 +195,14 @@
     .workspace-tabs {
       display: flex;
       gap: 4px;
+      overflow-x: auto;
       min-height: 45px;
       padding: 6px 10px 0;
       border-bottom: 1px solid var(--border);
       background: var(--panel-soft);
     }
     .workspace-tabs button {
+      flex: 0 0 auto;
       min-height: 38px;
       padding: 0 18px;
       border-color: transparent;
@@ -348,6 +350,67 @@
     .preview-text { flex: 1; min-height: 0; margin: 0; padding: 14px; overflow: auto; background: var(--log-bg); color: var(--log-text); font: 12.5px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
     .preview-footer { border-top: 1px solid var(--border); color: var(--muted); font-size: 11px; }
     .preview-footer .button-link { margin-left: auto; }
+    .notification-button { white-space: nowrap; }
+    .dashboard-scroll { flex: 1; min-height: 0; overflow: auto; padding: 12px; background: var(--log-bg); }
+    .dashboard-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .dashboard-card { min-width: 0; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--panel); }
+    .dashboard-card.wide { grid-column: 1 / -1; }
+    .dashboard-heading { display: flex; align-items: center; gap: 9px; min-height: 43px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--panel-soft); }
+    .dashboard-heading strong { font-size: 13px; }
+    .dashboard-heading span { margin-left: auto; color: var(--muted); font-size: 11px; }
+    .dashboard-content { max-height: 320px; overflow: auto; padding: 10px 12px; }
+    .timeline { display: flex; gap: 0; overflow-x: auto; padding: 7px 2px 12px; }
+    .timeline-item { position: relative; flex: 1 0 150px; min-width: 0; padding: 26px 12px 0 0; color: var(--muted); font-size: 11px; }
+    .timeline-item::before { content: ""; position: absolute; top: 8px; left: 5px; right: 0; height: 2px; background: var(--border-strong); }
+    .timeline-item::after { content: ""; position: absolute; top: 3px; left: 0; width: 12px; height: 12px; border-radius: 50%; background: var(--faint); box-shadow: 0 0 0 4px var(--panel); }
+    .timeline-item[data-state="success"]::before, .timeline-item[data-state="success"]::after { background: var(--success); }
+    .timeline-item[data-state="running"]::after { background: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+    .timeline-item[data-state="failure"]::before, .timeline-item[data-state="failure"]::after { background: var(--danger); }
+    .timeline-label { display: block; color: var(--text); font-weight: 650; line-height: 1.35; }
+    .timeline-meta { display: block; margin-top: 4px; }
+    .feature-branch { min-width: 190px; margin-left: auto; }
+    .data-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .data-table th, .data-table td { padding: 7px 8px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+    .data-table th { position: sticky; top: 0; z-index: 1; background: var(--panel); color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
+    .mode-pill, .result-pill { display: inline-flex; align-items: center; justify-content: center; min-width: 25px; min-height: 22px; padding: 0 7px; border-radius: 999px; font: 700 10px/1 ui-monospace, monospace; background: var(--panel-strong); color: var(--muted); }
+    .mode-pill[data-mode="y"], .result-pill[data-status="verified"] { color: var(--success); background: var(--success-soft); }
+    .mode-pill[data-mode="m"] { color: var(--accent); background: var(--accent-soft); }
+    .mode-pill[data-mode="n"], .result-pill[data-status="mismatch"] { color: var(--danger); background: var(--danger-soft); }
+    .diagnostic { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: start; padding: 8px 0; border-bottom: 1px solid var(--border); }
+    .diagnostic:last-child { border-bottom: 0; }
+    .diagnostic-severity { color: var(--warning); font-weight: 750; font-size: 10px; text-transform: uppercase; }
+    .diagnostic[data-severity="error"] .diagnostic-severity { color: var(--danger); }
+    .diagnostic-message { min-width: 0; font: 11px/1.45 ui-monospace, monospace; overflow-wrap: anywhere; }
+    .diagnostic button { min-height: 26px; padding: 0 7px; font-size: 10px; }
+    .source-list, .integrity-list { display: grid; gap: 7px; }
+    .source-item, .integrity-item { display: grid; grid-template-columns: minmax(110px, .7fr) minmax(0, 1.4fr) auto; gap: 9px; align-items: center; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-soft); font-size: 11px; }
+    .source-item code, .integrity-item code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: all; }
+    .source-item a { color: var(--accent); text-decoration: none; }
+    .resource-chart { width: 100%; height: 190px; display: block; }
+    .chart-grid { stroke: var(--border); stroke-width: 1; }
+    .chart-line { fill: none; stroke-width: 2.5; vector-effect: non-scaling-stroke; }
+    .chart-load { stroke: var(--accent); }
+    .chart-memory { stroke: #8a67ee; }
+    .chart-disk { stroke: var(--success); }
+    .chart-legend { display: flex; flex-wrap: wrap; gap: 12px; color: var(--muted); font-size: 11px; }
+    .legend-dot { display: inline-block; width: 8px; height: 8px; margin-right: 5px; border-radius: 50%; background: currentColor; }
+    .config-layout, .package-layout { display: grid; grid-template-columns: minmax(250px, 32%) 1fr; flex: 1; min-height: 0; }
+    .inspector-list { min-height: 0; overflow: auto; border-right: 1px solid var(--border); background: var(--panel-soft); }
+    .inspector-list button { width: 100%; min-height: 48px; justify-content: flex-start; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: transparent; text-align: left; }
+    .inspector-list button[aria-selected="true"] { color: var(--accent); background: var(--accent-soft); }
+    .inspector-view { display: flex; min-width: 0; min-height: 0; flex-direction: column; }
+    .inspector-meta { min-height: 42px; padding: 8px 12px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 11px; }
+    .inspector-pre { flex: 1; min-height: 0; margin: 0; padding: 13px; overflow: auto; background: var(--log-bg); color: var(--log-text); font: 11.5px/1.5 ui-monospace, monospace; white-space: pre; }
+    .config-diff-body { padding: 0; white-space: normal; }
+    .diff-row { display: grid; grid-template-columns: 58px minmax(0, 1fr); min-height: 22px; }
+    .diff-row[data-kind="added"] { background: color-mix(in srgb, var(--success) 11%, transparent); }
+    .diff-row[data-kind="removed"] { background: color-mix(in srgb, var(--danger) 10%, transparent); }
+    .diff-line { padding: 2px 9px; border-right: 1px solid var(--border); color: var(--faint); background: color-mix(in srgb, var(--log-gutter) 88%, transparent); text-align: right; user-select: none; }
+    .diff-code { min-width: 0; padding: 2px 11px; color: var(--log-text); white-space: pre; }
+    .package-control { padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 11px; line-height: 1.55; }
+    .package-control dl { display: grid; grid-template-columns: 105px 1fr; gap: 4px 8px; margin: 0; }
+    .package-control dt { color: var(--muted); }
+    .package-control dd { margin: 0; overflow-wrap: anywhere; }
 
     @media (max-width: 1100px) {
       .overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -361,6 +424,7 @@
       .header-status { margin-left: 0; }
       .header-spacer { display: none; }
       .header-controls { width: 100%; }
+      .notification-button { width: 100%; }
       .select-label { flex: 1; }
       .select-label select { width: 100%; }
       .overview { grid-template-columns: 1fr; margin: 9px 0; border-radius: 11px; }
@@ -371,6 +435,11 @@
       .jump-tools input { flex: 1; width: auto; }
       .toolbar-actions { width: 100%; }
       .toolbar-actions > * { flex: 1; }
+      .dashboard-grid { grid-template-columns: 1fr; }
+      .dashboard-card.wide { grid-column: auto; }
+      .config-layout, .package-layout { grid-template-columns: 1fr; }
+      .inspector-list { max-height: 180px; border-right: 0; border-bottom: 1px solid var(--border); }
+      .source-item, .integrity-item { grid-template-columns: 1fr; }
       .files-table .file-modified, .files-table th:nth-child(3) { display: none; }
       .file-actions { flex-wrap: wrap; }
       .file-actions button, .file-actions a { flex: 1; }
@@ -397,6 +466,7 @@
       </div>
       <div class="header-spacer"></div>
       <div class="header-controls">
+        <button id="notifications" class="notification-button" type="button" aria-pressed="false" data-i18n="enableNotifications">启用通知</button>
         <label class="select-label"><span data-i18n="themeLabel">显示主题</span>
           <select id="theme" data-i18n-aria="themeLabel" aria-label="显示主题">
             <option value="auto" data-i18n="themeAuto">自动</option>
@@ -443,10 +513,48 @@
 
     <section class="workspace">
       <nav class="workspace-tabs" role="tablist" data-i18n-aria="workspaceTabsLabel" aria-label="工作区视图">
-        <button id="tab-log" type="button" role="tab" aria-selected="true" aria-controls="log-panel" data-i18n="logTab">实时日志</button>
+        <button id="tab-dashboard" type="button" role="tab" aria-selected="true" aria-controls="dashboard-panel" data-i18n="dashboardTab">构建概览</button>
+        <button id="tab-log" type="button" role="tab" aria-selected="false" aria-controls="log-panel" data-i18n="logTab">实时日志</button>
         <button id="tab-files" type="button" role="tab" aria-selected="false" aria-controls="files-panel" data-i18n="filesTab">构建文件</button>
+        <button id="tab-config" type="button" role="tab" aria-selected="false" aria-controls="config-panel" data-i18n="configTab">配置差异</button>
+        <button id="tab-packages" type="button" role="tab" aria-selected="false" aria-controls="packages-panel" data-i18n="packagesTab">DEB 检查</button>
       </nav>
-      <div id="log-panel" class="workspace-panel" role="tabpanel" aria-labelledby="tab-log">
+      <div id="dashboard-panel" class="workspace-panel" role="tabpanel" aria-labelledby="tab-dashboard">
+        <div class="toolbar">
+          <strong data-i18n="dashboardTitle">构建与证据中心</strong>
+          <span class="header-spacer"></span>
+          <button id="dashboard-refresh" type="button" data-i18n="refreshDashboard">刷新概览</button>
+        </div>
+        <div class="dashboard-scroll">
+          <div class="dashboard-grid">
+            <article class="dashboard-card wide">
+              <div class="dashboard-heading"><strong data-i18n="timelineTitle">构建阶段时间线</strong><span id="timeline-summary">—</span></div>
+              <div id="timeline" class="dashboard-content timeline"><div class="empty-state" data-i18n="dashboardLoading">正在分析构建信息…</div></div>
+            </article>
+            <article class="dashboard-card wide">
+              <div class="dashboard-heading"><strong data-i18n="featuresTitle">内核功能矩阵</strong><select id="feature-branch" class="feature-branch" data-i18n-aria="featureBranchLabel" aria-label="内核分支"></select></div>
+              <div class="dashboard-content"><table class="data-table"><thead><tr><th data-i18n="featureGroup">功能组</th><th data-i18n="configSymbol">配置符号</th><th data-i18n="configMode">模式</th></tr></thead><tbody id="feature-list"></tbody></table><div id="features-empty" class="empty-state" data-i18n="evidenceWaiting">等待构建证据…</div></div>
+            </article>
+            <article class="dashboard-card">
+              <div class="dashboard-heading"><strong data-i18n="diagnosticsTitle">故障诊断中心</strong><span id="diagnostics-summary">0</span></div>
+              <div id="diagnostics" class="dashboard-content"><div class="empty-state" data-i18n="noDiagnostics">尚未检测到警告或错误</div></div>
+            </article>
+            <article class="dashboard-card">
+              <div class="dashboard-heading"><strong data-i18n="resourcesTrendTitle">资源趋势</strong><span data-i18n="recentSamples">最近采样</span></div>
+              <div class="dashboard-content"><svg id="resource-chart" class="resource-chart" viewBox="0 0 600 180" preserveAspectRatio="none" role="img" data-i18n-aria="resourcesTrendTitle" aria-label="资源趋势"></svg><div class="chart-legend"><span style="color:var(--accent)"><i class="legend-dot"></i><span data-i18n="load">负载</span></span><span style="color:#8a67ee"><i class="legend-dot"></i><span data-i18n="memory">内存</span></span><span style="color:var(--success)"><i class="legend-dot"></i><span data-i18n="disk">磁盘</span></span></div></div>
+            </article>
+            <article class="dashboard-card">
+              <div class="dashboard-heading"><strong data-i18n="sourcesTitle">源码版本</strong><span data-i18n="pinnedSources">固定提交</span></div>
+              <div id="sources" class="dashboard-content source-list"><div class="empty-state" data-i18n="evidenceWaiting">等待构建证据…</div></div>
+            </article>
+            <article class="dashboard-card">
+              <div class="dashboard-heading"><strong data-i18n="integrityTitle">完整性中心</strong><span id="integrity-summary">—</span></div>
+              <div id="integrity" class="dashboard-content integrity-list"><div class="empty-state" data-i18n="evidenceWaiting">等待构建证据…</div></div>
+            </article>
+          </div>
+        </div>
+      </div>
+      <div id="log-panel" class="workspace-panel" role="tabpanel" aria-labelledby="tab-log" hidden>
         <div class="toolbar" data-i18n-aria="logToolsLabel" aria-label="日志搜索与行跳转">
           <div class="search-tools">
             <input id="search" type="search" autocomplete="off" data-i18n-placeholder="searchPlaceholder" data-i18n-aria="searchPlaceholder" placeholder="搜索日志" aria-label="搜索日志">
@@ -504,6 +612,34 @@
           <span class="right" data-i18n="filesFooter">路径隔离 · Basic Auth · 断点续传</span>
         </footer>
       </div>
+      <div id="config-panel" class="workspace-panel" role="tabpanel" aria-labelledby="tab-config" hidden>
+        <div class="toolbar">
+          <div class="search-tools"><input id="config-filter" type="search" autocomplete="off" data-i18n-placeholder="configFilterPlaceholder" data-i18n-aria="configFilterPlaceholder" placeholder="筛选配置差异" aria-label="筛选配置差异"></div>
+          <button id="config-refresh" type="button" data-i18n="refreshDashboard">刷新概览</button>
+        </div>
+        <div class="config-layout">
+          <nav id="config-list" class="inspector-list" data-i18n-aria="configDiffsTitle" aria-label="配置差异文件"></nav>
+          <section class="inspector-view">
+            <div id="config-meta" class="inspector-meta" data-i18n="selectConfigDiff">请选择一份配置差异</div>
+            <div id="config-content" class="inspector-pre config-diff-body"></div>
+          </section>
+        </div>
+      </div>
+      <div id="packages-panel" class="workspace-panel" role="tabpanel" aria-labelledby="tab-packages" hidden>
+        <div class="toolbar">
+          <strong data-i18n="packagesTitle">DEB 包检查器</strong>
+          <span class="header-spacer"></span>
+          <button id="packages-refresh" type="button" data-i18n="refreshPackages">刷新包列表</button>
+        </div>
+        <div class="package-layout">
+          <nav id="package-list" class="inspector-list" data-i18n-aria="packagesTitle" aria-label="DEB 包检查器"></nav>
+          <section class="inspector-view">
+            <div id="package-meta" class="inspector-meta" data-i18n="selectPackage">请选择一个 DEB 包</div>
+            <div id="package-control" class="package-control"></div>
+            <pre id="package-content" class="inspector-pre"></pre>
+          </section>
+        </div>
+      </div>
     </section>
   </main>
 
@@ -530,7 +666,7 @@
       const elements = {
         root: document.documentElement,
         status: $('status'), transport: $('transport'), elapsed: $('elapsed'),
-        theme: $('theme'), locale: $('locale'), targetBoard: $('target-board'),
+        theme: $('theme'), locale: $('locale'), notifications: $('notifications'), targetBoard: $('target-board'),
         targetDetails: $('target-details'), buildMain: $('build-main'), buildDetails: $('build-details'),
         runnerMain: $('runner-main'), runnerDetails: $('runner-details'), loadMeter: $('load-meter'),
         loadValue: $('load-value'), memoryMeter: $('memory-meter'), memoryValue: $('memory-value'),
@@ -539,13 +675,22 @@
         searchNext: $('search-next'), jumpForm: $('jump-form'), jumpLine: $('jump-line'),
         wrap: $('wrap'), follow: $('follow'), viewport: $('log-viewport'), body: $('log-body'),
         empty: $('empty-state'), phase: $('phase'), lineSummary: $('line-summary'),
-        sizeSummary: $('size-summary'), selection: $('selection'), tabLog: $('tab-log'),
-        tabFiles: $('tab-files'), logPanel: $('log-panel'), filesPanel: $('files-panel'),
+        sizeSummary: $('size-summary'), selection: $('selection'), tabDashboard: $('tab-dashboard'),
+        tabLog: $('tab-log'), tabFiles: $('tab-files'), tabConfig: $('tab-config'), tabPackages: $('tab-packages'),
+        dashboardPanel: $('dashboard-panel'), logPanel: $('log-panel'), filesPanel: $('files-panel'),
+        configPanel: $('config-panel'), packagesPanel: $('packages-panel'), dashboardRefresh: $('dashboard-refresh'),
+        timeline: $('timeline'), timelineSummary: $('timeline-summary'), featureBranch: $('feature-branch'),
+        featureList: $('feature-list'), featuresEmpty: $('features-empty'), diagnostics: $('diagnostics'),
+        diagnosticsSummary: $('diagnostics-summary'), resourceChart: $('resource-chart'), sources: $('sources'),
+        integrity: $('integrity'), integritySummary: $('integrity-summary'),
         fileFilter: $('file-filter'), fileRefresh: $('file-refresh'), breadcrumbs: $('breadcrumbs'),
         fileSummary: $('file-summary'), fileList: $('file-list'), filesEmpty: $('files-empty'),
         fileMessage: $('file-message'), preview: $('file-preview'), previewTitle: $('preview-title'),
         previewClose: $('preview-close'), previewMeta: $('preview-meta'), previewText: $('preview-text'),
-        previewNote: $('preview-note'), previewDownload: $('preview-download')
+        previewNote: $('preview-note'), previewDownload: $('preview-download'), configFilter: $('config-filter'),
+        configRefresh: $('config-refresh'), configList: $('config-list'), configMeta: $('config-meta'),
+        configContent: $('config-content'), packagesRefresh: $('packages-refresh'), packageList: $('package-list'),
+        packageMeta: $('package-meta'), packageControl: $('package-control'), packageContent: $('package-content')
       };
 
       const translations = {
@@ -559,7 +704,12 @@
           branch: '分支', kernel: '内核', attempt: '尝试', unknown: '未知', workspaceTabsLabel: '工作区视图', logTab: '实时日志', filesTab: '构建文件',
           fileToolsLabel: '构建文件工具', fileFilterPlaceholder: '筛选当前目录', refreshFiles: '刷新', breadcrumbsLabel: '文件路径', artifactRoot: '构建产物', readOnly: '只读',
           fileName: '名称', fileSize: '大小', fileModified: '修改时间', fileActions: '操作', filesLoading: '正在读取构建文件…', filesSafeNote: '仅公开 build/output；不允许上传、修改或删除', filesFooter: '路径隔离 · Basic Auth · 断点续传',
-          previewTitle: '文件预览', close: '关闭', downloadFile: '下载文件', root: '产物根目录', filesUnavailable: '产物目录尚未创建', filesDisabled: '文件浏览未启用', filesEmpty: '当前目录为空', filteredEmpty: '没有匹配的文件', directory: '目录', preview: '预览', sha256: 'SHA-256', hashCalculating: '正在计算 SHA-256…', hashReady: '{name} · SHA-256', fileLoadError: '无法读取构建文件', previewError: '此文件无法预览', truncatedPreview: '仅显示前 {size}', completePreview: '完整文本 · {size}', fileCount: '{count} 项'
+          previewTitle: '文件预览', close: '关闭', downloadFile: '下载文件', root: '产物根目录', filesUnavailable: '产物目录尚未创建', filesDisabled: '文件浏览未启用', filesEmpty: '当前目录为空', filteredEmpty: '没有匹配的文件', directory: '目录', preview: '预览', sha256: 'SHA-256', hashCalculating: '正在计算 SHA-256…', hashReady: '{name} · SHA-256', fileLoadError: '无法读取构建文件', previewError: '此文件无法预览', truncatedPreview: '仅显示前 {size}', completePreview: '完整文本 · {size}', fileCount: '{count} 项',
+          dashboardTab: '构建概览', configTab: '配置差异', packagesTab: 'DEB 检查', enableNotifications: '启用通知', notificationsEnabled: '通知已启用', notificationsDenied: '通知被拒绝', notificationsUnsupported: '浏览器不支持通知', notificationSuccessTitle: '内核构建成功', notificationFailureTitle: '内核构建失败', notificationBody: '打开构建控制台查看详情。',
+          dashboardTitle: '构建与证据中心', refreshDashboard: '刷新概览', timelineTitle: '构建阶段时间线', dashboardLoading: '正在分析构建信息…', featuresTitle: '内核功能矩阵', featureBranchLabel: '内核分支', featureGroup: '功能组', configSymbol: '配置符号', configMode: '模式', evidenceWaiting: '等待构建证据…', diagnosticsTitle: '故障诊断中心', noDiagnostics: '尚未检测到警告或错误', resourcesTrendTitle: '资源趋势', recentSamples: '最近采样', sourcesTitle: '源码版本', pinnedSources: '固定提交', integrityTitle: '完整性中心',
+          configFilterPlaceholder: '筛选配置差异', configDiffsTitle: '配置差异文件', selectConfigDiff: '请选择一份配置差异', packagesTitle: 'DEB 包检查器', refreshPackages: '刷新包列表', selectPackage: '请选择一个 DEB 包', configLoading: '正在读取配置差异…', packageLoading: '正在检查 DEB 内容…', packageToolUnavailable: 'Runner 没有可用的 dpkg-deb', packageInvalid: '无法解析这个 DEB 包', packageTruncated: '文件清单过长，已截断', packageFiles: '{count} 个文件条目',
+          feature_custom: '注入组件', feature_ebpf: 'eBPF / BTF', feature_mplsSrv6: 'MPLS / SRv6', feature_overlay: 'Overlay / 隧道', feature_netfilter: 'Netfilter', feature_transport: 'BBR / Bridge', feature_usbGadget: 'USB Gadget', feature_bluetooth: '蓝牙', feature_wifi: 'Wi-Fi / MT7921E',
+          verified: '已验证', mismatch: '不匹配', integrityUnavailable: '证据不足', configured: '当前配置', packaged: '包内证据', stageCount: '{count} 个阶段', diagnosticCount: '{count} 项', integrityCount: '{verified}/{total} 已验证', diffSummary: '+{added} / -{removed} · {lines} 行', jumpToLine: '跳转到日志', package: '包名', version: '版本', architecture: '架构', installedSize: '安装大小', depends: '依赖', description: '说明', errorLabel: '错误', warningLabel: '警告'
         },
         ja: {
           title: 'Armbian カーネルビルド', subtitle: '安全なライブビルドコンソール', themeLabel: '表示テーマ', themeAuto: '自動', themeLight: 'ライト', themeDark: 'ダーク', languageLabel: '表示言語',
@@ -571,7 +721,12 @@
           branch: 'ブランチ', kernel: 'カーネル', attempt: '試行', unknown: '不明', workspaceTabsLabel: 'ワークスペース表示', logTab: 'ライブログ', filesTab: 'ビルドファイル',
           fileToolsLabel: 'ビルドファイルツール', fileFilterPlaceholder: '現在のフォルダーを絞り込む', refreshFiles: '更新', breadcrumbsLabel: 'ファイルパス', artifactRoot: 'ビルド成果物', readOnly: '読み取り専用',
           fileName: '名前', fileSize: 'サイズ', fileModified: '更新日時', fileActions: '操作', filesLoading: 'ビルドファイルを読み込み中…', filesSafeNote: 'build/output のみ公開。アップロード、変更、削除はできません', filesFooter: 'パス分離 · Basic Auth · 再開可能ダウンロード',
-          previewTitle: 'ファイルプレビュー', close: '閉じる', downloadFile: 'ファイルをダウンロード', root: '成果物ルート', filesUnavailable: '成果物ディレクトリはまだ作成されていません', filesDisabled: 'ファイル閲覧は無効です', filesEmpty: 'このフォルダーは空です', filteredEmpty: '一致するファイルはありません', directory: 'フォルダー', preview: 'プレビュー', sha256: 'SHA-256', hashCalculating: 'SHA-256 を計算中…', hashReady: '{name} · SHA-256', fileLoadError: 'ビルドファイルを読み込めません', previewError: 'このファイルはプレビューできません', truncatedPreview: '先頭 {size} のみ表示', completePreview: '全文 · {size}', fileCount: '{count} 件'
+          previewTitle: 'ファイルプレビュー', close: '閉じる', downloadFile: 'ファイルをダウンロード', root: '成果物ルート', filesUnavailable: '成果物ディレクトリはまだ作成されていません', filesDisabled: 'ファイル閲覧は無効です', filesEmpty: 'このフォルダーは空です', filteredEmpty: '一致するファイルはありません', directory: 'フォルダー', preview: 'プレビュー', sha256: 'SHA-256', hashCalculating: 'SHA-256 を計算中…', hashReady: '{name} · SHA-256', fileLoadError: 'ビルドファイルを読み込めません', previewError: 'このファイルはプレビューできません', truncatedPreview: '先頭 {size} のみ表示', completePreview: '全文 · {size}', fileCount: '{count} 件',
+          dashboardTab: 'ビルド概要', configTab: '設定差分', packagesTab: 'DEB 検査', enableNotifications: '通知を有効化', notificationsEnabled: '通知は有効です', notificationsDenied: '通知が拒否されました', notificationsUnsupported: '通知はサポートされていません', notificationSuccessTitle: 'カーネルビルド成功', notificationFailureTitle: 'カーネルビルド失敗', notificationBody: '詳細はビルドコンソールで確認してください。',
+          dashboardTitle: 'ビルドと証拠センター', refreshDashboard: '概要を更新', timelineTitle: 'ビルドステージのタイムライン', dashboardLoading: 'ビルド情報を解析中…', featuresTitle: 'カーネル機能マトリクス', featureBranchLabel: 'カーネルブランチ', featureGroup: '機能グループ', configSymbol: '設定シンボル', configMode: 'モード', evidenceWaiting: 'ビルド証拠を待機中…', diagnosticsTitle: '障害診断センター', noDiagnostics: '警告またはエラーはまだありません', resourcesTrendTitle: 'リソース推移', recentSamples: '最近のサンプル', sourcesTitle: 'ソースバージョン', pinnedSources: '固定コミット', integrityTitle: '整合性センター',
+          configFilterPlaceholder: '設定差分を絞り込む', configDiffsTitle: '設定差分ファイル', selectConfigDiff: '設定差分を選択してください', packagesTitle: 'DEB パッケージ検査', refreshPackages: 'パッケージ一覧を更新', selectPackage: 'DEB パッケージを選択してください', configLoading: '設定差分を読み込み中…', packageLoading: 'DEB 内容を検査中…', packageToolUnavailable: 'Runner で dpkg-deb を利用できません', packageInvalid: 'この DEB パッケージを解析できません', packageTruncated: 'ファイル一覧が長いため切り詰めました', packageFiles: '{count} 件のファイル',
+          feature_custom: '注入コンポーネント', feature_ebpf: 'eBPF / BTF', feature_mplsSrv6: 'MPLS / SRv6', feature_overlay: 'Overlay / トンネル', feature_netfilter: 'Netfilter', feature_transport: 'BBR / Bridge', feature_usbGadget: 'USB Gadget', feature_bluetooth: 'Bluetooth', feature_wifi: 'Wi-Fi / MT7921E',
+          verified: '検証済み', mismatch: '不一致', integrityUnavailable: '証拠不足', configured: '現在の設定', packaged: 'パッケージ証拠', stageCount: '{count} ステージ', diagnosticCount: '{count} 件', integrityCount: '{verified}/{total} 検証済み', diffSummary: '+{added} / -{removed} · {lines} 行', jumpToLine: 'ログへ移動', package: 'パッケージ', version: 'バージョン', architecture: 'アーキテクチャ', installedSize: 'インストールサイズ', depends: '依存関係', description: '説明', errorLabel: 'エラー', warningLabel: '警告'
         },
         en: {
           title: 'Armbian Kernel Build', subtitle: 'Secure live build console', themeLabel: 'Display theme', themeAuto: 'Auto', themeLight: 'Light', themeDark: 'Dark', languageLabel: 'Interface language',
@@ -583,7 +738,12 @@
           branch: 'Branch', kernel: 'Kernel', attempt: 'Attempt', unknown: 'Unknown', workspaceTabsLabel: 'Workspace views', logTab: 'Live log', filesTab: 'Build files',
           fileToolsLabel: 'Build file tools', fileFilterPlaceholder: 'Filter this directory', refreshFiles: 'Refresh', breadcrumbsLabel: 'File path', artifactRoot: 'Build artifacts', readOnly: 'Read only',
           fileName: 'Name', fileSize: 'Size', fileModified: 'Modified', fileActions: 'Actions', filesLoading: 'Reading build files…', filesSafeNote: 'Only build/output is published; upload, modification and deletion are disabled', filesFooter: 'Path confined · Basic Auth · resumable downloads',
-          previewTitle: 'File preview', close: 'Close', downloadFile: 'Download file', root: 'Artifact root', filesUnavailable: 'The artifact directory has not been created yet', filesDisabled: 'File browsing is not enabled', filesEmpty: 'This directory is empty', filteredEmpty: 'No matching files', directory: 'Directory', preview: 'Preview', sha256: 'SHA-256', hashCalculating: 'Calculating SHA-256…', hashReady: '{name} · SHA-256', fileLoadError: 'Unable to read build files', previewError: 'This file cannot be previewed', truncatedPreview: 'Showing only the first {size}', completePreview: 'Complete text · {size}', fileCount: '{count} items'
+          previewTitle: 'File preview', close: 'Close', downloadFile: 'Download file', root: 'Artifact root', filesUnavailable: 'The artifact directory has not been created yet', filesDisabled: 'File browsing is not enabled', filesEmpty: 'This directory is empty', filteredEmpty: 'No matching files', directory: 'Directory', preview: 'Preview', sha256: 'SHA-256', hashCalculating: 'Calculating SHA-256…', hashReady: '{name} · SHA-256', fileLoadError: 'Unable to read build files', previewError: 'This file cannot be previewed', truncatedPreview: 'Showing only the first {size}', completePreview: 'Complete text · {size}', fileCount: '{count} items',
+          dashboardTab: 'Build overview', configTab: 'Config diff', packagesTab: 'DEB inspector', enableNotifications: 'Enable notifications', notificationsEnabled: 'Notifications enabled', notificationsDenied: 'Notifications denied', notificationsUnsupported: 'Notifications unsupported', notificationSuccessTitle: 'Kernel build succeeded', notificationFailureTitle: 'Kernel build failed', notificationBody: 'Open the build console for details.',
+          dashboardTitle: 'Build and evidence center', refreshDashboard: 'Refresh overview', timelineTitle: 'Build stage timeline', dashboardLoading: 'Analyzing build information…', featuresTitle: 'Kernel feature matrix', featureBranchLabel: 'Kernel branch', featureGroup: 'Feature group', configSymbol: 'Config symbol', configMode: 'Mode', evidenceWaiting: 'Waiting for build evidence…', diagnosticsTitle: 'Failure diagnostics', noDiagnostics: 'No warnings or errors detected', resourcesTrendTitle: 'Resource trends', recentSamples: 'Recent samples', sourcesTitle: 'Source versions', pinnedSources: 'Pinned commits', integrityTitle: 'Integrity center',
+          configFilterPlaceholder: 'Filter configuration differences', configDiffsTitle: 'Configuration diff files', selectConfigDiff: 'Select a configuration diff', packagesTitle: 'DEB package inspector', refreshPackages: 'Refresh packages', selectPackage: 'Select a DEB package', configLoading: 'Loading configuration diff…', packageLoading: 'Inspecting DEB contents…', packageToolUnavailable: 'dpkg-deb is unavailable on this runner', packageInvalid: 'This DEB package could not be parsed', packageTruncated: 'The file list was truncated', packageFiles: '{count} file entries',
+          feature_custom: 'Injected components', feature_ebpf: 'eBPF / BTF', feature_mplsSrv6: 'MPLS / SRv6', feature_overlay: 'Overlay / tunnels', feature_netfilter: 'Netfilter', feature_transport: 'BBR / Bridge', feature_usbGadget: 'USB Gadget', feature_bluetooth: 'Bluetooth', feature_wifi: 'Wi-Fi / MT7921E',
+          verified: 'Verified', mismatch: 'Mismatch', integrityUnavailable: 'Evidence unavailable', configured: 'Current config', packaged: 'Packaged evidence', stageCount: '{count} stages', diagnosticCount: '{count} items', integrityCount: '{verified}/{total} verified', diffSummary: '+{added} / -{removed} · {lines} lines', jumpToLine: 'Jump to log', package: 'Package', version: 'Version', architecture: 'Architecture', installedSize: 'Installed size', depends: 'Depends', description: 'Description', errorLabel: 'Error', warningLabel: 'Warning'
         },
         fr: {
           title: 'Compilation du noyau Armbian', subtitle: 'Console de compilation sécurisée en direct', themeLabel: 'Thème d’affichage', themeAuto: 'Auto', themeLight: 'Clair', themeDark: 'Sombre', languageLabel: 'Langue de l’interface',
@@ -595,7 +755,12 @@
           branch: 'Branche', kernel: 'Noyau', attempt: 'Tentative', unknown: 'Inconnu', workspaceTabsLabel: 'Vues de l’espace de travail', logTab: 'Journal en direct', filesTab: 'Fichiers de compilation',
           fileToolsLabel: 'Outils des fichiers de compilation', fileFilterPlaceholder: 'Filtrer ce dossier', refreshFiles: 'Actualiser', breadcrumbsLabel: 'Chemin du fichier', artifactRoot: 'Artefacts de compilation', readOnly: 'Lecture seule',
           fileName: 'Nom', fileSize: 'Taille', fileModified: 'Modification', fileActions: 'Actions', filesLoading: 'Lecture des fichiers de compilation…', filesSafeNote: 'Seul build/output est publié ; téléversement, modification et suppression désactivés', filesFooter: 'Chemin isolé · Basic Auth · téléchargements reprenables',
-          previewTitle: 'Aperçu du fichier', close: 'Fermer', downloadFile: 'Télécharger le fichier', root: 'Racine des artefacts', filesUnavailable: 'Le dossier des artefacts n’est pas encore créé', filesDisabled: 'La navigation des fichiers n’est pas activée', filesEmpty: 'Ce dossier est vide', filteredEmpty: 'Aucun fichier correspondant', directory: 'Dossier', preview: 'Aperçu', sha256: 'SHA-256', hashCalculating: 'Calcul du SHA-256…', hashReady: '{name} · SHA-256', fileLoadError: 'Impossible de lire les fichiers de compilation', previewError: 'Ce fichier ne peut pas être prévisualisé', truncatedPreview: 'Seuls les premiers {size} sont affichés', completePreview: 'Texte complet · {size}', fileCount: '{count} éléments'
+          previewTitle: 'Aperçu du fichier', close: 'Fermer', downloadFile: 'Télécharger le fichier', root: 'Racine des artefacts', filesUnavailable: 'Le dossier des artefacts n’est pas encore créé', filesDisabled: 'La navigation des fichiers n’est pas activée', filesEmpty: 'Ce dossier est vide', filteredEmpty: 'Aucun fichier correspondant', directory: 'Dossier', preview: 'Aperçu', sha256: 'SHA-256', hashCalculating: 'Calcul du SHA-256…', hashReady: '{name} · SHA-256', fileLoadError: 'Impossible de lire les fichiers de compilation', previewError: 'Ce fichier ne peut pas être prévisualisé', truncatedPreview: 'Seuls les premiers {size} sont affichés', completePreview: 'Texte complet · {size}', fileCount: '{count} éléments',
+          dashboardTab: 'Vue de compilation', configTab: 'Diff de configuration', packagesTab: 'Inspection DEB', enableNotifications: 'Activer les notifications', notificationsEnabled: 'Notifications activées', notificationsDenied: 'Notifications refusées', notificationsUnsupported: 'Notifications non prises en charge', notificationSuccessTitle: 'Compilation du noyau réussie', notificationFailureTitle: 'Échec de la compilation du noyau', notificationBody: 'Ouvrez la console de compilation pour les détails.',
+          dashboardTitle: 'Centre de compilation et de preuves', refreshDashboard: 'Actualiser la vue', timelineTitle: 'Chronologie des étapes', dashboardLoading: 'Analyse de la compilation…', featuresTitle: 'Matrice des fonctions du noyau', featureBranchLabel: 'Branche du noyau', featureGroup: 'Groupe', configSymbol: 'Symbole de configuration', configMode: 'Mode', evidenceWaiting: 'En attente des preuves…', diagnosticsTitle: 'Centre de diagnostic', noDiagnostics: 'Aucun avertissement ni erreur détecté', resourcesTrendTitle: 'Tendance des ressources', recentSamples: 'Échantillons récents', sourcesTitle: 'Versions des sources', pinnedSources: 'Commits épinglés', integrityTitle: 'Centre d’intégrité',
+          configFilterPlaceholder: 'Filtrer les différences', configDiffsTitle: 'Fichiers de différences', selectConfigDiff: 'Sélectionnez une différence de configuration', packagesTitle: 'Inspecteur de paquets DEB', refreshPackages: 'Actualiser les paquets', selectPackage: 'Sélectionnez un paquet DEB', configLoading: 'Chargement de la différence…', packageLoading: 'Inspection du contenu DEB…', packageToolUnavailable: 'dpkg-deb n’est pas disponible sur ce runner', packageInvalid: 'Ce paquet DEB ne peut pas être analysé', packageTruncated: 'La liste des fichiers a été tronquée', packageFiles: '{count} fichiers',
+          feature_custom: 'Composants injectés', feature_ebpf: 'eBPF / BTF', feature_mplsSrv6: 'MPLS / SRv6', feature_overlay: 'Overlay / tunnels', feature_netfilter: 'Netfilter', feature_transport: 'BBR / Bridge', feature_usbGadget: 'USB Gadget', feature_bluetooth: 'Bluetooth', feature_wifi: 'Wi-Fi / MT7921E',
+          verified: 'Vérifié', mismatch: 'Non conforme', integrityUnavailable: 'Preuve indisponible', configured: 'Configuration actuelle', packaged: 'Preuve du paquet', stageCount: '{count} étapes', diagnosticCount: '{count} éléments', integrityCount: '{verified}/{total} vérifiés', diffSummary: '+{added} / -{removed} · {lines} lignes', jumpToLine: 'Aller au journal', package: 'Paquet', version: 'Version', architecture: 'Architecture', installedSize: 'Taille installée', depends: 'Dépendances', description: 'Description', errorLabel: 'Erreur', warningLabel: 'Avertissement'
         },
         de: {
           title: 'Armbian-Kernel-Build', subtitle: 'Sichere Live-Build-Konsole', themeLabel: 'Darstellung', themeAuto: 'Automatisch', themeLight: 'Hell', themeDark: 'Dunkel', languageLabel: 'Sprache der Oberfläche',
@@ -607,7 +772,12 @@
           branch: 'Branch', kernel: 'Kernel', attempt: 'Versuch', unknown: 'Unbekannt', workspaceTabsLabel: 'Arbeitsbereichsansichten', logTab: 'Live-Protokoll', filesTab: 'Build-Dateien',
           fileToolsLabel: 'Werkzeuge für Build-Dateien', fileFilterPlaceholder: 'Diesen Ordner filtern', refreshFiles: 'Aktualisieren', breadcrumbsLabel: 'Dateipfad', artifactRoot: 'Build-Artefakte', readOnly: 'Schreibgeschützt',
           fileName: 'Name', fileSize: 'Größe', fileModified: 'Geändert', fileActions: 'Aktionen', filesLoading: 'Build-Dateien werden gelesen…', filesSafeNote: 'Nur build/output wird veröffentlicht; Hochladen, Ändern und Löschen sind deaktiviert', filesFooter: 'Pfadbegrenzung · Basic Auth · fortsetzbare Downloads',
-          previewTitle: 'Dateivorschau', close: 'Schließen', downloadFile: 'Datei herunterladen', root: 'Artefaktwurzel', filesUnavailable: 'Das Artefaktverzeichnis wurde noch nicht erstellt', filesDisabled: 'Dateibrowser ist nicht aktiviert', filesEmpty: 'Dieser Ordner ist leer', filteredEmpty: 'Keine passenden Dateien', directory: 'Ordner', preview: 'Vorschau', sha256: 'SHA-256', hashCalculating: 'SHA-256 wird berechnet…', hashReady: '{name} · SHA-256', fileLoadError: 'Build-Dateien können nicht gelesen werden', previewError: 'Für diese Datei ist keine Vorschau verfügbar', truncatedPreview: 'Nur die ersten {size} werden angezeigt', completePreview: 'Vollständiger Text · {size}', fileCount: '{count} Einträge'
+          previewTitle: 'Dateivorschau', close: 'Schließen', downloadFile: 'Datei herunterladen', root: 'Artefaktwurzel', filesUnavailable: 'Das Artefaktverzeichnis wurde noch nicht erstellt', filesDisabled: 'Dateibrowser ist nicht aktiviert', filesEmpty: 'Dieser Ordner ist leer', filteredEmpty: 'Keine passenden Dateien', directory: 'Ordner', preview: 'Vorschau', sha256: 'SHA-256', hashCalculating: 'SHA-256 wird berechnet…', hashReady: '{name} · SHA-256', fileLoadError: 'Build-Dateien können nicht gelesen werden', previewError: 'Für diese Datei ist keine Vorschau verfügbar', truncatedPreview: 'Nur die ersten {size} werden angezeigt', completePreview: 'Vollständiger Text · {size}', fileCount: '{count} Einträge',
+          dashboardTab: 'Build-Übersicht', configTab: 'Konfigurationsdiff', packagesTab: 'DEB-Prüfung', enableNotifications: 'Benachrichtigungen aktivieren', notificationsEnabled: 'Benachrichtigungen aktiviert', notificationsDenied: 'Benachrichtigungen abgelehnt', notificationsUnsupported: 'Benachrichtigungen nicht unterstützt', notificationSuccessTitle: 'Kernel-Build erfolgreich', notificationFailureTitle: 'Kernel-Build fehlgeschlagen', notificationBody: 'Details finden Sie in der Build-Konsole.',
+          dashboardTitle: 'Build- und Nachweiszentrum', refreshDashboard: 'Übersicht aktualisieren', timelineTitle: 'Zeitleiste der Build-Phasen', dashboardLoading: 'Build-Informationen werden analysiert…', featuresTitle: 'Kernel-Funktionsmatrix', featureBranchLabel: 'Kernel-Branch', featureGroup: 'Funktionsgruppe', configSymbol: 'Konfigurationssymbol', configMode: 'Modus', evidenceWaiting: 'Warte auf Build-Nachweise…', diagnosticsTitle: 'Fehlerdiagnose', noDiagnostics: 'Keine Warnungen oder Fehler erkannt', resourcesTrendTitle: 'Ressourcentrends', recentSamples: 'Letzte Messwerte', sourcesTitle: 'Quellversionen', pinnedSources: 'Fixierte Commits', integrityTitle: 'Integritätszentrum',
+          configFilterPlaceholder: 'Konfigurationsunterschiede filtern', configDiffsTitle: 'Konfigurationsdiff-Dateien', selectConfigDiff: 'Wählen Sie einen Konfigurationsdiff', packagesTitle: 'DEB-Paketinspektor', refreshPackages: 'Pakete aktualisieren', selectPackage: 'Wählen Sie ein DEB-Paket', configLoading: 'Konfigurationsdiff wird geladen…', packageLoading: 'DEB-Inhalt wird geprüft…', packageToolUnavailable: 'dpkg-deb ist auf diesem Runner nicht verfügbar', packageInvalid: 'Dieses DEB-Paket konnte nicht gelesen werden', packageTruncated: 'Die Dateiliste wurde gekürzt', packageFiles: '{count} Dateieinträge',
+          feature_custom: 'Injizierte Komponenten', feature_ebpf: 'eBPF / BTF', feature_mplsSrv6: 'MPLS / SRv6', feature_overlay: 'Overlay / Tunnel', feature_netfilter: 'Netfilter', feature_transport: 'BBR / Bridge', feature_usbGadget: 'USB Gadget', feature_bluetooth: 'Bluetooth', feature_wifi: 'Wi-Fi / MT7921E',
+          verified: 'Verifiziert', mismatch: 'Abweichung', integrityUnavailable: 'Nachweis fehlt', configured: 'Aktuelle Konfiguration', packaged: 'Paketnachweis', stageCount: '{count} Phasen', diagnosticCount: '{count} Einträge', integrityCount: '{verified}/{total} verifiziert', diffSummary: '+{added} / -{removed} · {lines} Zeilen', jumpToLine: 'Zum Protokoll', package: 'Paket', version: 'Version', architecture: 'Architektur', installedSize: 'Installierte Größe', depends: 'Abhängigkeiten', description: 'Beschreibung', errorLabel: 'Fehler', warningLabel: 'Warnung'
         }
       };
 
@@ -622,8 +792,11 @@
         eventSource: null, pollingTimer: null, metricsTimer: null, sseFailures: 0,
         nextLine: 1, rowCount: 0, charCount: 0, pendingRaw: '', pendingRow: null,
         searchMatches: [], activeMatch: -1, selectedLine: '', metrics: null, searchTimer: null,
-        activeView: 'log', filesLoaded: false, filesPath: '', filesEntries: [], filesAvailable: false,
-        filesEnabled: true, filesBusy: false, previewPayload: null
+        activeView: 'dashboard', filesLoaded: false, filesPath: '', filesEntries: [], filesAvailable: false,
+        filesEnabled: true, filesBusy: false, previewPayload: null, dashboard: null,
+        dashboardBusy: false, dashboardTimer: null, selectedFeatureBranch: '', selectedDiff: '',
+        packagesLoaded: false, packagesBusy: false, packages: [], selectedPackage: '',
+        packageInspection: null, configRaw: '', notifications: loadPreference('notifications', 'false') === 'true', lastNotifiedState: ''
       };
 
       function loadPreference(key, fallback) {
@@ -690,13 +863,19 @@
         renderBreadcrumbs();
         renderFiles();
         updatePreview(state.previewPayload);
+        renderDashboard();
+        renderConfigDiffs();
+        renderPackages();
+        updateNotificationButton();
       }
       function updateBuildState(value) {
+        const previous = state.buildState;
         state.buildState = value || 'running';
         const displayState = ['success', 'failure', 'disabled', 'reconnecting', 'polling', 'disconnected'].includes(state.buildState) ? state.buildState : (state.buildState === 'connecting' ? 'connecting' : 'running');
         elements.status.dataset.state = displayState;
         elements.status.textContent = text(displayState);
         elements.phase.textContent = text(displayState);
+        if (previous !== state.buildState) notifyBuildState(state.buildState);
       }
       function updateTransport(value) {
         state.transport = value;
@@ -731,6 +910,15 @@
         setMeter(elements.diskMeter, elements.diskValue, usage.disk_percent);
         elements.resourceDetails.textContent = `${formatBytes(usage.memory_used)} / ${formatBytes(usage.memory_total)} · ${formatBytes(usage.disk_used)} / ${formatBytes(usage.disk_total)}`;
         if (Number.isFinite(metrics.log_bytes)) elements.sizeSummary.textContent = formatBytes(metrics.log_bytes);
+        if (state.dashboard && Number.isFinite(metrics.generated_at)) {
+          const resources = Array.isArray(state.dashboard.resources) ? state.dashboard.resources : [];
+          const sample = {timestamp: metrics.generated_at, load: usage.load_percent || 0, memory: usage.memory_percent || 0, disk: usage.disk_percent || 0};
+          const index = resources.findIndex((item) => item.timestamp === sample.timestamp);
+          if (index >= 0) resources[index] = sample;
+          else resources.push(sample);
+          state.dashboard.resources = resources.slice(-360);
+          renderResourceChart();
+        }
       }
 
       function fileUrl(endpoint, path) { return `${endpoint}?path=${encodeURIComponent(path)}`; }
@@ -738,13 +926,366 @@
         elements.fileMessage.replaceChildren(document.createTextNode(text('filesSafeNote')));
       }
       function setView(view) {
-        state.activeView = view === 'files' ? 'files' : 'log';
-        const filesActive = state.activeView === 'files';
-        elements.tabLog.setAttribute('aria-selected', String(!filesActive));
-        elements.tabFiles.setAttribute('aria-selected', String(filesActive));
-        elements.logPanel.hidden = filesActive;
-        elements.filesPanel.hidden = !filesActive;
-        if (filesActive && !state.filesLoaded) loadFiles('');
+        const views = ['dashboard', 'log', 'files', 'config', 'packages'];
+        state.activeView = views.includes(view) ? view : 'dashboard';
+        const bindings = [
+          ['dashboard', elements.tabDashboard, elements.dashboardPanel],
+          ['log', elements.tabLog, elements.logPanel],
+          ['files', elements.tabFiles, elements.filesPanel],
+          ['config', elements.tabConfig, elements.configPanel],
+          ['packages', elements.tabPackages, elements.packagesPanel]
+        ];
+        bindings.forEach(([name, tab, panel]) => {
+          const active = state.activeView === name;
+          tab.setAttribute('aria-selected', String(active));
+          panel.hidden = !active;
+        });
+        if (state.dashboardTimer) clearInterval(state.dashboardTimer);
+        state.dashboardTimer = null;
+        if (state.activeView === 'dashboard') {
+          loadDashboard();
+          state.dashboardTimer = setInterval(loadDashboard, 5000);
+        }
+        if (state.activeView === 'files' && !state.filesLoaded) loadFiles('');
+        if (state.activeView === 'config') {
+          if (!state.dashboard) loadDashboard();
+          else renderConfigDiffs();
+        }
+        if (state.activeView === 'packages' && !state.packagesLoaded) loadPackages();
+      }
+      function emptyState(key) {
+        const node = document.createElement('div');
+        node.className = 'empty-state';
+        node.textContent = text(key);
+        return node;
+      }
+      function updateNotificationButton() {
+        if (!('Notification' in window)) {
+          state.notifications = false;
+          elements.notifications.disabled = true;
+          elements.notifications.textContent = text('notificationsUnsupported');
+          elements.notifications.setAttribute('aria-pressed', 'false');
+          return;
+        }
+        if (Notification.permission === 'denied') state.notifications = false;
+        elements.notifications.disabled = Notification.permission === 'denied';
+        elements.notifications.setAttribute('aria-pressed', String(state.notifications && Notification.permission === 'granted'));
+        elements.notifications.textContent = Notification.permission === 'denied' ? text('notificationsDenied') : text(state.notifications && Notification.permission === 'granted' ? 'notificationsEnabled' : 'enableNotifications');
+      }
+      async function toggleNotifications() {
+        if (!('Notification' in window)) { updateNotificationButton(); return; }
+        if (Notification.permission === 'default') await Notification.requestPermission();
+        state.notifications = Notification.permission === 'granted' ? !state.notifications : false;
+        savePreference('notifications', state.notifications);
+        updateNotificationButton();
+      }
+      function notifyBuildState(value) {
+        if (!state.notifications || !('Notification' in window) || Notification.permission !== 'granted') return;
+        if (!['success', 'failure'].includes(value) || state.lastNotifiedState === value) return;
+        state.lastNotifiedState = value;
+        try {
+          new Notification(text(value === 'success' ? 'notificationSuccessTitle' : 'notificationFailureTitle'), {body: text('notificationBody'), tag: `armbian-build-${value}`});
+        } catch (_) { /* browser policy can still reject a granted notification */ }
+      }
+      async function loadDashboard() {
+        if (state.dashboardBusy) return;
+        state.dashboardBusy = true;
+        elements.dashboardRefresh.disabled = true;
+        elements.configRefresh.disabled = true;
+        try {
+          const response = await fetch('/api/dashboard', {cache: 'no-store'});
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          state.dashboard = await response.json();
+          const branches = (state.dashboard.features || []).map((item) => item.branch);
+          if (!branches.includes(state.selectedFeatureBranch)) state.selectedFeatureBranch = branches[0] || '';
+          renderDashboard();
+          renderConfigDiffs();
+        } catch (_) {
+          elements.timeline.replaceChildren(emptyState('fileLoadError'));
+        } finally {
+          state.dashboardBusy = false;
+          elements.dashboardRefresh.disabled = false;
+          elements.configRefresh.disabled = false;
+        }
+      }
+      function renderDashboard() {
+        if (!state.dashboard) return;
+        renderTimeline();
+        renderFeatures();
+        renderDiagnostics();
+        renderSources();
+        renderIntegrity();
+        renderResourceChart();
+      }
+      function renderTimeline() {
+        const stages = state.dashboard?.timeline || [];
+        elements.timeline.replaceChildren();
+        elements.timelineSummary.textContent = text('stageCount', {count: formatNumber(stages.length)});
+        if (!stages.length) { elements.timeline.appendChild(emptyState('dashboardLoading')); return; }
+        stages.forEach((stage) => {
+          const item = document.createElement('div');
+          item.className = 'timeline-item';
+          item.dataset.state = stage.status || 'running';
+          const label = document.createElement('span');
+          label.className = 'timeline-label';
+          label.textContent = stage.label;
+          const meta = document.createElement('span');
+          meta.className = 'timeline-meta';
+          meta.textContent = Number.isFinite(stage.duration_seconds) ? `${text(stage.status)} · ${formatDuration(stage.duration_seconds)}` : text(stage.status || 'running');
+          item.append(label, meta);
+          elements.timeline.appendChild(item);
+        });
+      }
+      function renderFeatures() {
+        const configs = state.dashboard?.features || [];
+        const prior = state.selectedFeatureBranch;
+        elements.featureBranch.replaceChildren();
+        configs.forEach((config) => {
+          const option = document.createElement('option');
+          option.value = config.branch;
+          option.textContent = [config.branch, config.kernel_release].filter(Boolean).join(' · ');
+          elements.featureBranch.appendChild(option);
+        });
+        state.selectedFeatureBranch = configs.some((item) => item.branch === prior) ? prior : (configs[0]?.branch || '');
+        elements.featureBranch.value = state.selectedFeatureBranch;
+        elements.featureList.replaceChildren();
+        const selected = configs.find((item) => item.branch === state.selectedFeatureBranch);
+        elements.featuresEmpty.hidden = Boolean(selected);
+        if (!selected) { elements.featuresEmpty.textContent = text('evidenceWaiting'); return; }
+        const fragment = document.createDocumentFragment();
+        selected.groups.forEach((group) => {
+          group.items.forEach((item, index) => {
+            const row = document.createElement('tr');
+            const groupCell = document.createElement('td');
+            groupCell.textContent = index === 0 ? text(`feature_${group.id}`) : '';
+            const symbolCell = document.createElement('td');
+            const symbol = document.createElement('code');
+            symbol.textContent = `CONFIG_${item.symbol}`;
+            symbolCell.appendChild(symbol);
+            const modeCell = document.createElement('td');
+            const mode = document.createElement('span');
+            mode.className = 'mode-pill';
+            mode.dataset.mode = item.value;
+            mode.textContent = item.value;
+            modeCell.appendChild(mode);
+            row.append(groupCell, symbolCell, modeCell);
+            fragment.appendChild(row);
+          });
+        });
+        elements.featureList.appendChild(fragment);
+      }
+      function jumpToLogLine(line) {
+        setView('log');
+        elements.jumpLine.value = String(line);
+        const row = document.getElementById(`line-${line}`);
+        if (row) { selectRow(row); row.scrollIntoView({block: 'center'}); }
+        else { state.selectionMode = 'not-found'; updateSelection(); }
+      }
+      function renderDiagnostics() {
+        const diagnostics = state.dashboard?.diagnostics || [];
+        elements.diagnosticsSummary.textContent = text('diagnosticCount', {count: formatNumber(diagnostics.length)});
+        elements.diagnostics.replaceChildren();
+        if (!diagnostics.length) { elements.diagnostics.appendChild(emptyState('noDiagnostics')); return; }
+        diagnostics.slice().reverse().forEach((diagnostic) => {
+          const item = document.createElement('div');
+          item.className = 'diagnostic';
+          item.dataset.severity = diagnostic.severity;
+          const severity = document.createElement('span');
+          severity.className = 'diagnostic-severity';
+          severity.textContent = text(diagnostic.severity === 'error' ? 'errorLabel' : 'warningLabel');
+          const message = document.createElement('span');
+          message.className = 'diagnostic-message';
+          message.textContent = diagnostic.message;
+          const jump = document.createElement('button');
+          jump.type = 'button';
+          jump.dataset.line = diagnostic.line;
+          jump.textContent = `${text('jumpToLine')} #${diagnostic.line}`;
+          item.append(severity, message, jump);
+          elements.diagnostics.appendChild(item);
+        });
+      }
+      function renderSources() {
+        const sources = state.dashboard?.sources || [];
+        elements.sources.replaceChildren();
+        if (!sources.length) { elements.sources.appendChild(emptyState('evidenceWaiting')); return; }
+        sources.forEach((source) => {
+          const item = document.createElement('div');
+          item.className = 'source-item';
+          const name = document.createElement('strong');
+          name.textContent = `${source.component} · ${source.branch}`;
+          const commit = document.createElement('code');
+          commit.textContent = source.commit || '—';
+          const link = document.createElement('a');
+          link.href = source.commit && source.repository.startsWith('https://') ? `${source.repository}/commit/${source.commit}` : source.repository;
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+          link.textContent = text(source.origin === 'packaged' ? 'packaged' : 'configured');
+          item.append(name, commit, link);
+          elements.sources.appendChild(item);
+        });
+      }
+      function renderIntegrity() {
+        const records = state.dashboard?.integrity || [];
+        const verified = records.filter((record) => record.status === 'verified').length;
+        elements.integritySummary.textContent = text('integrityCount', {verified: formatNumber(verified), total: formatNumber(records.length)});
+        elements.integrity.replaceChildren();
+        if (!records.length) { elements.integrity.appendChild(emptyState('evidenceWaiting')); return; }
+        records.forEach((record) => {
+          const item = document.createElement('div');
+          item.className = 'integrity-item';
+          const name = document.createElement('strong');
+          name.textContent = `${record.branch} · ${record.name}`;
+          const details = document.createElement('code');
+          details.textContent = `${record.actual || '—'} / ${record.expected || '—'}`;
+          const status = document.createElement('span');
+          status.className = 'result-pill';
+          status.dataset.status = record.status;
+          status.textContent = text(record.status === 'unavailable' ? 'integrityUnavailable' : record.status);
+          item.append(name, details, status);
+          elements.integrity.appendChild(item);
+        });
+      }
+      function svgElement(name, attributes = {}) {
+        const element = document.createElementNS('http://www.w3.org/2000/svg', name);
+        Object.entries(attributes).forEach(([key, value]) => element.setAttribute(key, String(value)));
+        return element;
+      }
+      function renderResourceChart() {
+        const samples = (state.dashboard?.resources || []).slice(-120);
+        elements.resourceChart.replaceChildren();
+        [0, 25, 50, 75, 100].forEach((value) => {
+          const y = 170 - value * 1.5;
+          elements.resourceChart.appendChild(svgElement('line', {x1: 0, x2: 600, y1: y, y2: y, class: 'chart-grid'}));
+        });
+        if (samples.length < 2) return;
+        const points = (key) => samples.map((sample, index) => `${(index / (samples.length - 1)) * 600},${170 - Math.max(0, Math.min(Number(sample[key]) || 0, 100)) * 1.5}`).join(' ');
+        [['load', 'chart-load'], ['memory', 'chart-memory'], ['disk', 'chart-disk']].forEach(([key, className]) => {
+          elements.resourceChart.appendChild(svgElement('polyline', {points: points(key), class: `chart-line ${className}`}));
+        });
+      }
+      function renderConfigDiffs() {
+        const diffs = state.dashboard?.config_diffs || [];
+        elements.configList.replaceChildren();
+        if (!diffs.length) { elements.configList.appendChild(emptyState('evidenceWaiting')); return; }
+        diffs.forEach((diff) => {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.dataset.path = diff.path;
+          button.setAttribute('aria-selected', String(diff.path === state.selectedDiff));
+          button.textContent = `${diff.branch} · ${text('diffSummary', diff)}`;
+          elements.configList.appendChild(button);
+        });
+      }
+      function applyConfigFilter() {
+        const query = elements.configFilter.value.trim().toLocaleLowerCase();
+        elements.configContent.replaceChildren();
+        const fragment = document.createDocumentFragment();
+        state.configRaw.split('\n').forEach((line, index) => {
+          if (query && !line.toLocaleLowerCase().includes(query)) return;
+          const row = document.createElement('div');
+          row.className = 'diff-row';
+          if (line.startsWith('+') && !line.startsWith('+++')) row.dataset.kind = 'added';
+          else if (line.startsWith('-') && !line.startsWith('---')) row.dataset.kind = 'removed';
+          const number = document.createElement('span');
+          number.className = 'diff-line';
+          number.textContent = String(index + 1);
+          const code = document.createElement('code');
+          code.className = 'diff-code';
+          code.textContent = line || ' ';
+          row.append(number, code);
+          fragment.appendChild(row);
+        });
+        elements.configContent.appendChild(fragment);
+      }
+      async function selectConfigDiff(path) {
+        state.selectedDiff = path;
+        renderConfigDiffs();
+        elements.configMeta.textContent = text('configLoading');
+        elements.configContent.textContent = '';
+        try {
+          const response = await fetch(fileUrl('/api/file', path), {cache: 'no-store'});
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const payload = await response.json();
+          state.configRaw = payload.text || '';
+          const diff = (state.dashboard?.config_diffs || []).find((item) => item.path === path);
+          elements.configMeta.textContent = `${diff ? `${diff.name} · ${text('diffSummary', diff)}` : payload.name}${payload.truncated ? ` · ${text('truncatedPreview', {size: formatBytes(payload.limit)})}` : ''}`;
+          applyConfigFilter();
+        } catch (_) {
+          elements.configMeta.textContent = text('fileLoadError');
+        }
+      }
+      async function loadPackages() {
+        if (state.packagesBusy) return;
+        state.packagesBusy = true;
+        elements.packagesRefresh.disabled = true;
+        elements.packageList.replaceChildren(emptyState('packageLoading'));
+        try {
+          const response = await fetch('/api/packages', {cache: 'no-store'});
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const payload = await response.json();
+          state.packages = Array.isArray(payload.packages) ? payload.packages : [];
+          state.packagesLoaded = true;
+          renderPackages();
+          if (!payload.tool_available && state.packages.length) elements.packageMeta.textContent = text('packageToolUnavailable');
+        } catch (_) {
+          state.packages = [];
+          state.packagesLoaded = true;
+          renderPackages();
+        } finally {
+          state.packagesBusy = false;
+          elements.packagesRefresh.disabled = false;
+        }
+      }
+      function renderPackages() {
+        if (!elements.packageList) return;
+        elements.packageList.replaceChildren();
+        if (!state.packagesLoaded) { elements.packageList.appendChild(emptyState('packageLoading')); return; }
+        if (!state.packages.length) { elements.packageList.appendChild(emptyState('filesUnavailable')); return; }
+        state.packages.forEach((item) => {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.dataset.path = item.path;
+          button.setAttribute('aria-selected', String(item.path === state.selectedPackage));
+          const control = item.control || {};
+          button.textContent = `${control.package || item.name} · ${control.version || formatBytes(item.size)}`;
+          elements.packageList.appendChild(button);
+        });
+        renderPackageInspection();
+      }
+      function renderPackageInspection() {
+        const selected = state.packages.find((item) => item.path === state.selectedPackage);
+        if (!selected) return;
+        const control = selected.control || {};
+        elements.packageControl.replaceChildren();
+        const list = document.createElement('dl');
+        [['package', control.package], ['version', control.version], ['architecture', control.architecture], ['installedSize', control.installed_size], ['depends', control.depends], ['description', control.description]].forEach(([key, value]) => {
+          const term = document.createElement('dt');
+          term.textContent = text(key);
+          const detail = document.createElement('dd');
+          detail.textContent = value || '—';
+          list.append(term, detail);
+        });
+        elements.packageControl.appendChild(list);
+        if (state.packageInspection?.path === selected.path) {
+          const inspection = state.packageInspection;
+          elements.packageMeta.textContent = inspection.inspection === 'ready' ? `${selected.name} · ${text('packageFiles', {count: formatNumber(inspection.files.length)})}${inspection.truncated ? ` · ${text('packageTruncated')}` : ''}` : text(inspection.inspection === 'unavailable' ? 'packageToolUnavailable' : 'packageInvalid');
+          elements.packageContent.textContent = (inspection.files || []).join('\n');
+        }
+      }
+      async function inspectPackage(path) {
+        state.selectedPackage = path;
+        state.packageInspection = null;
+        renderPackages();
+        elements.packageMeta.textContent = text('packageLoading');
+        elements.packageContent.textContent = '';
+        try {
+          const response = await fetch(fileUrl('/api/package', path), {cache: 'no-store'});
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          state.packageInspection = {...await response.json(), path};
+        } catch (_) {
+          state.packageInspection = {path, inspection: 'invalid', files: [], truncated: false};
+        }
+        renderPackageInspection();
       }
       function renderBreadcrumbs() {
         elements.breadcrumbs.replaceChildren();
@@ -1196,8 +1737,29 @@
       });
       elements.searchPrev.addEventListener('click', () => activateMatch(state.activeMatch - 1));
       elements.searchNext.addEventListener('click', () => activateMatch(state.activeMatch + 1));
+      elements.notifications.addEventListener('click', toggleNotifications);
+      elements.tabDashboard.addEventListener('click', () => setView('dashboard'));
       elements.tabLog.addEventListener('click', () => setView('log'));
       elements.tabFiles.addEventListener('click', () => setView('files'));
+      elements.tabConfig.addEventListener('click', () => setView('config'));
+      elements.tabPackages.addEventListener('click', () => setView('packages'));
+      elements.dashboardRefresh.addEventListener('click', loadDashboard);
+      elements.configRefresh.addEventListener('click', loadDashboard);
+      elements.packagesRefresh.addEventListener('click', loadPackages);
+      elements.featureBranch.addEventListener('change', () => { state.selectedFeatureBranch = elements.featureBranch.value; renderFeatures(); });
+      elements.diagnostics.addEventListener('click', (event) => {
+        const button = event.target.closest('[data-line]');
+        if (button) jumpToLogLine(button.dataset.line);
+      });
+      elements.configList.addEventListener('click', (event) => {
+        const button = event.target.closest('[data-path]');
+        if (button) selectConfigDiff(button.dataset.path);
+      });
+      elements.configFilter.addEventListener('input', applyConfigFilter);
+      elements.packageList.addEventListener('click', (event) => {
+        const button = event.target.closest('[data-path]');
+        if (button) inspectPackage(button.dataset.path);
+      });
       elements.fileRefresh.addEventListener('click', () => loadFiles(state.filesPath));
       elements.fileFilter.addEventListener('input', renderFiles);
       elements.breadcrumbs.addEventListener('click', (event) => {
@@ -1237,6 +1799,7 @@
       elements.body.classList.toggle('wrap', state.wrap);
       applyTheme();
       applyLocale();
+      setView('dashboard');
       startEventStream();
     })();
   </script>

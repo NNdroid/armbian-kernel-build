@@ -411,6 +411,8 @@ RELEASE_DEBS="${RELEASE_TEST_ROOT}/build/output/debs"
 mkdir -p "${RELEASE_METADATA}" "${RELEASE_DEBS}"
 printf '# 动态构建摘要\n\neBPF 已校验。\n' > "${RELEASE_METADATA}/build-summary.md"
 printf 'CONFIG_BPF=y\n' > "${RELEASE_METADATA}/edge-kernel.config"
+printf 'evidence_format=1\nbranch=edge\n' > \
+	"${RELEASE_METADATA}/edge-source-manifest.env"
 printf '+BPF y\n' > "${RELEASE_METADATA}/edge-config-vs-arm64-defconfig.txt"
 printf 'synthetic defconfig diagnostic\n' > "${RELEASE_METADATA}/arm64-defconfig-build.log"
 printf 'synthetic module\n' > \
@@ -501,6 +503,7 @@ assert_contains "${RELEASE_TEST_ROOT}/captured-notes.md" '内核版本（构建�
 assert_contains "${RELEASE_TEST_ROOT}/captured-notes.md" 'kernel.org 上游版本：`7.2.0`'
 assert_not_contains "${RELEASE_TEST_ROOT}/captured-gh-args.txt" 'bleedingedge'
 assert_contains "${RELEASE_TEST_ROOT}/captured-gh-args.txt" 'edge-kernel.config'
+assert_contains "${RELEASE_TEST_ROOT}/captured-gh-args.txt" 'edge-source-manifest.env'
 assert_contains "${RELEASE_TEST_ROOT}/captured-gh-args.txt" 'arm64-defconfig-build.log'
 assert_contains "${RELEASE_TEST_ROOT}/captured-gh-args.txt" \
 	'edge-7.2.1-rockchip64-arm64-brutal.ko.zst'
@@ -642,6 +645,9 @@ assert_contains "${WRAPPER_ROOT}/enabled-extensions.txt" \
 assert_contains "${WRAPPER_ROOT}/compile-arguments.txt" \
 	'ENABLE_EXTENSIONS=sample-one,kernel-inject-evidence,sample-two'
 assert_file "${WRAPPER_ROOT}/output/release-metadata/fake/fake-kernel.config"
+assert_file "${WRAPPER_ROOT}/output/release-metadata/fake/fake-source-manifest.env"
+assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/fake-source-manifest.env" \
+	"tcp_brutal_commit=${TCP_BRUTAL_COMMIT}"
 assert_file "${WRAPPER_ROOT}/output/release-metadata/fake/fake-config-vs-arm64-defconfig.txt"
 assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
 	'eBPF / BTF / CO-RE'

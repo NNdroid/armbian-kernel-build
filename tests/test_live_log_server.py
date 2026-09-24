@@ -152,6 +152,54 @@ def main() -> int:
         (files_root / "release-metadata" / "large.log").write_bytes(
             b"x" * (512 * 1024 + 17)
         )
+        evidence_root = files_root / "release-metadata" / "current"
+        evidence_root.mkdir()
+        kernel_config = (
+            "CONFIG_TCP_CONG_BRUTAL=y\n"
+            "CONFIG_AMNEZIAWG=y\n"
+            "CONFIG_NETFILTER_DEAF=y\n"
+            "# CONFIG_WIREGUARD is not set\n"
+            "CONFIG_BPF=y\n"
+            "CONFIG_DEBUG_INFO_BTF=y\n"
+            "CONFIG_MPLS_ROUTING=y\n"
+            "CONFIG_VXLAN=y\n"
+            "CONFIG_NF_TABLES=y\n"
+            "CONFIG_TCP_CONG_BBR=y\n"
+            "CONFIG_USB_GADGET=y\n"
+            "CONFIG_BT=m\n"
+            "CONFIG_CFG80211=m\n"
+            "CONFIG_MT7921E=m\n"
+        ).encode("utf-8")
+        config_path = evidence_root / "current-kernel.config"
+        config_path.write_bytes(kernel_config)
+        config_digest = hashlib.sha256(kernel_config).hexdigest()
+        commits = {
+            "tcp_brutal_commit": "1" * 40,
+            "amneziawg_commit": "2" * 40,
+            "nf_deaf_commit": "3" * 40,
+        }
+        manifest_lines = [
+            "evidence_format=1",
+            "branch=current",
+            "kernel_release=6.18.53-current-rockchip64",
+            f"config_sha256={config_digest}",
+            "baseline_status=generated",
+            "diff_count=2",
+            *(f"{key}={value}" for key, value in commits.items()),
+        ]
+        (evidence_root / "current-source-manifest.env").write_bytes(
+            ("\n".join(manifest_lines) + "\n").encode("utf-8")
+        )
+        (evidence_root / "current-config-vs-arm64-defconfig.txt").write_bytes(
+            b"-CONFIG_OLD=y\n+CONFIG_BPF=y\n"
+        )
+        module_data = b"synthetic module"
+        (evidence_root / "current-test.ko").write_bytes(module_data)
+        (evidence_root / "current-loadable-modules-SHA256SUMS").write_bytes(
+            f"{hashlib.sha256(module_data).hexdigest()}  current-test.ko\n".encode(
+                "ascii"
+            )
+        )
         (files_root / ".secret").write_text("must not be listed", encoding="utf-8")
         symlink_path = files_root / "linked-summary.md"
         try:
@@ -175,6 +223,7 @@ def main() -> int:
         process = subprocess.Popen(
             [
                 sys.executable,
+                "-B",
                 str(SERVER_SCRIPT),
                 "--directory",
                 str(log_root),
@@ -210,12 +259,27 @@ def main() -> int:
             assert b'id="jump-line"' in body
             assert b'id="theme"' in body
             assert b'id="tab-files"' in body
+            assert b'id="tab-dashboard"' in body
+            assert b'id="tab-config"' in body
+            assert b'id="tab-packages"' in body
+            assert b'id="notifications"' in body
             assert b'id="file-filter"' in body
             assert b'id="file-preview"' in body
             assert b"/api/file-hash" in body
             assert b'value="ja"' in body
             assert b'value="fr"' in body
             assert b'value="de"' in body
+            for translation_key in (
+                b"dashboardTab:",
+                b"timelineTitle:",
+                b"featuresTitle:",
+                b"diagnosticsTitle:",
+                b"sourcesTitle:",
+                b"integrityTitle:",
+                b"packagesTitle:",
+                b"enableNotifications:",
+            ):
+                assert body.count(translation_key) == 5, translation_key
 
             status, _, _ = request(f"{base_url}/api/files")
             assert status == 401, status
@@ -237,8 +301,10 @@ def main() -> int:
             assert status == 200, status
             nested = json.loads(body)
             assert nested["path"] == "release-metadata", nested
-            assert nested["entries"][0]["name"] == "build-summary.md", nested
-            assert nested["entries"][0]["previewable"] is True, nested
+            summary_entry = next(
+                entry for entry in nested["entries"] if entry["name"] == "build-summary.md"
+            )
+            assert summary_entry["previewable"] is True, nested
 
             summary_path = urllib.parse.quote(
                 "release-metadata/build-summary.md", safe=""
@@ -411,6 +477,71 @@ def main() -> int:
             assert status == 200, status
             assert body == b"first line\nsecond line\n", body
             assert "attachment" in headers.get("Content-Disposition", "")
+
+            status, _, _ = request(f"{base_url}/api/dashboard")
+            assert status == 401, status
+            with (log_root / "build.log").open("ab") as log_file:
+                log_file.write(
+                    "\x1b[32m[INFO]\x1b[0m ──── 1. 环境初始化 ────\n"
+                    "[WARN] synthetic warning\n"
+                    "[ERROR] synthetic failure evidence\n"
+                    "[INFO] ──── 1. 环境初始化 完成 (耗时 3s) ────\n".encode(
+                        "utf-8"
+                    )
+                )
+            status, body, _ = request(
+                f"{base_url}/api/dashboard", authenticated=True
+            )
+            assert status == 200, status
+            dashboard = json.loads(body)
+            assert dashboard["timeline"][0]["label"] == "1. 环境初始化", dashboard
+            assert dashboard["timeline"][0]["status"] == "success", dashboard
+            assert dashboard["timeline"][0]["duration_seconds"] == 3, dashboard
+            assert {item["severity"] for item in dashboard["diagnostics"]} == {
+                "warning",
+                "error",
+            }, dashboard
+            assert dashboard["features"][0]["branch"] == "current", dashboard
+            custom_group = next(
+                group
+                for group in dashboard["features"][0]["groups"]
+                if group["id"] == "custom"
+            )
+            assert custom_group["items"][0] == {
+                "symbol": "TCP_CONG_BRUTAL",
+                "value": "y",
+            }, custom_group
+            assert len(dashboard["sources"]) == 3, dashboard
+            assert dashboard["config_diffs"][0]["added"] == 1, dashboard
+            assert dashboard["config_diffs"][0]["removed"] == 1, dashboard
+            assert {
+                (item["kind"], item["status"])
+                for item in dashboard["integrity"]
+            } >= {
+                ("config", "verified"),
+                ("sources", "verified"),
+                ("modules", "verified"),
+            }, dashboard
+            assert dashboard["resources"], dashboard
+
+            status, _, _ = request(f"{base_url}/api/packages")
+            assert status == 401, status
+            status, body, _ = request(
+                f"{base_url}/api/packages", authenticated=True
+            )
+            assert status == 200, status
+            packages = json.loads(body)
+            assert packages["packages"][0]["path"] == "debs/linux-image-test.deb", packages
+            status, body, _ = request(
+                f"{base_url}/api/package?path={package_path}", authenticated=True
+            )
+            assert status == 200, status
+            package_inspection = json.loads(body)
+            assert package_inspection["inspection"] in {
+                "ready",
+                "invalid",
+                "unavailable",
+            }, package_inspection
 
             status, _, _ = request(f"{base_url}/missing", authenticated=True)
             assert status == 404, status

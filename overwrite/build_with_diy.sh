@@ -368,6 +368,7 @@ generate_release_metadata() {
 	diff_asset="${staging}/${branch}-config-vs-${kbuild_arch}-defconfig.txt"
 	summary_file="${staging}/build-summary.md"
 	cp -- "${final_config}" "${config_asset}"
+	cp -- "${manifest_file}" "${staging}/${branch}-source-manifest.env"
 	config_sha256="$(sha256sum "${config_asset}" | awk '{print $1}')"
 	if [[ "${config_sha256}" != "${expected_config_sha256}" ]]; then
 		echo "[kernel-inject][error] final config checksum does not match packaged build evidence" >&2

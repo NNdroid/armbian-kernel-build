@@ -394,7 +394,8 @@ function upload_to_github_release() {
 	mapfile -d '' -t metadata_files < <(find "${metadata_dir}" -maxdepth 1 -type f \
 		\( -name '*.config' -o -name '*-config-vs-*-defconfig.txt' \
 			-o -name '*-defconfig-build.log' -o -name '*-loadable-modules.md' \
-			-o -name '*-loadable-modules-SHA256SUMS' -o -name '*.ko' \
+			-o -name '*-source-manifest.env' -o -name '*-loadable-modules-SHA256SUMS' \
+			-o -name '*.ko' \
 			-o -name '*.ko.gz' -o -name '*.ko.xz' -o -name '*.ko.zst' \) \
 		-print0 2>/dev/null)
 
