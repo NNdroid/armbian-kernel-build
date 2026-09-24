@@ -281,6 +281,10 @@ def main() -> int:
             assert b"expandGroupsForRow" in body
             assert b"tail_bytes=" in body
             assert b"const maxLines = 15000" in body
+            assert b"--scrollbar-thumb:" in body
+            assert b"::-webkit-scrollbar-thumb:hover" in body
+            assert b"scrollbar-color:" in body
+            assert b"scrollbar-gutter: stable" in body
             for translation_key in (
                 b"dashboardTab:",
                 b"timelineTitle:",
