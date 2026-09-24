@@ -250,8 +250,12 @@ def main() -> int:
             assert status == 401, status
             assert headers.get("WWW-Authenticate") == 'Basic realm="Armbian build log"'
 
-            status, body, _ = request(f"{base_url}/", authenticated=True)
+            status, body, root_headers = request(f"{base_url}/", authenticated=True)
             assert status == 200, status
+            assert root_headers.get("X-Frame-Options") == "DENY", root_headers
+            assert "frame-ancestors 'none'" in root_headers.get("Content-Security-Policy", ""), root_headers
+            assert "object-src 'none'" in root_headers.get("Content-Security-Policy", ""), root_headers
+            assert root_headers.get("Permissions-Policy"), root_headers
             assert b"Armbian Kernel Build" in body
             assert b"(?:\\[[0-?]*[ -/]*[@-~]|[@-_])" in body
             assert b"new EventSource(`/api/events?offset=${state.offset}`" in body
@@ -404,6 +408,22 @@ def main() -> int:
             }, metrics
             assert metrics["host"]["cpu_count"] >= 1, metrics
             assert metrics["log_bytes"] == len(b"first line\n"), metrics
+
+            with (log_root / "build.log").open("ab") as log_file:
+                log_file.write(
+                    b"[INFO] Build wrapper Arguments: target=kernel BRANCH=current BOARD=test\n"
+                )
+            status, body, _ = request(f"{base_url}/api/metrics", authenticated=True)
+            assert status == 200, status
+            metrics = json.loads(body)
+            assert metrics["target"]["branch"] == "current", metrics
+
+            with (log_root / "build.log").open("ab") as log_file:
+                log_file.write(b"x" * (300 * 1024))
+            status, body, _ = request(f"{base_url}/api/metrics", authenticated=True)
+            assert status == 200, status
+            metrics = json.loads(body)
+            assert metrics["target"]["branch"] == "current", metrics
 
             status, _, _ = request(f"{base_url}/api/events")
             assert status == 401, status
