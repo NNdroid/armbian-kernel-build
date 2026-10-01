@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -113,6 +114,22 @@ class HK1BoxPackages(unittest.TestCase):
                                 text=True, capture_output=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Unknown BUILD_TARGET", result.stderr)
+
+    def test_stage_output_is_understood_by_dashboard(self):
+        env = dict(os.environ, HK_TEST_SCRIPT=shell_path(ROOT / "scripts/hk1box_kernel.sh"))
+        result = subprocess.run(
+            [BASH, "-c", 'set -Eeuo pipefail; source "$HK_TEST_SCRIPT"; '
+             'hk_stage "1. HK1 Box dependencies"; hk_stage "2. HK1 Box configuration"; hk_finish_stage'],
+            env=env, text=True, encoding="utf-8", capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        sys.path.insert(0, str(ROOT / "scripts"))
+        from live_dashboard import DashboardAnalyzer
+        analyzer = DashboardAnalyzer(self.root / "log", None, ROOT)
+        for line in result.stdout.splitlines():
+            analyzer._process_line(line.encode())
+        self.assertEqual(len(analyzer._stages), 2)
+        self.assertTrue(all(stage["status"] == "success" for stage in analyzer._stages))
 
 
 if __name__ == "__main__":

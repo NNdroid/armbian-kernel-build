@@ -1,7 +1,18 @@
 #!/usr/bin/env bash
 # Container-only native arm64 builder using ophub's Meson/SM1 source and config.
 set -Eeuo pipefail
-hk_stage() { printf '[INFO] %s ──── %s ────\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$1"; }
+hk_finish_stage() {
+    if [[ -n "${HK_STAGE_LABEL:-}" ]]; then
+        printf '[INFO] %s ──── %s completed (elapsed %ss) ────\n' \
+            "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "${HK_STAGE_LABEL}" "$((SECONDS - HK_STAGE_START))"
+        HK_STAGE_LABEL=''
+    fi
+}
+hk_stage() {
+    hk_finish_stage
+    HK_STAGE_LABEL="$1"; HK_STAGE_START=$SECONDS
+    printf '[INFO] %s ──── %s ────\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$1"
+}
 hk_fail() { printf '[ERROR] %s\n' "$*" >&2; return 1; }
 
 hk_prepare_config() {
@@ -150,7 +161,7 @@ hk_main() {
     # Verify evidence by reading the actual installation archive.
     tar -xOf "${bundle}/modules-${release}.tar.gz" \
         "./usr/lib/armbian-kernel-build/${release}/kernel.config" | cmp - .config
-    local output=/output/hk1box metadata=/output/release-metadata/hk1box
+    local output=/output/hk1box metadata=/builder/metadata
     mkdir -p "${output}" "${metadata}"
     # Build in a fresh directory and replace only the completed bundle atomically.
     tar -czf "/builder/${release}.tar.gz" -C "${bundle}" .
@@ -226,8 +237,19 @@ Keep a backup and recovery SD/USB available for the first boot. No U-Boot, uEnv.
 root UUID or overclock settings are included in this kernel bundle.
 EOF
     cp "${metadata}/build-summary.md" "${metadata}/hk1box-install.md"
+    mkdir -p /output/release-metadata
+    local ready_metadata
+    ready_metadata="$(mktemp -d /output/release-metadata/.hk1box-ready.XXXXXX)"
+    cp -a "${metadata}/." "${ready_metadata}/"
+    if [[ -e /output/release-metadata/hk1box ]]; then
+        local previous_metadata
+        previous_metadata="$(mktemp -d "${output}/metadata-history.XXXXXX")"
+        mv /output/release-metadata/hk1box "${previous_metadata}/hk1box"
+    fi
+    mv "${ready_metadata}" /output/release-metadata/hk1box
     printf '%s\n' "${release}" > /builder/kernel-release
     hk_stage '5. HK1 Box installation bundle verified'
+    hk_finish_stage
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then hk_main "$@"; fi
