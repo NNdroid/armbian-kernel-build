@@ -9,7 +9,8 @@ DEB 证据校验、实时日志和 Release 元数据生成。默认 `edge / 7.2.
 板级差异集中在 `scripts/build_targets.sh`、`userpatches/boards/hk1box.conf` 和
 `userpatches/kernel/archive/meson64-7.2/0001-hk1box-mainline-dtb.patch`。
 HK1 Box 设备树以 Linux 7.2 自带的 SM1/AC2xx 为基础，保留现有 FDT 文件名，
-适配千兆 PHY、SD/eMMC、USB、SDIO 和蓝牙接线；不添加超频 OPP。
+适配千兆 PHY、SD/eMMC、USB、SDIO 和蓝牙接线，并屏蔽 Armbian SM1 补丁
+新增的 2.016/2.1 GHz OPP，保留主线频率表。
 板级接线参考 ophub/linux-6.12.y 的
 `4c0b3046f608fad852b55de1b234d43b8e178034`，保留原 GPL/MIT 许可证，
 只移植设备树，不引用其内核源码或配置。内存容量由现有 U-Boot 修正；

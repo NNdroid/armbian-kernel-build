@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 import shutil
+import shlex
 import subprocess
 import tempfile
 import unittest
@@ -60,10 +61,37 @@ class TargetTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             dts = (dts_dir / 'meson-sm1-hk1box-vontar-x3.dts').read_text()
             self.assertIn('#include "meson-sm1-ac2xx.dtsi"', dts)
-            self.assertNotIn('&cpu_opp_table', dts)
+            self.assertNotIn('opp-hz =', dts)
+            self.assertIn('/delete-node/ opp-2100000000;', dts)
             self.assertNotIn('0xFFFFFFFF', dts)
             self.assertIn('/delete-property/ sd-uhs-sdr104;', dts)
             self.assertIn('max-frequency = <25000000>', dts)
+
+    def test_tar_payload_matches_ophub_installer(self):
+        release = '7.2.8-edge-meson64'
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / 'root'
+            stage = Path(temporary) / 'stage'
+            for name in [f'boot/vmlinuz-{release}', f'boot/config-{release}',
+                         f'boot/System.map-{release}',
+                         f'boot/dtb-{release}/amlogic/meson-sm1-hk1box-vontar-x3.dtb',
+                         f'lib/modules/{release}/modules.builtin',
+                         f'usr/lib/armbian-kernel-build/{release}/source-manifest.env',
+                         f'usr/src/linux-headers-{release}/include/test.h']:
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('fixture')
+            script = ('source scripts/package_hk1box.sh; stage_hk1box_payload '
+                      f'{shlex.quote(root.as_posix())} {shlex.quote(stage.as_posix())} {release}')
+            result = self.run_bash(script)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((stage / f'modules/{release}/modules.builtin').is_file())
+            self.assertFalse((stage / 'modules/lib/modules').exists())
+            self.assertTrue((stage / f'modules/{release}/armbian-kernel-build/source-manifest.env').is_file())
+            self.assertTrue((stage / 'dtb/meson-sm1-hk1box-vontar-x3.dtb').is_file())
+            self.assertTrue((stage / 'header/include/test.h').is_file())
+            (root / f'boot/dtb-{release}/amlogic/meson-sm1-hk1box-vontar-x3.dtb').unlink()
+            self.assertNotEqual(self.run_bash(script).returncode, 0)
 
 
 if __name__ == '__main__':

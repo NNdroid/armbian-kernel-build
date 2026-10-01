@@ -44,21 +44,10 @@ package_hk1box() (
     printf '[INFO] HK1 Box TAR bundle generated from verified Armbian DEBs: %s\n' "${output}"
 )
 
-package_worker() {
-    [[ "$(uname -m)" == aarch64 ]] || return 1
-    [[ "${PACKAGE_OWNER:-}" =~ ^[0-9]+:[0-9]+$ ]] || return 1
-    trap 'chown -R "${PACKAGE_OWNER}" /package' EXIT
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update
-    apt-get install -y --no-install-recommends initramfs-tools u-boot-tools kmod
-    local root=/package/root stage=/package/stage release image dtb
-    local -a releases=()
-    mapfile -t releases < <(find "${root}/lib/modules" -mindepth 1 -maxdepth 1 -type d -printf '%f\n')
-    ((${#releases[@]} == 1)) || return 1
-    release="${releases[0]}"
-    [[ "${release}" =~ ^7\.2\.[0-9]+-[-A-Za-z0-9._+]+$ ]] || return 1
-    image="${root}/boot/vmlinuz-${release}"
-    dtb="${root}/boot/dtb-${release}/amlogic/meson-sm1-hk1box-vontar-x3.dtb"
+stage_hk1box_payload() {
+    local root="$1" stage="$2" release="$3"
+    local image="${root}/boot/vmlinuz-${release}"
+    local dtb="${root}/boot/dtb-${release}/amlogic/meson-sm1-hk1box-vontar-x3.dtb"
     [[ -s "${image}" && -s "${dtb}" && -d "${root}/usr/src/linux-headers-${release}" ]] || return 1
     mkdir -p "${stage}/boot" "${stage}/dtb" "${stage}/modules" "${stage}/header"
     cp "${image}" "${stage}/boot/vmlinuz-${release}"
@@ -70,6 +59,22 @@ package_worker() {
     cp -a "${root}/usr/lib/armbian-kernel-build/${release}" \
         "${stage}/modules/${release}/armbian-kernel-build"
     cp -a "${root}/usr/src/linux-headers-${release}/." "${stage}/header/"
+}
+
+package_worker() {
+    [[ "$(uname -m)" == aarch64 ]] || return 1
+    [[ "${PACKAGE_OWNER:-}" =~ ^[0-9]+:[0-9]+$ ]] || return 1
+    trap 'chown -R "${PACKAGE_OWNER}" /package' EXIT
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y --no-install-recommends initramfs-tools u-boot-tools kmod
+    local root=/package/root stage=/package/stage release
+    local -a releases=()
+    mapfile -t releases < <(find "${root}/lib/modules" -mindepth 1 -maxdepth 1 -type d -printf '%f\n')
+    ((${#releases[@]} == 1)) || return 1
+    release="${releases[0]}"
+    [[ "${release}" =~ ^7\.2\.[0-9]+-[-A-Za-z0-9._+]+$ ]] || return 1
+    stage_hk1box_payload "${root}" "${stage}" "${release}"
     mkdir -p /lib/modules /boot
     cp -a "${root}/lib/modules/${release}" /lib/modules/
     cp "${root}/boot/config-${release}" /boot/
