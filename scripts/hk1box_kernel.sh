@@ -94,6 +94,7 @@ hk_main() {
     done
     cd /builder/kernel
     local source_version release stage=/builder/stage bundle=/builder/bundle
+    local KERNEL_MAJOR_MINOR="${HK1BOX_KERNEL_SERIES}"
     source_version="$(make -s ARCH=arm64 kernelversion)"
     [[ "${source_version}" =~ ^${HK1BOX_KERNEL_SERIES//./\.}\.[0-9]+$ ]] || hk_fail "Unexpected kernel version: ${source_version}"
     cp "/builder/config/kernel-config/release/stable/config-${HK1BOX_KERNEL_SERIES}" .config

@@ -131,6 +131,19 @@ class HK1BoxPackages(unittest.TestCase):
         self.assertEqual(len(analyzer._stages), 2)
         self.assertTrue(all(stage["status"] == "success" for stage in analyzer._stages))
 
+    def test_612_profile_keeps_required_network_features(self):
+        env = dict(os.environ, HK_TEST_CONFIG=shell_path(ROOT / "userpatches/lib.config"))
+        required = {"NF_TABLES_INET", "NF_TABLES_IPV6", "IPV6_SEG6_LWTUNNEL", "MPLS"}
+        for series in ("6.12", "6.18"):
+            result = subprocess.run(
+                [BASH, "-c", 'source "$HK_TEST_CONFIG"; _kernel_inject_full_network_y_options'],
+                env=dict(env, KERNEL_MAJOR_MINOR=series), text=True, capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            symbols = set(result.stdout.splitlines())
+            self.assertTrue(required.issubset(symbols))
+            self.assertEqual("NFT_EXTHDR_DCCP" in symbols, series != "6.12")
+
 
 if __name__ == "__main__":
     unittest.main()
