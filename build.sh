@@ -8,6 +8,13 @@
 # ==========================================
 set -Eeuo pipefail # Abort on command errors, unset variables, or pipeline failures
 
+# Meson builds use a separate source/config and ophub installation format.
+case "${BUILD_TARGET:-rockchip64}" in
+	rockchip64) ;;
+	hk1box) exec bash "$(dirname "${BASH_SOURCE[0]}")/scripts/build_hk1box.sh" ;;
+	*) printf '[ERROR] Unknown BUILD_TARGET: %s\n' "${BUILD_TARGET}" >&2; exit 1 ;;
+esac
+
 # ==========================================
 # ==========================================
 log_now() { date -u +'%Y-%m-%dT%H:%M:%SZ'; }

@@ -2,6 +2,33 @@ name: Build and Upload Debs
 
 on:
   workflow_dispatch:
+    inputs:
+      target:
+        description: Build platform (scheduled builds remain Rockchip64)
+        type: choice
+        default: rockchip64
+        options:
+          - rockchip64
+          - hk1box
+      hk1box_series:
+        description: HK1 Box kernel series
+        type: choice
+        default: '6.12'
+        options:
+          - '6.12'
+          - '6.18'
+      hk1box_kernel_commit:
+        description: Optional full ophub kernel source SHA (empty resolves main once)
+        type: string
+        default: ''
+      hk1box_config_commit:
+        description: Optional full ophub/kernel config SHA (empty resolves main once)
+        type: string
+        default: ''
+      hk1box_publish:
+        description: Publish the completed HK1 Box bundle to a new Release
+        type: boolean
+        default: true
   schedule:
     - cron: '10 13 * * *'
 
@@ -15,7 +42,7 @@ permissions:
 jobs:
   build:
     name: Build on Ubuntu 24.04
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.target == 'hk1box' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
 
     steps:
       - name: Checkout code
@@ -48,6 +75,7 @@ jobs:
         run: |
           bash tests/test_kernel_injection.sh
           python3 tests/test_live_log_server.py
+          python3 tests/test_hk1box.py
           python3 tests/test_redact_log_stream.py
 
       - name: Start authenticated ngrok live log
@@ -56,6 +84,8 @@ jobs:
           NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
           LIVE_LOG_AUTH: ${{ secrets.NGROK_LOG_AUTH }}
           CONFIGURED_NGROK_URL: ${{ secrets.NGROK_URL }}
+          LIVE_LOG_BOARD: ${{ inputs.target == 'hk1box' && 'hk1box' || 'nanopi-r5s' }}
+          LIVE_LOG_FAMILY: ${{ inputs.target == 'hk1box' && 'meson64' || 'rockchip64' }}
         run: |
           set -Eeuo pipefail
 
@@ -93,9 +123,9 @@ jobs:
           sudo apt-get install -y ngrok
 
           nohup env LIVE_LOG_AUTH="${LIVE_LOG_AUTH}" \
-            LIVE_LOG_BOARD="nanopi-r5s" \
+            LIVE_LOG_BOARD="${LIVE_LOG_BOARD}" \
             LIVE_LOG_ARCH="arm64" \
-            LIVE_LOG_FAMILY="rockchip64" \
+            LIVE_LOG_FAMILY="${LIVE_LOG_FAMILY}" \
             LIVE_LOG_RELEASE="trixie" \
             python3 scripts/live_log_server.py \
               --directory "${live_dir}" \
@@ -153,6 +183,11 @@ jobs:
       - name: Run build script
         env:
           GH_TOKEN: ${{ github.token }}
+          BUILD_TARGET: ${{ inputs.target || 'rockchip64' }}
+          HK1BOX_KERNEL_SERIES: ${{ inputs.hk1box_series || '6.12' }}
+          HK1BOX_KERNEL_COMMIT: ${{ inputs.hk1box_kernel_commit }}
+          HK1BOX_CONFIG_COMMIT: ${{ inputs.hk1box_config_commit }}
+          HK1BOX_PUBLISH: ${{ inputs.hk1box_publish && 'yes' || 'no' }}
         run: |
           set -Eeuo pipefail
           live_dir="${RUNNER_TEMP}/kernel-live-log"
@@ -190,7 +225,10 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: built-images
-          path: build/output/debs/*
+          path: |
+            build/output/debs/*
+            build/output/hk1box/*
+            build/output/release-metadata/**
           if-no-files-found: ignore
           retention-days: 5
 

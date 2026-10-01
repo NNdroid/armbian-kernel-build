@@ -1,5 +1,58 @@
 # armbian-kernel-build
 
+## HK1 Box / S905X3 自定义内核
+
+新增独立 `hk1box` 构建目标，适用于正在运行 ophub Armbian、使用
+`meson-sm1-hk1box-vontar-x3.dtb` 的 HK1 Box / Vontar X3。
+默认 `6.12.y`，也可选择 `6.18.y`；不沿用 Rockchip64 的版本或包名。
+源码来自 `ophub/linux-6.12.y` / `ophub/linux-6.18.y`，初始配置来自
+`ophub/kernel/kernel-config/release/stable`。每次构建先把两者的 `main`
+解析为完整 SHA，再按 SHA 下载；Release 记录源码、配置与构建容器 ID。
+
+在 Actions 中选择 **Build and Upload Debs → Run workflow**：
+
+- `target`: `hk1box`
+- `hk1box_series`: `6.12`（与你目前的 `6.12.78-ophub` 同一系列）
+- 两个 commit 输入留空构建对应系列最新源码，或填写完整 40 位 SHA 重现构建。
+- `hk1box_publish`: 是否创建独立的 `hk1box-<kernel-release>` Release。
+
+HK1 Box 作业使用 ARM64 runner，并在隔离的 Ubuntu 24.04 ARM64 Docker 容器
+中原生编译。现有定时任务仍构建 Rockchip64。ngrok/SSE 页面显示 `hk1box / meson64 / arm64`，
+可查看构建日志、最终配置、配置差异和源码证据。此目标生成 TAR 安装包，DEB 检查器不适用。
+
+本地在支持 ARM64 容器的 Linux Docker 主机运行（推荐 ARM64，x86 需要先配置 QEMU）：
+
+```bash
+BUILD_TARGET=hk1box HK1BOX_KERNEL_SERIES=6.12 bash build.sh
+# 发布需在宿主机安装并认证 gh；Docker 容器不接收 GitHub/ngrok 凭据。
+BUILD_TARGET=hk1box HK1BOX_PUBLISH=yes bash build.sh
+```
+
+三个自定义组件默认为 `y`；原生 WireGuard 为 `n`；完整 eBPF/BTF/CO-RE、网络功能
+严格校验；Bluetooth / Wi-Fi / MT7921E 为 `m`。这不会为 HK1 Box 增加实际不存在的
+PCIe 接口；盒子自带 Wi-Fi 是否工作仍取决于实际芯片和既有固件。
+打包前检查真正的 `modules.builtin`、MT7921E 模块以及目标 DTB，缺项则拒绝发布。
+
+产物位于 `build/output/hk1box/<version>-hk1box.tar.gz`，内含 ophub 所需的
+四个完整安装包：`boot-*`、`dtb-amlogic-*`、`modules-*`、`header-*`，以及 `sha256sums`。
+最终配置、源码 pin、Kconfig 清单与 defconfig 差异也嵌入 modules 包，安装后位于
+`/usr/lib/armbian-kernel-build/<kernel-release>/`。工作目录保留在 `build/hk1box-work.*`
+便于诊断，使用完后可自行清理以回收磁盘空间。
+
+安装到 HK1 Box 时，把下载的总包解压到新建空目录，在该目录执行：
+
+```bash
+sha256sum -c sha256sums
+sudo armbian-update -k <实际版本>-hk1box -d tar
+sudo reboot
+# 重启后确认 uname -r 与下载的版本相同。
+```
+
+这里必须指定 `-d tar`，因为部分 ophub 系统默认使用 DEB。保留当前
+`/boot/uEnv.txt` 的 root UUID 和 `FDT=/dtb/amlogic/meson-sm1-hk1box-vontar-x3.dtb`；
+产物不包含 uEnv.txt 或 U-Boot，也不启用超频。首次升级前保留原内核备份和可启动
+SD/USB 恢复介质。完整编译和真机启动是不同的验证：通过打包测试不能证明已在设备上启动。
+
 Automatically tracks Armbian Rockchip64 kernel versions and reproducibly integrates the following third-party networking components into the kernel build:
 
 - TCP-Brutal v2 (the pinned `HyNetworks/tcp-brutal` `exp/xan-fix` revision)
