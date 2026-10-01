@@ -74,6 +74,10 @@ hk_pack() {
 
 hk_main() {
     [[ -f /.dockerenv && "$(uname -m)" == aarch64 && "$PWD" != /boot ]] || hk_fail 'Run scripts/build_hk1box.sh: builder requires an arm64 Docker container'
+    # CONFIG_LOCALVERSION_AUTO=n alone still adds '+' to modified Git trees.
+    # A defined, empty LOCALVERSION suppresses that SCM suffix; the config's
+    # '-hk1box' remains part of every make target and modules_install release.
+    export LOCALVERSION=''
     hk_stage '1. HK1 Box build dependencies'
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
