@@ -1,57 +1,59 @@
 # armbian-kernel-build
 
-## HK1 Box / S905X3 自定义内核
+## HK1 Box / S905X3：统一 Armbian 7.2 构建
 
-新增独立 `hk1box` 构建目标，适用于正在运行 ophub Armbian、使用
-`meson-sm1-hk1box-vontar-x3.dtb` 的 HK1 Box / Vontar X3。
-默认 `6.12.y`，也可选择 `6.18.y`；不沿用 Rockchip64 的版本或包名。
-源码来自 `ophub/linux-6.12.y` / `ophub/linux-6.18.y`，初始配置来自
-`ophub/kernel/kernel-config/release/stable`。每次构建先把两者的 `main`
-解析为完整 SHA，再按 SHA 下载；Release 记录源码、配置与构建容器 ID。
+`hk1box` 使用与 Rockchip64 相同的 Armbian 构建链、源码注入、最终配置校验、
+DEB 证据校验、实时日志和 Release 元数据生成。默认 `edge / 7.2.y`，
+源码与基线配置由 Armbian meson64 管理，**不再从 ophub 内核仓库编译**。
 
-在 Actions 中选择 **Build and Upload Debs → Run workflow**：
+板级差异集中在 `scripts/build_targets.sh`、`userpatches/boards/hk1box.conf` 和
+`userpatches/kernel/archive/meson64-7.2/0001-hk1box-mainline-dtb.patch`。
+HK1 Box 设备树以 Linux 7.2 自带的 SM1/AC2xx 为基础，保留现有 FDT 文件名，
+适配千兆 PHY、SD/eMMC、USB、SDIO 和蓝牙接线；不添加超频 OPP。
+板级接线参考 ophub/linux-6.12.y 的
+`4c0b3046f608fad852b55de1b234d43b8e178034`，保留原 GPL/MIT 许可证，
+只移植设备树，不引用其内核源码或配置。内存容量由现有 U-Boot 修正；
+实际容量、PHY 型号和 Wi-Fi 芯片仍需真机验证。
 
-- `target`: `hk1box`
-- `hk1box_series`: `6.12`（与你目前的 `6.12.78-ophub` 同一系列）
-- 两个 commit 输入留空构建对应系列最新源码，或填写完整 40 位 SHA 重现构建。
-- `hk1box_publish`: 是否创建独立的 `hk1box-<kernel-release>` Release。
+Actions 中选择 **Build and Upload Debs → Run workflow**：
 
-HK1 Box 作业使用 ARM64 runner，并在隔离的 Ubuntu 24.04 ARM64 Docker 容器
-中原生编译。现有定时任务仍构建 Rockchip64。ngrok/SSE 页面显示 `hk1box / meson64 / arm64`，
-可查看构建日志、最终配置、配置差异和源码证据。此目标生成 TAR 安装包，DEB 检查器不适用。
+- `target=hk1box`、`branch=auto`（或 `edge`）。
+- `force=true` 可以在同版本已经发布时重新构建。
+- 首次测试建议 `publish=false`，下载 Actions artifacts 验证后再发布。
+- 定时任务保留 Rockchip64；其原有 Release 标签不变，HK1 Box 使用
+  `hk1box-edge-<version>`，避免平台之间误判“已构建”。
 
-本地在支持 ARM64 容器的 Linux Docker 主机运行（推荐 ARM64，x86 需要先配置 QEMU）：
+Linux Docker 主机运行：
 
 ```bash
-BUILD_TARGET=hk1box HK1BOX_KERNEL_SERIES=6.12 bash build.sh
-# 发布需在宿主机安装并认证 gh；Docker 容器不接收 GitHub/ngrok 凭据。
-BUILD_TARGET=hk1box HK1BOX_PUBLISH=yes bash build.sh
+BUILD_TARGET=hk1box BUILD_FORCE=yes BUILD_PUBLISH=no bash build.sh
 ```
 
-三个自定义组件默认为 `y`；原生 WireGuard 为 `n`；完整 eBPF/BTF/CO-RE、网络功能
-严格校验；Bluetooth / Wi-Fi / MT7921E 为 `m`。这不会为 HK1 Box 增加实际不存在的
-PCIe 接口；盒子自带 Wi-Fi 是否工作仍取决于实际芯片和既有固件。
-打包前检查真正的 `modules.builtin`、MT7921E 模块以及目标 DTB，缺项则拒绝发布。
+三个自定义组件默认内置 `y`，原生 WireGuard 为 `n`；
+eBPF/BTF/CO-RE 和完整网络能力复用既有严格校验；
+Bluetooth / Wi-Fi / MT7921E 保持 `m`，.ko、依赖和使用说明仍由共享逻辑导出。
+编译 MT7921E 不代表 HK1 Box 自带 PCIe 硬件；无线驱动运行还需要对应固件。
 
-产物位于 `build/output/hk1box/<version>-hk1box.tar.gz`，内含 ophub 所需的
-四个完整安装包：`boot-*`、`dtb-amlogic-*`、`modules-*`、`header-*`，以及 `sha256sums`。
-最终配置、源码 pin、Kconfig 清单与 defconfig 差异也嵌入 modules 包，安装后位于
-`/usr/lib/armbian-kernel-build/<kernel-release>/`。工作目录保留在 `build/hk1box-work.*`
-便于诊断，使用完后可自行清理以回收磁盘空间。
+标准 DEB 位于 `build/output/debs`，最终配置、源码 pin、功能清单及
+defconfig 差异在 DEB 内嵌证据和 `build/output/release-metadata/edge` 中。
+`scripts/package_hk1box.sh` 只转换本次构建的已校验 DEB，
+不再编译一遍内核：在隔离 ARM64 容器生成 initramfs，再生成
+`boot-*`、`dtb-amlogic-*`、`modules-*`、`header-*` 和 `sha256sums`。
+总包输出 `build/output/hk1box/<完整 uname-r>.tar.gz`，随 DEB 一起发布。
+TAR 中的构建证据随版本模块目录安装到
+`/usr/lib/modules/<完整 uname-r>/armbian-kernel-build/`。
 
-安装到 HK1 Box 时，把下载的总包解压到新建空目录，在该目录执行：
+在现有 ophub Armbian 上，将 TAR 总包解压到空目录：
 
 ```bash
 sha256sum -c sha256sums
-sudo armbian-update -k <实际版本>-hk1box -d tar
-sudo reboot
-# 重启后确认 uname -r 与下载的版本相同。
+sudo armbian-update -k <总包对应的完整版本> -d tar
 ```
 
-这里必须指定 `-d tar`，因为部分 ophub 系统默认使用 DEB。保留当前
-`/boot/uEnv.txt` 的 root UUID 和 `FDT=/dtb/amlogic/meson-sm1-hk1box-vontar-x3.dtb`；
-产物不包含 uEnv.txt 或 U-Boot，也不启用超频。首次升级前保留原内核备份和可启动
-SD/USB 恢复介质。完整编译和真机启动是不同的验证：通过打包测试不能证明已在设备上启动。
+保留当前 `/boot/uEnv.txt` 的 root UUID 和
+`FDT=/dtb/amlogic/meson-sm1-hk1box-vontar-x3.dtb`。此目标仅支持内核构建，
+不生成或刷写 U-Boot，也不修改设备启动配置。请先备份旧内核并准备可启动
+SD/USB 恢复介质；不要把编译成功等同于 HK1 Box 已经启动成功。
 
 Automatically tracks Armbian Rockchip64 kernel versions and reproducibly integrates the following third-party networking components into the kernel build:
 

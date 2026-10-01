@@ -1,149 +1,70 @@
-#!/usr/bin/env python3
-"""Verify the installation bundle contract used by ophub armbian-update."""
-import hashlib
+"""Contracts for shared Armbian target profiles and the HK1 Box DTB adaptation."""
 import os
 from pathlib import Path
 import shutil
 import subprocess
-import sys
-import tarfile
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-BASH = shutil.which("bash")
-if os.name == "nt":
-    BASH = r"C:\Program Files\Git\bin\bash.exe"
+BASH = r"C:\Program Files\Git\bin\bash.exe" if os.name == "nt" else shutil.which("bash")
 
 
-def shell_path(path):
-    value = Path(path).as_posix()
-    return f"/{value[0].lower()}{value[2:]}" if os.name == "nt" else value
+class TargetTests(unittest.TestCase):
+    def run_bash(self, script, **variables):
+        env = os.environ.copy()
+        for key in ("BUILD_TARGET", "BUILD_BRANCH", "BUILD_FAMILY", "BUILD_FORCE", "BUILD_PUBLISH"):
+            env.pop(key, None)
+        env.update(variables)
+        return subprocess.run([BASH, "-c", script], cwd=ROOT, env=env,
+                              text=True, capture_output=True)
 
-
-class HK1BoxPackages(unittest.TestCase):
-    release = "6.12.78-hk1box"
-
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
-        self.stage = self.root / "stage"
-        self.output = self.root / "output"
-        self.modules = self.stage / "modules/lib/modules" / self.release
-        files = {
-            f"boot/config-{self.release}": (
-                "CONFIG_TCP_CONG_BRUTAL=y\nCONFIG_AMNEZIAWG=y\nCONFIG_NETFILTER_DEAF=y\n"
-            ),
-            f"modules/lib/modules/{self.release}/modules.builtin": (
-                "kernel/net/ipv4/tcp_brutal/brutal.ko\n"
-                "kernel/drivers/net/amneziawg/amneziawg.ko\n"
-                "kernel/net/netfilter/nf_deaf/nf_deaf.ko\n"
-            ),
-            f"modules/lib/modules/{self.release}/kernel/drivers/net/wireless/mt7921e.ko": "wifi module",
-            "dtb-amlogic/meson-sm1-hk1box-vontar-x3.dtb": "dtb",
-            "header/Module.symvers": "symbol versions",
-            "header/Makefile": "headers makefile",
-            f"modules/usr/lib/armbian-kernel-build/{self.release}/source-manifest.env": "board=hk1box\n",
-        }
-        for name in ("vmlinuz", "System.map", "initrd.img", "uInitrd"):
-            files[f"boot/{name}-{self.release}"] = f"fixture {name}"
-        for name, content in files.items():
-            path = self.stage / name
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content, encoding="utf-8")
-
-    def package(self):
-        env = dict(os.environ, HK_TEST_SCRIPT=shell_path(ROOT / "scripts/hk1box_kernel.sh"),
-                   HK_TEST_RELEASE=self.release, HK_TEST_STAGE=shell_path(self.stage),
-                   HK_TEST_OUTPUT=shell_path(self.output))
-        return subprocess.run(
-            [BASH, "-c", 'set -Eeuo pipefail; source "$HK_TEST_SCRIPT"; '
-             'hk_pack "$HK_TEST_RELEASE" "$HK_TEST_STAGE" "$HK_TEST_OUTPUT"'],
-            env=env, text=True, encoding="utf-8", errors="replace", capture_output=True,
-        )
-
-    def test_bundle_matches_updater_and_contains_evidence(self):
-        result = self.package()
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        prefixes = {"boot", "dtb-amlogic", "modules", "header"}
-        sums = (self.output / "sha256sums").read_text().splitlines()
-        self.assertEqual(len(sums), 4)
-        for line in sums:
-            digest, name = line.split(None, 1)
-            name = name.lstrip("*")
-            self.assertEqual(digest, hashlib.sha256((self.output / name).read_bytes()).hexdigest())
-            prefixes.remove(name.removesuffix(f"-{self.release}.tar.gz"))
-        self.assertFalse(prefixes)
-        with tarfile.open(self.output / f"dtb-amlogic-{self.release}.tar.gz") as archive:
-            self.assertIn("./meson-sm1-hk1box-vontar-x3.dtb", archive.getnames())
-            self.assertNotIn("./uEnv.txt", archive.getnames())
-        with tarfile.open(self.output / f"modules-{self.release}.tar.gz") as archive:
-            self.assertIn(f"./lib/modules/{self.release}/modules.builtin", archive.getnames())
-            self.assertIn(f"./usr/lib/armbian-kernel-build/{self.release}/source-manifest.env", archive.getnames())
-
-    def test_missing_board_dtb_rejects_package(self):
-        (self.stage / "dtb-amlogic/meson-sm1-hk1box-vontar-x3.dtb").unlink()
-        result = self.package()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Missing HK1 Box DTB", result.stderr)
-        self.assertFalse(self.output.exists())
-
-    def test_config_without_real_builtin_rejects_package(self):
-        (self.modules / "modules.builtin").write_text("kernel/net/ipv4/tcp_brutal/brutal.ko\n")
-        result = self.package()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Missing built-in amneziawg", result.stderr)
-        self.assertFalse(self.output.exists())
-
-    def test_missing_initramfs_rejects_package(self):
-        (self.stage / f"boot/uInitrd-{self.release}").unlink()
-        result = self.package()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Missing boot file", result.stderr)
-
-    def test_missing_wifi_module_rejects_package(self):
-        (self.modules / "kernel/drivers/net/wireless/mt7921e.ko").unlink()
-        result = self.package()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Missing modular MT7921E", result.stderr)
-
-    def test_invalid_platform_fails_before_host_setup(self):
-        result = subprocess.run([BASH, str(ROOT / "build.sh")],
-                                env=dict(os.environ, BUILD_TARGET="unsupported"),
-                                text=True, capture_output=True)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Unknown BUILD_TARGET", result.stderr)
-
-    def test_stage_output_is_understood_by_dashboard(self):
-        env = dict(os.environ, HK_TEST_SCRIPT=shell_path(ROOT / "scripts/hk1box_kernel.sh"))
-        result = subprocess.run(
-            [BASH, "-c", 'set -Eeuo pipefail; source "$HK_TEST_SCRIPT"; '
-             'hk_stage "1. HK1 Box dependencies"; hk_stage "2. HK1 Box configuration"; hk_finish_stage'],
-            env=env, text=True, encoding="utf-8", capture_output=True,
-        )
+    def test_rockchip_defaults_unchanged(self):
+        result = self.run_bash('source scripts/build_targets.sh; load_build_target; '
+                               'printf "%s|%s|%s" "$BUILD_BOARD" "$BUILD_FAMILY" "${branch_list[*]}"')
         self.assertEqual(result.returncode, 0, result.stderr)
-        sys.path.insert(0, str(ROOT / "scripts"))
-        from live_dashboard import DashboardAnalyzer
-        analyzer = DashboardAnalyzer(self.root / "log", None, ROOT)
-        for line in result.stdout.splitlines():
-            analyzer._process_line(line.encode())
-        self.assertEqual(len(analyzer._stages), 2)
-        self.assertTrue(all(stage["status"] == "success" for stage in analyzer._stages))
+        self.assertEqual(result.stdout, 'nanopi-r5s|rockchip64|current edge bleedingedge')
 
-    def test_612_profile_keeps_required_network_features(self):
-        env = dict(os.environ, HK_TEST_CONFIG=shell_path(ROOT / "userpatches/lib.config"))
-        required = {"NF_TABLES_INET", "NF_TABLES_IPV6", "IPV6_SEG6_LWTUNNEL", "MPLS"}
-        for series in ("6.12", "6.18"):
-            result = subprocess.run(
-                [BASH, "-c", 'source "$HK_TEST_CONFIG"; _kernel_inject_full_network_y_options'],
-                env=dict(env, KERNEL_MAJOR_MINOR=series), text=True, capture_output=True,
-            )
+    def test_hk1box_uses_meson_edge(self):
+        result = self.run_bash('source scripts/build_targets.sh; load_build_target; '
+                               'printf "%s|%s|%s|%s" "$BUILD_BOARD" "$BUILD_FAMILY" '
+                               '"${branch_list[*]}" "$RELEASE_PREFIX"', BUILD_TARGET='hk1box')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, 'hk1box|meson64|edge|hk1box-')
+
+    def test_invalid_profile_fails_before_dependencies(self):
+        for target, branch in [('unknown', 'auto'), ('hk1box', 'current'), ('hk1box', 'bleedingedge')]:
+            result = self.run_bash('bash build.sh', BUILD_TARGET=target, BUILD_BRANCH=branch)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn('Environment initialization', result.stdout)
+
+    def test_library_loading_does_not_build(self):
+        result = self.run_bash('BUILD_SCRIPT_LIB_ONLY=yes source build.sh; echo loaded',
+                               BUILD_TARGET='hk1box')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), 'loaded')
+
+    def test_wrong_package_version_fails_without_docker(self):
+        result = self.run_bash('bash scripts/package_hk1box.sh edge /does-not-exist 6.12.111')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn('docker', result.stderr)
+
+    def test_device_tree_patch_applies_without_overclock(self):
+        patch = ROOT / 'userpatches/kernel/archive/meson64-7.2/0001-hk1box-mainline-dtb.patch'
+        with tempfile.TemporaryDirectory() as temporary:
+            tree = Path(temporary)
+            dts_dir = tree / 'arch/arm64/boot/dts/amlogic'
+            dts_dir.mkdir(parents=True)
+            (dts_dir / 'Makefile').write_text('dtb-$(CONFIG_ARCH_MESON) += meson-sm1-sei610.dtb\n')
+            result = subprocess.run(['git', 'apply', str(patch)], cwd=tree, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            symbols = set(result.stdout.splitlines())
-            self.assertTrue(required.issubset(symbols))
-            self.assertEqual("NFT_EXTHDR_DCCP" in symbols, series != "6.12")
+            dts = (dts_dir / 'meson-sm1-hk1box-vontar-x3.dts').read_text()
+            self.assertIn('#include "meson-sm1-ac2xx.dtsi"', dts)
+            self.assertNotIn('&cpu_opp_table', dts)
+            self.assertNotIn('0xFFFFFFFF', dts)
+            self.assertIn('/delete-property/ sd-uhs-sdr104;', dts)
+            self.assertIn('max-frequency = <25000000>', dts)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

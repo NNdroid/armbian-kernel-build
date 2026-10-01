@@ -1,6 +1,7 @@
 # Runtime artifacts from the Armbian build tree and downloaded version metadata
 build/
 rockchip64_common.inc
+meson64_common.inc
 
 # Local workspace data (memory, test images, etc.)
 .workbuddy/

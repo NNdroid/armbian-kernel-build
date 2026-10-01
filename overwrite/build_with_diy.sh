@@ -501,6 +501,11 @@ rm -f -- userpatches/90_patch_brutal.sh
 
 requested_branch="$(argument_value BRANCH "$@" || true)"
 requested_board="$(argument_value BOARD "$@" || true)"
+expected_family="${BUILD_FAMILY:-rockchip64}"
+case "${expected_family}" in
+	rockchip64|meson64) ;;
+	*) _kernel_inject_log err "Unsupported artifact family" "${expected_family}"; exit 1 ;;
+esac
 userspace_release="$(argument_value RELEASE "$@" || true)"
 requested_extensions="$(argument_value ENABLE_EXTENSIONS "$@" || true)"
 requested_legacy_extensions="$(argument_value EXT "$@" || true)"
@@ -562,7 +567,7 @@ if [[ -n "${requested_branch}" ]]; then
 	while IFS= read -r entry; do
 		candidate_path="${entry#* }"
 		case "$(basename "${candidate_path}")" in
-			"linux-image-${requested_branch}-rockchip64_"*)
+			"linux-image-${requested_branch}-${expected_family}_"*)
 				image_deb_entry="${entry}"
 				break
 				;;
@@ -583,7 +588,7 @@ fi
 _kernel_inject_log info "Artifact discovery" \
 	"Selected $(basename "${image_deb}") ($(du -h "${image_deb}" | awk '{print $1}'), mtime $(date -u -d "@${image_deb_mtime}" +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo unknown))"
 
-built_branch="$(basename "${image_deb}" | sed -n 's/^linux-image-\([A-Za-z0-9._-]*\)-rockchip64_.*/\1/p')"
+built_branch="$(basename "${image_deb}" | sed -n "s/^linux-image-\([A-Za-z0-9._-]*\)-${expected_family}_.*/\1/p")"
 if [[ -z "${built_branch}" ]]; then
 	_kernel_inject_log err "Unexpected artifact name" "Unable to derive branch name from $(basename "${image_deb}")"
 	exit 1
@@ -721,16 +726,43 @@ fi
 manifest_format="$(require_manifest_value "${evidence_manifest}" evidence_format)" || exit 1
 manifest_branch="$(require_manifest_value "${evidence_manifest}" branch)" || exit 1
 manifest_family="$(require_manifest_value "${evidence_manifest}" linuxfamily)" || exit 1
+if [[ "${requested_board}" == hk1box ]]; then
+	manifest_board="$(require_manifest_value "${evidence_manifest}" board)" || exit 1
+	manifest_dtb="$(require_manifest_value "${evidence_manifest}" board_dtb)" || exit 1
+	manifest_dts_sha="$(require_manifest_value "${evidence_manifest}" board_dts_sha256)" || exit 1
+	if [[ "${manifest_board}" != hk1box || "${manifest_dtb}" != amlogic/meson-sm1-hk1box-vontar-x3.dtb || \
+		! -s "${evidence_dir}/board.dts" || \
+		"$(sha256sum "${evidence_dir}/board.dts" | awk '{print $1}')" != "${manifest_dts_sha}" ]]; then
+		_kernel_inject_log err "HK1 Box evidence mismatch" "Board DTS and its hash must come from the built kernel package"
+		exit 1
+	fi
+	mapfile -d '' -t board_dtbs < <(find "${package_extract_root}/usr/lib" -type f \
+		-name meson-sm1-hk1box-vontar-x3.dtb -print0)
+	if ((${#board_dtbs[@]} != 1)); then
+		_kernel_inject_log err "HK1 Box DTB missing" "Expected one board DTB in the built image package"
+		exit 1
+	fi
+	for board_symbol in MMC MMC_BLOCK MMC_MESON_GX PWRSEQ_EMMC PWRSEQ_SIMPLE \
+		EXT4_FS REGULATOR_FIXED_VOLTAGE REGULATOR_PWM PWM_MESON STMMAC_ETH \
+		STMMAC_PLATFORM DWMAC_MESON8B REALTEK_PHY USB_DWC3 USB_DWC3_MESON_G12A \
+		USB_XHCI_HCD USB_XHCI_PLATFORM PHY_MESON_G12A_USB2 PHY_MESON_G12A_USB3_PCIE; do
+		grep -qx "CONFIG_${board_symbol}=y" "${final_config}" || {
+			_kernel_inject_log err "HK1 Box boot-critical driver missing" "CONFIG_${board_symbol}=y is required"
+			exit 1
+		}
+	done
+	_kernel_inject_log info "HK1 Box board verification" "DTB source hash, compiled DTB and built-in root-storage/USB/Ethernet drivers verified"
+fi
 manifest_arch="$(require_manifest_value "${evidence_manifest}" debian_arch)" || exit 1
 manifest_kernel_major_minor="$(require_manifest_value "${evidence_manifest}" kernel_major_minor)" || exit 1
 package_arch="$(dpkg-deb -f "${image_deb}" Architecture 2>/dev/null || true)"
 if [[ "${manifest_format}" != 1 || "${manifest_branch}" != "${built_branch}" || \
-	"${manifest_family}" != rockchip64 || "${manifest_arch}" != "${package_arch}" || \
+	"${manifest_family}" != "${expected_family}" || "${manifest_arch}" != "${package_arch}" || \
 	"${manifest_kernel_major_minor}" != "${kernel_major_minor}" ]]; then
 	_kernel_inject_log err "Build evidence mismatch" \
 		"manifest(format=${manifest_format}, branch=${manifest_branch}, family=${manifest_family}, arch=${manifest_arch}, kernel=${manifest_kernel_major_minor})"
 	_kernel_inject_log err "Build evidence mismatch" \
-		"artifact(branch=${built_branch}, family=rockchip64, arch=${package_arch:-unknown}, kernel=${kernel_major_minor})"
+		"artifact(branch=${built_branch}, family=${expected_family}, arch=${package_arch:-unknown}, kernel=${kernel_major_minor})"
 	exit 1
 fi
 

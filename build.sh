@@ -8,12 +8,8 @@
 # ==========================================
 set -Eeuo pipefail # Abort on command errors, unset variables, or pipeline failures
 
-# Meson builds use a separate source/config and ophub installation format.
-case "${BUILD_TARGET:-rockchip64}" in
-	rockchip64) ;;
-	hk1box) exec bash "$(dirname "${BASH_SOURCE[0]}")/scripts/build_hk1box.sh" ;;
-	*) printf '[ERROR] Unknown BUILD_TARGET: %s\n' "${BUILD_TARGET}" >&2; exit 1 ;;
-esac
+# Target profiles select board/family; the build pipeline below is shared.
+source "$(dirname "${BASH_SOURCE[0]}")/scripts/build_targets.sh"
 
 # ==========================================
 # ==========================================
@@ -279,10 +275,10 @@ resolve_built_version() {
 	fi
 
 	newest_deb="$(find "${debs_dir}" -type f \
-		-name "linux-image-${branch}-rockchip64_*.deb" "${freshness_filter[@]}" \
+		-name "linux-image-${branch}-${BUILD_FAMILY:-rockchip64}_*.deb" "${freshness_filter[@]}" \
 		-printf '%T@ %p\n' 2>/dev/null | sort -rn | head -n 1 | cut -d' ' -f2-)"
 	if [[ -z "${newest_deb}" ]]; then
-		log_error "No linux-image-${branch}-rockchip64_*.deb produced by this build was found."
+		log_error "No linux-image-${branch}-${BUILD_FAMILY:-rockchip64}_*.deb produced by this build was found."
 		return 1
 	fi
 	log_debug "${branch}: newest artifact $(basename "${newest_deb}")"
@@ -321,6 +317,12 @@ function upload_to_github_release() {
 
     local -a upload_files=()
     mapfile -t upload_files < <(compgen -G "${files_pattern}" || true)
+	if [[ "${BUILD_TARGET:-rockchip64}" == hk1box ]]; then
+		local -a bundle_files=()
+		mapfile -t bundle_files < <(compgen -G "./build/output/hk1box/${kernel_version}-*.tar.gz*" || true)
+		((${#bundle_files[@]} > 0)) || return 1
+		upload_files+=("${bundle_files[@]}")
+	fi
 	local -a metadata_files=()
 	mapfile -d '' -t metadata_files < <(find "${metadata_dir}" -maxdepth 1 -type f \
 		\( -name '*.config' -o -name '*-config-vs-*-defconfig.txt' \
@@ -408,6 +410,7 @@ fi
 
 SCRIPT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 cd "${SCRIPT_ROOT}"
+load_build_target
 
 trap 'report_unhandled_error "$?" "$LINENO" "$BASH_COMMAND"' ERR
 
@@ -417,23 +420,23 @@ trap 'report_unhandled_error "$?" "$LINENO" "$BASH_COMMAND"' ERR
 begin_step "1. Environment initialization"
 ensure_host_dependencies
 
-ROCKCHIP64_CONFIG_FILE="./rockchip64_common.inc"
-ROCKCHIP64_CONFIG_TMP="$(mktemp "${ROCKCHIP64_CONFIG_FILE}.XXXXXX")"
-log_debug "Downloading ${ROCKCHIP64_CONFIG_FILE}..."
+FAMILY_CONFIG_FILE="./${BUILD_FAMILY}_common.inc"
+FAMILY_CONFIG_TMP="$(mktemp "${FAMILY_CONFIG_FILE}.XXXXXX")"
+log_debug "Downloading ${FAMILY_CONFIG_FILE}..."
 if curl --fail --location --silent --show-error --retry 4 --retry-all-errors \
-	--output "${ROCKCHIP64_CONFIG_TMP}" \
-	https://raw.githubusercontent.com/armbian/build/refs/heads/main/config/sources/families/include/rockchip64_common.inc; then
-	mv -- "${ROCKCHIP64_CONFIG_TMP}" "${ROCKCHIP64_CONFIG_FILE}"
+	--output "${FAMILY_CONFIG_TMP}" \
+	"https://raw.githubusercontent.com/armbian/build/refs/heads/main/config/sources/families/include/${BUILD_FAMILY}_common.inc"; then
+	mv -- "${FAMILY_CONFIG_TMP}" "${FAMILY_CONFIG_FILE}"
 else
-	rm -f -- "${ROCKCHIP64_CONFIG_TMP}"
-	log_error "Failed to download rockchip64_common.inc. Check network connectivity."
+	rm -f -- "${FAMILY_CONFIG_TMP}"
+	log_error "Failed to download family version config. Check network connectivity."
 	exit 1
 fi
-if [[ ! -s "${ROCKCHIP64_CONFIG_FILE}" ]]; then
-    log_error "Failed to download rockchip64_common.inc or the file is empty. Check network connectivity."
+if [[ ! -s "${FAMILY_CONFIG_FILE}" ]]; then
+    log_error "Failed to download family version config or the file is empty. Check network connectivity."
     exit 1
 fi
-log_info "rockchip64_common.inc downloaded ($(wc -l < "${ROCKCHIP64_CONFIG_FILE}" | tr -d ' ') lines)"
+log_info "${BUILD_FAMILY}_common.inc downloaded ($(wc -l < "${FAMILY_CONFIG_FILE}" | tr -d ' ') lines)"
 end_step "1. Environment initialization"
 
 if ! CUR_GIT_REPO_URL="$(resolve_repository_url "${PWD}")"; then
@@ -445,27 +448,30 @@ log_info "Release repository: ${CUR_GIT_REPO_URL}"
 # ------------------------------------------------------------------------------
 # ------------------------------------------------------------------------------
 begin_step "2. Version comparison"
-branch_list=(current edge bleedingedge)
 declare -A BRANCH_UPSTREAM_VER=()
 declare -A NEED_BUILD=()
 
 for branch in "${branch_list[@]}"; do
-	CONFIG_KERNEL_VER="$(get_kernel_version "${branch}" "${ROCKCHIP64_CONFIG_FILE}" || true)"
+	CONFIG_KERNEL_VER="$(get_kernel_version "${branch}" "${FAMILY_CONFIG_FILE}" || true)"
 	if [[ -z "${CONFIG_KERNEL_VER}" ]]; then
 		log_warn "${branch}: no KERNEL_MAJOR_MINOR entry exists for this branch in the Armbian config; skipping"
 		continue
 	fi
 	log_info "${branch}: Armbian configured major version = ${CONFIG_KERNEL_VER}"
+	if [[ "${BUILD_TARGET}" == hk1box && "${CONFIG_KERNEL_VER}" != 7.2 ]]; then
+		log_error "HK1 Box DTB patches are validated for 7.2 only; refusing an automatic major-version change."
+		exit 1
+	fi
 
 	KERNEL_ORG_VER="$(load_kernel_org_version "${branch}" "${CONFIG_KERNEL_VER}")" || exit 1
 	if [[ -z "${KERNEL_ORG_VER}" ]]; then
 		continue
 	fi
 
-	RELEASED_TAG="$(get_latest_github_tag "${CUR_GIT_REPO_URL}" "${branch}-${CONFIG_KERNEL_VER}" || true)"
-	RELEASED_VER="${RELEASED_TAG#"${branch}-"}"
+	RELEASED_TAG="$(get_latest_github_tag "${CUR_GIT_REPO_URL}" "${RELEASE_PREFIX}${branch}-${CONFIG_KERNEL_VER}" || true)"
+	RELEASED_VER="${RELEASED_TAG#"${RELEASE_PREFIX}${branch}-"}"
 
-	if needs_update "${RELEASED_VER}" "${KERNEL_ORG_VER}"; then
+	if [[ "${BUILD_FORCE:-no}" == yes ]] || needs_update "${RELEASED_VER}" "${KERNEL_ORG_VER}"; then
 		NEED_BUILD["${branch}"]=yes
 		BRANCH_UPSTREAM_VER["${branch}"]="${KERNEL_ORG_VER}"
 		if [[ -z "${RELEASED_TAG}" ]]; then
@@ -495,6 +501,10 @@ fi
 log_info "Branches scheduled for build: ${planned_branches[*]}"
 
 begin_step "3. Prepare Armbian build environment"
+if [[ -d build && ! -f build/compile.sh ]]; then
+    log_error "Existing build directory is not an Armbian checkout; move it aside before building."
+    exit 1
+fi
 if [ -d "build" ]; then
     log_info "Updating existing build directory..."
 	git -C build checkout .
@@ -513,7 +523,7 @@ end_step "3. Prepare Armbian build environment"
 for branch in "${planned_branches[@]}"; do
 	begin_step "4. Build ${branch} kernel (target ${BRANCH_UPSTREAM_VER[${branch}]})"
 	BUILD_MARKER="$(mktemp "${TMPDIR:-/tmp}/kernel-build-${branch}.XXXXXX")"
-	if ! run_armbian_build ./build kernel BOARD=nanopi-r5s BRANCH="${branch}" RELEASE=trixie; then
+	if ! run_armbian_build ./build kernel BOARD="${BUILD_BOARD}" BRANCH="${branch}" RELEASE=trixie KERNEL_HEADERS=yes; then
 		rm -f -- "${BUILD_MARKER}"
 		log_error "${branch}: Armbian kernel build failed"
 		exit 1
@@ -523,14 +533,21 @@ for branch in "${planned_branches[@]}"; do
 		rm -f -- "${BUILD_MARKER}"
 		exit 1
 	}
-	rm -f -- "${BUILD_MARKER}"
 	log_info "${branch}: derived kernel version from artifact = ${BUILT_KERNEL_VER}"
 	end_step "4. Build ${branch} kernel"
 
-	begin_step "5. Publish ${branch}-${BUILT_KERNEL_VER}"
-	upload_to_github_release "${branch}-${BUILT_KERNEL_VER}" "${branch}" \
+	if [[ "${BUILD_TARGET}" == hk1box ]]; then
+		bash scripts/package_hk1box.sh "${branch}" "${BUILD_MARKER}" "${BUILT_KERNEL_VER}"
+	fi
+	rm -f -- "${BUILD_MARKER}"
+	if [[ "${BUILD_PUBLISH:-yes}" == no ]]; then
+		log_info "Publishing disabled; validated artifacts remain in build/output"
+		continue
+	fi
+	begin_step "5. Publish ${RELEASE_PREFIX}${branch}-${BUILT_KERNEL_VER}"
+	upload_to_github_release "${RELEASE_PREFIX}${branch}-${BUILT_KERNEL_VER}" "${branch}" \
 		"${BUILT_KERNEL_VER}" "${BRANCH_UPSTREAM_VER[${branch}]}" \
-		"./build/output/debs/*-${branch}-rockchip64_*__${BUILT_KERNEL_VER}-*.deb"
+		"./build/output/debs/*-${branch}-${BUILD_FAMILY}_*__${BUILT_KERNEL_VER}-*.deb"
 	end_step "5. Publish ${branch}-${BUILT_KERNEL_VER}"
 done
 

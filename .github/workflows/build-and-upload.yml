@@ -10,23 +10,21 @@ on:
         options:
           - rockchip64
           - hk1box
-      hk1box_series:
-        description: HK1 Box kernel series
+      branch:
+        description: Branch (HK1 Box auto selects edge / 7.2)
         type: choice
-        default: '6.12'
+        default: auto
         options:
-          - '6.12'
-          - '6.18'
-      hk1box_kernel_commit:
-        description: Optional full ophub kernel source SHA (empty resolves main once)
-        type: string
-        default: ''
-      hk1box_config_commit:
-        description: Optional full ophub/kernel config SHA (empty resolves main once)
-        type: string
-        default: ''
-      hk1box_publish:
-        description: Publish the completed HK1 Box bundle to a new Release
+          - auto
+          - current
+          - edge
+          - bleedingedge
+      force:
+        description: Build even when the upstream version was already released
+        type: boolean
+        default: false
+      publish:
+        description: Publish validated packages and metadata to Release
         type: boolean
         default: true
   schedule:
@@ -184,10 +182,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           BUILD_TARGET: ${{ inputs.target || 'rockchip64' }}
-          HK1BOX_KERNEL_SERIES: ${{ inputs.hk1box_series || '6.12' }}
-          HK1BOX_KERNEL_COMMIT: ${{ inputs.hk1box_kernel_commit }}
-          HK1BOX_CONFIG_COMMIT: ${{ inputs.hk1box_config_commit }}
-          HK1BOX_PUBLISH: ${{ inputs.hk1box_publish && 'yes' || 'no' }}
+          BUILD_BRANCH: ${{ inputs.branch || 'auto' }}
+          BUILD_FORCE: ${{ inputs.force && 'yes' || 'no' }}
+          BUILD_PUBLISH: ${{ (github.event_name != 'workflow_dispatch' || inputs.publish) && 'yes' || 'no' }}
         run: |
           set -Eeuo pipefail
           live_dir="${RUNNER_TEMP}/kernel-live-log"
