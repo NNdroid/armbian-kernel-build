@@ -100,12 +100,13 @@ function pre_package_kernel_image__kernel_inject_evidence() {
 	kernel_source_commit="$(git -C "${kernel_root}" rev-parse HEAD 2>/dev/null || printf 'unknown')"
 	config_sha256="$(sha256sum "${staging}/kernel.config" | awk '{print $1}')"
 	local board_dts=""
-	if [[ "${BOARD:-}" == hk1box ]]; then
-		board_dts="${kernel_root}/arch/arm64/boot/dts/amlogic/meson-sm1-hk1box-vontar-x3.dts"
-		[[ -s "${board_dts}" ]] || {
-			_kernel_inject_log err "HK1 Box DTB evidence" "Board DTS was not applied to this source tree"
-			return 1
-		}
+	if [[ -n "${BOOT_FDT_FILE:-}" ]]; then
+		board_dts="${kernel_root}/arch/${kbuild_arch}/boot/dts/${BOOT_FDT_FILE%.dtb}.dts"
+		# Some upstream boards use generated DTs or do not declare a boot FDT.
+		# A target requiring DTS provenance will reject missing evidence later.
+		if [[ ! -s "${board_dts}" ]]; then board_dts=""; fi
+	fi
+	if [[ -n "${board_dts}" ]]; then
 		cp -- "${board_dts}" "${staging}/board.dts"
 	fi
 	{
@@ -125,7 +126,7 @@ function pre_package_kernel_image__kernel_inject_evidence() {
 		printf 'nf_deaf_commit=%s\n' "${nf_commit}"
 		printf 'config_sha256=%s\n' "${config_sha256}"
 		if [[ -n "${board_dts}" ]]; then
-			printf 'board_dtb=%s\n' amlogic/meson-sm1-hk1box-vontar-x3.dtb
+			printf 'board_dtb=%s\n' "${BOOT_FDT_FILE}"
 			printf 'board_dts_sha256=%s\n' "$(sha256sum "${board_dts}" | awk '{print $1}')"
 		fi
 		printf 'baseline_status=%s\n' "${baseline_status}"

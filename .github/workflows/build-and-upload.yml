@@ -5,11 +5,8 @@ on:
     inputs:
       target:
         description: Build platform (scheduled builds remain Rockchip64)
-        type: choice
+        type: string
         default: rockchip64
-        options:
-          - rockchip64
-          - hk1box
       branch:
         description: Branch (HK1 Box auto selects edge / 7.2)
         type: choice
@@ -38,9 +35,30 @@ permissions:
   contents: write
 
 jobs:
+  prepare:
+    name: Resolve target profile
+    runs-on: ubuntu-24.04
+    outputs:
+      runner: ${{ steps.target.outputs.runner }}
+      board: ${{ steps.target.outputs.board }}
+      family: ${{ steps.target.outputs.family }}
+      arch: ${{ steps.target.outputs.arch }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate target and select runner
+        id: target
+        env:
+          BUILD_TARGET: ${{ inputs.target || 'rockchip64' }}
+          BUILD_BRANCH: ${{ inputs.branch || 'auto' }}
+        run: bash build.sh --describe-target >> "$GITHUB_OUTPUT"
+
   build:
-    name: Build on Ubuntu 24.04
-    runs-on: ${{ inputs.target == 'hk1box' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    name: Build ${{ inputs.target || 'rockchip64' }}
+    needs: prepare
+    runs-on: ${{ needs.prepare.outputs.runner }}
 
     steps:
       - name: Checkout code
@@ -82,8 +100,9 @@ jobs:
           NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
           LIVE_LOG_AUTH: ${{ secrets.NGROK_LOG_AUTH }}
           CONFIGURED_NGROK_URL: ${{ secrets.NGROK_URL }}
-          LIVE_LOG_BOARD: ${{ inputs.target == 'hk1box' && 'hk1box' || 'nanopi-r5s' }}
-          LIVE_LOG_FAMILY: ${{ inputs.target == 'hk1box' && 'meson64' || 'rockchip64' }}
+          LIVE_LOG_BOARD: ${{ needs.prepare.outputs.board }}
+          LIVE_LOG_FAMILY: ${{ needs.prepare.outputs.family }}
+          LIVE_LOG_ARCH: ${{ needs.prepare.outputs.arch }}
         run: |
           set -Eeuo pipefail
 
@@ -122,7 +141,7 @@ jobs:
 
           nohup env LIVE_LOG_AUTH="${LIVE_LOG_AUTH}" \
             LIVE_LOG_BOARD="${LIVE_LOG_BOARD}" \
-            LIVE_LOG_ARCH="arm64" \
+            LIVE_LOG_ARCH="${LIVE_LOG_ARCH}" \
             LIVE_LOG_FAMILY="${LIVE_LOG_FAMILY}" \
             LIVE_LOG_RELEASE="trixie" \
             python3 scripts/live_log_server.py \

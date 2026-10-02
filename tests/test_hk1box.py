@@ -1,5 +1,6 @@
 """Contracts for shared Armbian target profiles and the HK1 Box DTB adaptation."""
 import os
+import hashlib
 from pathlib import Path
 import shutil
 import shlex
@@ -14,7 +15,7 @@ BASH = r"C:\Program Files\Git\bin\bash.exe" if os.name == "nt" else shutil.which
 class TargetTests(unittest.TestCase):
     def run_bash(self, script, **variables):
         env = os.environ.copy()
-        for key in ("BUILD_TARGET", "BUILD_BRANCH", "BUILD_FAMILY", "BUILD_FORCE", "BUILD_PUBLISH"):
+        for key in ("BUILD_TARGET", "BUILD_BRANCH", "BUILD_FAMILY", "BUILD_FORCE", "BUILD_PUBLISH", "BUILD_TARGETS_DIR"):
             env.pop(key, None)
         env.update(variables)
         return subprocess.run([BASH, "-c", script], cwd=ROOT, env=env,
@@ -44,6 +45,78 @@ class TargetTests(unittest.TestCase):
                                BUILD_TARGET='hk1box')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), 'loaded')
+
+    def test_target_cli_is_read_only_and_cwd_independent(self):
+        result = self.run_bash('cd /tmp; bash "$ENTRY" --describe-target hk1box', ENTRY=str(ROOT / 'build.sh').replace('\\', '/'))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('arch=arm64\n', result.stdout)
+        self.assertIn('runner=ubuntu-24.04-arm\n', result.stdout)
+        self.assertNotIn('Environment initialization', result.stdout)
+
+    def test_new_architecture_profile_requires_no_pipeline_edit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            for arch, kbuild in [('armhf', 'arm'), ('amd64', 'x86'), ('riscv64', 'riscv')]:
+                (path / f'test-{arch}.conf').write_text(
+                    f'TARGET_BOARD=test-board\nTARGET_FAMILY=test-family\nTARGET_ARCH={arch}\n'
+                    f'TARGET_KBUILD_ARCH={kbuild}\nTARGET_RUNNER=ubuntu-24.04\n'
+                    'TARGET_VERSION_CONFIG=include/test-family_common.inc\n'
+                    'TARGET_RELEASE_PREFIX=test-\nTARGET_ADAPTER=deb\n'
+                    'TARGET_BRANCHES=(edge)\nTARGET_SERIES=()\nTARGET_BOARD_DTB=""\nTARGET_REQUIRED_Y=()\n')
+                result = self.run_bash(f'bash build.sh --describe-target test-{arch}', BUILD_TARGETS_DIR=path.as_posix())
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(f'arch={arch}\n', result.stdout)
+                self.assertIn(f'kbuild_arch={kbuild}\n', result.stdout)
+            result = self.run_bash('bash build.sh --list-targets', BUILD_TARGETS_DIR=path.as_posix())
+            self.assertEqual(set(result.stdout.splitlines()), {'test-armhf', 'test-amd64', 'test-riscv64'})
+
+    def test_target_loads_do_not_leak_prior_adapter_or_restrictions(self):
+        result = self.run_bash('source scripts/build_targets.sh; BUILD_TARGET=hk1box; load_build_target; '
+                               'BUILD_TARGET=rockchip64; load_build_target; validate_target_series edge 8.0; '
+                               'target_extra_release_assets 8.0; printf "%s" "${branch_list[*]}"')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, 'current edge bleedingedge')
+
+    def test_unsafe_target_identifiers_are_rejected(self):
+        for target in ['../hk1box', 'hk1box;echo', '/tmp/target', 'hk1box\nrunner=evil']:
+            self.assertNotEqual(self.run_bash('bash build.sh --describe-target "$NAME"', NAME=target).returncode, 0)
+
+    def test_kernel_series_guard_is_profile_driven(self):
+        result = self.run_bash('source scripts/build_targets.sh; load_build_target; validate_target_series edge 7.3',
+                               BUILD_TARGET='hk1box')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('requires kernel series 7.2', result.stderr)
+
+    def test_generic_board_contract_checks_packaged_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tree = Path(directory)
+            evidence = tree / 'evidence'
+            evidence.mkdir()
+            (evidence / 'board.dts').write_bytes(b'fixture')
+            (evidence / 'source-manifest.env').write_text(
+                'board=test-board\nboard_dtb=vendor/test-board.dtb\n'
+                f'board_dts_sha256={hashlib.sha256(b"fixture").hexdigest()}\n')
+            (evidence / 'kernel.config').write_text('CONFIG_MMC=y\n')
+            dtb = tree / 'image/usr/lib/linux-image-test/vendor/test-board.dtb'
+            dtb.parent.mkdir(parents=True)
+            dtb.write_bytes(b'fixture')
+            script = '''source scripts/lib/board-contract.sh
+require_manifest_value() { sed -n "s/^$2=//p" "$1"; }
+_kernel_inject_log() { printf '%s\\n' "$*" >&2; }
+TARGET_BOARD=test-board
+TARGET_BOARD_DTB=vendor/test-board.dtb
+TARGET_REQUIRED_Y=(MMC)
+validate_board_contract "$CASE_DIR/evidence" "$CASE_DIR/image" "$CASE_DIR/evidence/kernel.config"
+'''
+            self.assertEqual(self.run_bash(script, CASE_DIR=tree.as_posix()).returncode, 0)
+            (evidence / 'kernel.config').write_text('CONFIG_MMC=m\n')
+            self.assertNotEqual(self.run_bash(script, CASE_DIR=tree.as_posix()).returncode, 0)
+            (evidence / 'kernel.config').write_text('CONFIG_MMC=y\n')
+            (evidence / 'board.dts').write_bytes(b'wrong source')
+            self.assertNotEqual(self.run_bash(script, CASE_DIR=tree.as_posix()).returncode, 0)
+            (evidence / 'board.dts').write_bytes(b'fixture')
+            dtb.unlink()
+            self.assertNotEqual(self.run_bash(script, CASE_DIR=tree.as_posix()).returncode, 0)
 
     def test_wrong_package_version_fails_without_docker(self):
         result = self.run_bash('bash scripts/package_hk1box.sh edge /does-not-exist 6.12.111')

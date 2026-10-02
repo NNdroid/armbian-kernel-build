@@ -1,12 +1,24 @@
 # armbian-kernel-build
 
+## 扩展构建目标
+
+构建脚本已分层：`build.sh` 是薄入口，公共流程位于 `scripts/lib/`，
+目标配置位于 `userpatches/config/build-targets/`，安装格式由 `adapters/` 插件处理。
+新增标准 DEB 板型不需要修改主流程或 workflow 目标枚举。
+详见 [构建架构与扩展指南](docs/build-architecture.md)。
+
+```bash
+bash build.sh --list-targets
+bash build.sh --describe-target hk1box
+```
+
 ## HK1 Box / S905X3：统一 Armbian 7.2 构建
 
 `hk1box` 使用与 Rockchip64 相同的 Armbian 构建链、源码注入、最终配置校验、
 DEB 证据校验、实时日志和 Release 元数据生成。默认 `edge / 7.2.y`，
 源码与基线配置由 Armbian meson64 管理，**不再从 ophub 内核仓库编译**。
 
-板级差异集中在 `scripts/build_targets.sh`、`userpatches/boards/hk1box.conf` 和
+板级差异集中在 `userpatches/config/build-targets/hk1box.conf`、`userpatches/boards/hk1box.conf` 和
 `userpatches/kernel/archive/meson64-7.2/0001-hk1box-mainline-dtb.patch`。
 HK1 Box 设备树以 Linux 7.2 自带的 SM1/AC2xx 为基础，保留现有 FDT 文件名，
 适配千兆 PHY、SD/eMMC、USB、SDIO 和蓝牙接线，并屏蔽 Armbian SM1 补丁

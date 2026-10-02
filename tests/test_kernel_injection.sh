@@ -546,6 +546,7 @@ assert_contains "${RELEASE_TEST_ROOT}/captured-gh-args.txt" \
 WRAPPER_ROOT="${TEST_ROOT}/wrapper-root"
 mkdir -p "${WRAPPER_ROOT}/userpatches"
 cp "${REPO_ROOT}/overwrite/build_with_diy.sh" "${WRAPPER_ROOT}/build_with_diy.sh"
+cp -R "${REPO_ROOT}/overwrite/lib" "${WRAPPER_ROOT}/lib"
 cp "${REPO_ROOT}/userpatches/lib.config" "${WRAPPER_ROOT}/userpatches/lib.config"
 
 # Git Bash on Windows has no dpkg-deb. Use an uncompressed tar as the fake deb
@@ -802,6 +803,7 @@ build_fake_image_deb
 MISMATCH_ROOT="${TEST_ROOT}/wrapper-mismatch"
 mkdir -p "${MISMATCH_ROOT}/userpatches"
 cp "${REPO_ROOT}/overwrite/build_with_diy.sh" "${MISMATCH_ROOT}/build_with_diy.sh"
+cp -R "${REPO_ROOT}/overwrite/lib" "${MISMATCH_ROOT}/lib"
 cp "${REPO_ROOT}/userpatches/lib.config" "${MISMATCH_ROOT}/userpatches/lib.config"
 BAD_PIN_DEB="${MISMATCH_ROOT}/bad-pin-linux-image.deb"
 build_fake_image_deb 0000000000000000000000000000000000000000
@@ -834,6 +836,7 @@ assert_contains "${BAD_PIN_LOG}" \
 BRANCH_MISMATCH_ROOT="${TEST_ROOT}/wrapper-branch-mismatch"
 mkdir -p "${BRANCH_MISMATCH_ROOT}/userpatches"
 cp "${REPO_ROOT}/overwrite/build_with_diy.sh" "${BRANCH_MISMATCH_ROOT}/build_with_diy.sh"
+cp -R "${REPO_ROOT}/overwrite/lib" "${BRANCH_MISMATCH_ROOT}/lib"
 cp "${REPO_ROOT}/userpatches/lib.config" "${BRANCH_MISMATCH_ROOT}/userpatches/lib.config"
 cat > "${BRANCH_MISMATCH_ROOT}/compile.sh" <<'FAKE_COMPILE'
 #!/usr/bin/env bash
