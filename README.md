@@ -78,6 +78,8 @@ Automatically tracks Armbian Rockchip64 kernel versions and reproducibly integra
 
 The injection logic lives in `userpatches/extensions/kernel-inject.sh` and uses Armbian's `custom_kernel_config__kernel_inject` extension hook. The wrapper enables both `kernel-inject` and `kernel-inject-evidence`, preserving caller extensions. Armbian no longer supports `userpatches/lib.config`; on a reused build checkout, move that legacy file outside `userpatches` and migrate any custom hooks into extensions before building. The wrapper preserves it and fails early if it remains.
 
+CI preserves available build artifacts even after a failure, alongside a `build-diagnostics` artifact containing the sanitized build log and status. Artifacts from failed runs are diagnostic output, not validated installation releases; use only successfully verified releases on a device.
+
 - immutable commit SHAs are used by default and the fetched revision is verified;
 - upstream file layouts are validated before kernel source directories are replaced;
 - Kconfig/Makefile integration uses marked idempotent blocks, so repeated runs do not duplicate entries;

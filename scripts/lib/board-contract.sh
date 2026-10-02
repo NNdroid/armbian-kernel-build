@@ -22,11 +22,17 @@ validate_board_contract() {
             return 1
         }
     fi
+    local actual
+    local -a missing=()
     for symbol in "${TARGET_REQUIRED_Y[@]}"; do
-        grep -qx "CONFIG_${symbol}=y" "${config}" || {
-            _kernel_inject_log err "Boot-critical driver missing" "CONFIG_${symbol}=y is required by ${TARGET_BOARD}"
-            return 1
-        }
+        if ! grep -qx "CONFIG_${symbol}=y" "${config}"; then
+            actual="$(sed -n "s/^CONFIG_${symbol}=//p" "${config}")"
+            missing+=("CONFIG_${symbol}=y(actual=${actual:-n/undefined})")
+        fi
     done
+    if ((${#missing[@]})); then
+        _kernel_inject_log err "Boot-critical driver missing" "${TARGET_BOARD}: ${missing[*]}"
+        return 1
+    fi
     _kernel_inject_log info "Board verification" "${TARGET_BOARD}: declared DTB and built-in driver requirements verified"
 }

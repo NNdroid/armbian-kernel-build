@@ -13,6 +13,9 @@ extension_manager_declare_globals
 # through the framework. Keep that unrelated hook out of this isolated test.
 unset -f run_after_build__999_finish_extension_manager
 USERPATCHES_PATH="${REPO_ROOT}/userpatches"
+source "${USERPATCHES_PATH}/config/boards/hk1box.conf"
+extension_function_info[custom_kernel_config__999_hk1box_storage_and_network]='EXTENSION="hk1box-board"'
+extension_function_info[post_family_config__hk1box_kernel_only]='EXTENSION="hk1box-board"'
 SRC="${REPO_ROOT}"
 ENABLE_EXTENSIONS=kernel-inject,kernel-inject-evidence
 EXT=''
@@ -27,7 +30,7 @@ declare -F custom_kernel_config >/dev/null
 declare -F pre_package_kernel_image >/dev/null
 [[ "${defined_hook_point_functions[custom_kernel_config__kernel_inject]}" == *'EXTENSION="kernel-inject"'* ]]
 [[ "${defined_hook_point_functions[pre_package_kernel_image__kernel_inject_evidence]}" == *'EXTENSION="kernel-inject-evidence"'* ]]
-declare -a opts_y=() opts_m=() opts_n=() kernel_config_modifying_hashes=()
+declare -a opts_y=() opts_m=(DWMAC_MESON CONFIG_MMC_MESON_GX) opts_n=(CONFIG_DWMAC_MESON) kernel_config_modifying_hashes=()
 # Exercise the manager-generated wrapper in the artifact hashing phase (no
 # .config / source tree): all modes must survive registration and invocation.
 cd "${EXTENSION_MANAGER_TMP_DIR}"
@@ -36,5 +39,9 @@ custom_kernel_config
 [[ " ${opts_y[*]} " == *' AMNEZIAWG '* ]]
 [[ " ${opts_y[*]} " == *' NETFILTER_DEAF '* ]]
 [[ " ${opts_m[*]} " == *' MT7921E '* ]]
+[[ " ${opts_y[*]} " == *' DWMAC_MESON '* ]]
+[[ " ${opts_m[*]} " != *'DWMAC_MESON'* ]]
+[[ " ${opts_m[*]} " != *'MMC_MESON_GX'* ]]
+[[ " ${opts_n[*]} " != *'DWMAC_MESON'* ]]
 [[ " ${kernel_config_modifying_hashes[*]} " == *' kernel-injector-v8-extension-entrypoint '* ]]
 printf '[PASS] Armbian extension discovery, hook registration and configuration dispatch\n'

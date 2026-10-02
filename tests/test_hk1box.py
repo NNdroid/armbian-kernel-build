@@ -105,6 +105,39 @@ class TargetTests(unittest.TestCase):
             wrong_path.rename(correct_path)
             self.assertEqual(self.run_bash(script, CASE_DIR=tree.as_posix()).returncode, 0)
 
+    def test_hk1box_boot_modes_override_module_requests(self):
+        result = self.run_bash('''
+source userpatches/extensions/kernel-inject.sh
+source userpatches/config/boards/hk1box.conf
+USERPATCHES_PATH="$PWD/userpatches"
+declare -a opts_y=() opts_m=(DWMAC_MESON CONFIG_MMC_MESON_GX) opts_n=(CONFIG_DWMAC_MESON) kernel_config_modifying_hashes=()
+custom_kernel_config__999_hk1box_storage_and_network
+[[ " ${opts_y[*]} " == *" DWMAC_MESON "* ]]
+[[ " ${opts_m[*]} " != *"DWMAC_MESON"* ]]
+[[ " ${opts_m[*]} " != *"MMC_MESON_GX"* ]]
+[[ " ${opts_n[*]} " != *"DWMAC_MESON"* ]]
+[[ " ${opts_y[*]} " != *"DWMAC_MESON8B"* ]]
+[[ " ${kernel_config_modifying_hashes[*]} " == *"hk1box-required=DWMAC_MESON=y"* ]]
+''')
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_hk1box_unknown_driver_fails_before_compilation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tree = Path(directory)
+            (tree / '.config').touch()
+            (tree / 'Kconfig').write_text('config MMC\n    bool "fixture"\n')
+            result = self.run_bash('''
+source userpatches/extensions/kernel-inject.sh
+source userpatches/config/boards/hk1box.conf
+USERPATCHES_PATH="$PWD/userpatches"
+declare -a opts_y=() opts_m=() opts_n=() kernel_config_modifying_hashes=()
+cd "$CASE_DIR"
+custom_kernel_config__999_hk1box_storage_and_network
+''', CASE_DIR=tree.as_posix())
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('Unknown board Kconfig symbol', result.stderr)
+            self.assertIn('CONFIG_MMC_BLOCK', result.stderr)
+
     def test_generic_board_contract_checks_packaged_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
             tree = Path(directory)

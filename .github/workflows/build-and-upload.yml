@@ -247,7 +247,7 @@ jobs:
           exit "${effective_exit_code}"
 
       - name: Upload Artifacts Backup
-        if: success()
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: built-images
@@ -255,6 +255,17 @@ jobs:
             build/output/debs/*
             build/output/hk1box/*
             build/output/release-metadata/**
+          if-no-files-found: ignore
+          retention-days: 5
+
+      - name: Upload sanitized build diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: build-diagnostics
+          path: |
+            ${{ runner.temp }}/kernel-live-log/build.log
+            ${{ runner.temp }}/kernel-live-log/status.json
           if-no-files-found: ignore
           retention-days: 5
 
