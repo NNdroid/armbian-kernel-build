@@ -18,7 +18,7 @@ bash build.sh --describe-target hk1box
 DEB 证据校验、实时日志和 Release 元数据生成。默认 `edge / 7.2.y`，
 源码与基线配置由 Armbian meson64 管理，**不再从 ophub 内核仓库编译**。
 
-板级差异集中在 `userpatches/config/build-targets/hk1box.conf`、`userpatches/boards/hk1box.conf` 和
+板级差异集中在 `userpatches/config/build-targets/hk1box.conf`、`userpatches/config/boards/hk1box.conf` 和
 `userpatches/kernel/archive/meson64-7.2/0001-hk1box-mainline-dtb.patch`。
 HK1 Box 设备树以 Linux 7.2 自带的 SM1/AC2xx 为基础，保留现有 FDT 文件名，
 适配千兆 PHY、SD/eMMC、USB、SDIO 和蓝牙接线，并屏蔽 Armbian SM1 补丁

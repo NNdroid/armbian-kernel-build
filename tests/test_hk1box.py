@@ -87,6 +87,24 @@ class TargetTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('requires kernel series 7.2', result.stderr)
 
+    def test_hk1box_board_is_registered_in_armbian_search_path(self):
+        result = self.run_bash('BUILD_SCRIPT_LIB_ONLY=yes source build.sh; '
+                               'validate_armbian_board_registration . hk1box')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('userpatches/config/boards/hk1box.conf', result.stdout)
+        with tempfile.TemporaryDirectory() as directory:
+            tree = Path(directory)
+            wrong_path = tree / 'userpatches/boards/hk1box.conf'
+            wrong_path.parent.mkdir(parents=True)
+            wrong_path.write_text('KERNEL_TARGET=edge\n')
+            script = ('BUILD_SCRIPT_LIB_ONLY=yes source build.sh; '
+                      'validate_armbian_board_registration "$CASE_DIR" hk1box')
+            self.assertNotEqual(self.run_bash(script, CASE_DIR=tree.as_posix()).returncode, 0)
+            correct_path = tree / 'userpatches/config/boards/hk1box.conf'
+            correct_path.parent.mkdir(parents=True)
+            wrong_path.rename(correct_path)
+            self.assertEqual(self.run_bash(script, CASE_DIR=tree.as_posix()).returncode, 0)
+
     def test_generic_board_contract_checks_packaged_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
             tree = Path(directory)

@@ -102,6 +102,7 @@ build_main() {
         sync_tree ./userpatches ./build/userpatches
         sync_tree ./scripts/lib ./build/kernel-build/lib
     fi
+    validate_armbian_board_registration ./build "${BUILD_BOARD}" || return 1
     end_step "3. Prepare Armbian build environment"
 
     for branch in "${planned_branches[@]}"; do

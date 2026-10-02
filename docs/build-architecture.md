@@ -24,7 +24,7 @@ overwrite/build_with_diy.sh      Armbian 构建与产物验证流程
     ├── module-assets.sh        从已构建 DEB 导出模块附件
     └── release-metadata.sh     最终配置、差异、模块说明和发布元数据
 
-userpatches/boards/              Armbian 板型与驱动配置钩子
+userpatches/config/boards/              Armbian 板型与驱动配置钩子
 userpatches/kernel/archive/      板级源码补丁
 userpatches/extensions/          在打包阶段保存源代码与配置证据
 ```
@@ -47,7 +47,7 @@ BUILD_BRANCH=edge bash build.sh --describe-target rockchip64
 ## 新增一个标准 DEB 目标
 
 1. 添加 `userpatches/config/build-targets/<目标名>.conf`。
-2. 确认 Armbian 已有对应 BOARD；否则添加自己的 `userpatches/boards` 配置。
+2. 确认 Armbian 已有对应 BOARD；否则添加自己的 `userpatches/config/boards` 配置。
 3. 有板级差异时，添加对应内核系列的补丁，并声明启动关键驱动要求。
 4. 添加回归测试，运行只读查询、构建和实际设备验证。
 
