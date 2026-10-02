@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 
-# This hook must live in userpatches/extensions rather than lib.config.
-# Armbian initializes its extension manager before it sources lib.config, so a
-# hook implementation declared there is invisible to the real packaging path.
+# Registered alongside kernel-inject before Armbian initializes its extension
+# manager. Persist evidence in the package, not the disposable kernel worktree.
 function pre_package_kernel_image__kernel_inject_evidence() {
 	local kernel_root="${kernel_work_dir:-}"
 	local package_root="${package_directory:-}"

@@ -7,8 +7,15 @@ if [[ ! -x ./compile.sh ]]; then
 	exit 1
 fi
 
-if [[ ! -s userpatches/lib.config ]]; then
-	echo "[kernel-inject][error] userpatches/lib.config is missing or empty" >&2
+if [[ ! -s userpatches/extensions/kernel-inject.sh ]]; then
+	echo "[kernel-inject][error] userpatches/extensions/kernel-inject.sh is missing or empty" >&2
+	exit 1
+fi
+
+# Fail before Docker starts instead of letting Armbian reject a stale legacy
+# override. Preserve the file: it may contain local customizations.
+if [[ -f userpatches/lib.config ]]; then
+	echo "[kernel-inject][error] Obsolete userpatches/lib.config detected; move it outside userpatches and migrate custom hooks to extensions. The file has been preserved." >&2
 	exit 1
 fi
 
@@ -46,7 +53,7 @@ export ENABLE_FULL_EBPF ENABLE_FULL_NETWORKING KERNEL_BTF
 
 # Runtime path is the Armbian build root.
 # shellcheck disable=SC1091
-source userpatches/lib.config
+source userpatches/extensions/kernel-inject.sh
 for mode_name in TCP_BRUTAL_MODE AMNEZIAWG_MODE NF_DEAF_MODE WIREGUARD_MODE; do
 	mode_value="${!mode_name}"
 	case "${mode_value}" in
@@ -102,14 +109,13 @@ requested_extensions="$(argument_value ENABLE_EXTENSIONS "$@" || true)"
 requested_legacy_extensions="$(argument_value EXT "$@" || true)"
 configured_extensions="${requested_extensions:-${requested_legacy_extensions:-${ENABLE_EXTENSIONS:-${EXT:-}}}}"
 
-# Armbian initializes the extension manager before it sources lib.config. The
-# package-evidence hook therefore lives in userpatches/extensions and must be
+# Both configuration and package-evidence hooks live in extensions and must be
 # enabled before compile.sh starts. Merge rather than replace caller-provided
 # extensions, then remove duplicate CLI assignments so the final value cannot
 # be overridden later in argument order.
 ENABLE_EXTENSIONS="$(merge_extension_lists \
 	"${configured_extensions}" \
-	"kernel-inject-evidence")"
+	"kernel-inject,kernel-inject-evidence")"
 export ENABLE_EXTENSIONS
 compile_arguments=()
 for argument in "$@"; do
@@ -125,7 +131,7 @@ _kernel_inject_log info "Build wrapper" \
 _kernel_inject_log info "Build wrapper" \
 	"Full eBPF: ${ENABLE_FULL_EBPF}, full networking: ${ENABLE_FULL_NETWORKING}, KERNEL_BTF: ${KERNEL_BTF}"
 _kernel_inject_log info "Build wrapper" \
-	"Armbian extensions: ${ENABLE_EXTENSIONS} (kernel-inject-evidence is ensured enabled)"
+	"Armbian extensions: ${ENABLE_EXTENSIONS} (kernel-inject and kernel-inject-evidence are ensured enabled)"
 
 mkdir -p output/debs
 artifact_marker="$(mktemp "${TMPDIR:-/tmp}/kernel-build-start.XXXXXX")"

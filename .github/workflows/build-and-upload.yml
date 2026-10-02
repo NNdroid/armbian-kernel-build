@@ -94,6 +94,16 @@ jobs:
           python3 tests/test_hk1box.py
           python3 tests/test_redact_log_stream.py
 
+      - name: Verify current Armbian extension integration
+        run: |
+          set -Eeuo pipefail
+          manager_source="$(mktemp)"
+          trap 'rm -f -- "$manager_source"' EXIT
+          curl --fail --location --silent --show-error --retry 4 --retry-all-errors \
+            https://raw.githubusercontent.com/armbian/build/main/lib/functions/general/extensions.sh \
+            --output "$manager_source"
+          bash tests/test_armbian_extensions.sh "$manager_source"
+
       - name: Start authenticated ngrok live log
         continue-on-error: true
         env:

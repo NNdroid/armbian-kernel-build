@@ -2,13 +2,16 @@
 set -Eeuo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-# Reproduce Armbian's real load order: extensions are sourced before the late
-# legacy lib.config override. Loading only lib.config used to make the hook unit
-# test pass even though the real extension manager could never register it.
+# Load the actual extension entry points; no legacy lib.config is allowed.
 # shellcheck disable=SC1091
 source "${REPO_ROOT}/userpatches/extensions/kernel-inject-evidence.sh"
 # shellcheck disable=SC1091
-source "${REPO_ROOT}/userpatches/lib.config"
+source "${REPO_ROOT}/userpatches/extensions/kernel-inject.sh"
+[[ ! -e "${REPO_ROOT}/userpatches/lib.config" ]] || {
+	printf '[FAIL] unsupported lib.config is still shipped\n' >&2
+	exit 1
+}
+declare -F custom_kernel_config__kernel_inject >/dev/null
 
 declare -F pre_package_kernel_image__kernel_inject_evidence >/dev/null || {
 	printf '[FAIL] package evidence extension hook is not defined\n' >&2
@@ -169,7 +172,7 @@ display_alert() {
 	: "${ANSI_COLOR}" "$1" "$2" "$3"
 }
 set +u
-custom_kernel_config
+custom_kernel_config__kernel_inject
 set -u
 unset -f display_alert
 cd "${original_pwd}"
@@ -544,10 +547,10 @@ assert_contains "${RELEASE_TEST_ROOT}/captured-gh-args.txt" \
 	'edge-loadable-modules-SHA256SUMS'
 
 WRAPPER_ROOT="${TEST_ROOT}/wrapper-root"
-mkdir -p "${WRAPPER_ROOT}/userpatches"
+mkdir -p "${WRAPPER_ROOT}/userpatches/extensions"
 cp "${REPO_ROOT}/overwrite/build_with_diy.sh" "${WRAPPER_ROOT}/build_with_diy.sh"
 cp -R "${REPO_ROOT}/overwrite/lib" "${WRAPPER_ROOT}/lib"
-cp "${REPO_ROOT}/userpatches/lib.config" "${WRAPPER_ROOT}/userpatches/lib.config"
+cp "${REPO_ROOT}/userpatches/extensions/kernel-inject.sh" "${WRAPPER_ROOT}/userpatches/extensions/kernel-inject.sh"
 
 # Git Bash on Windows has no dpkg-deb. Use an uncompressed tar as the fake deb
 # payload so package listing, field lookup and extraction exercise the same
@@ -674,9 +677,21 @@ build_fake_image_deb
 		ENABLE_EXTENSIONS=sample-one,kernel-inject-evidence,sample-two
 )
 assert_contains "${WRAPPER_ROOT}/enabled-extensions.txt" \
-	'sample-one,kernel-inject-evidence,sample-two'
+	'sample-one,kernel-inject-evidence,sample-two,kernel-inject'
 assert_contains "${WRAPPER_ROOT}/compile-arguments.txt" \
-	'ENABLE_EXTENSIONS=sample-one,kernel-inject-evidence,sample-two'
+	'ENABLE_EXTENSIONS=sample-one,kernel-inject-evidence,sample-two,kernel-inject'
+
+# Reused checkouts may retain ignored legacy configuration. Do not execute or
+# remove it; fail before compile.sh, with an actionable migration diagnostic.
+printf '# local customization\n' > "${WRAPPER_ROOT}/userpatches/lib.config"
+cp "${WRAPPER_ROOT}/compile-arguments.txt" "${WRAPPER_ROOT}/before-legacy.txt"
+if (cd "${WRAPPER_ROOT}"; ./build_with_diy.sh kernel BOARD=fake) >"${WRAPPER_ROOT}/legacy.log" 2>&1; then
+	fail "wrapper accepted an unsupported legacy lib.config"
+fi
+assert_contains "${WRAPPER_ROOT}/legacy.log" 'Obsolete userpatches/lib.config detected'
+assert_contains "${WRAPPER_ROOT}/userpatches/lib.config" '# local customization'
+cmp "${WRAPPER_ROOT}/compile-arguments.txt" "${WRAPPER_ROOT}/before-legacy.txt" || fail "legacy check ran compile.sh"
+rm -- "${WRAPPER_ROOT}/userpatches/lib.config"
 assert_file "${WRAPPER_ROOT}/output/release-metadata/fake/fake-kernel.config"
 assert_file "${WRAPPER_ROOT}/output/release-metadata/fake/fake-source-manifest.env"
 assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/fake-source-manifest.env" \
@@ -801,10 +816,10 @@ build_fake_image_deb
 # The source-pin proof must come from the package produced by this build. A
 # mismatched manifest must fail even though no kernel worktree exists anymore.
 MISMATCH_ROOT="${TEST_ROOT}/wrapper-mismatch"
-mkdir -p "${MISMATCH_ROOT}/userpatches"
+mkdir -p "${MISMATCH_ROOT}/userpatches/extensions"
 cp "${REPO_ROOT}/overwrite/build_with_diy.sh" "${MISMATCH_ROOT}/build_with_diy.sh"
 cp -R "${REPO_ROOT}/overwrite/lib" "${MISMATCH_ROOT}/lib"
-cp "${REPO_ROOT}/userpatches/lib.config" "${MISMATCH_ROOT}/userpatches/lib.config"
+cp "${REPO_ROOT}/userpatches/extensions/kernel-inject.sh" "${MISMATCH_ROOT}/userpatches/extensions/kernel-inject.sh"
 BAD_PIN_DEB="${MISMATCH_ROOT}/bad-pin-linux-image.deb"
 build_fake_image_deb 0000000000000000000000000000000000000000
 cp "${FAKE_DEB_TEMPLATE}" "${BAD_PIN_DEB}"
@@ -834,10 +849,10 @@ assert_contains "${BAD_PIN_LOG}" \
 # A deb produced for another branch (e.g. a stale artifact from a previous
 # build in the same output/debs) must never satisfy this build's BRANCH.
 BRANCH_MISMATCH_ROOT="${TEST_ROOT}/wrapper-branch-mismatch"
-mkdir -p "${BRANCH_MISMATCH_ROOT}/userpatches"
+mkdir -p "${BRANCH_MISMATCH_ROOT}/userpatches/extensions"
 cp "${REPO_ROOT}/overwrite/build_with_diy.sh" "${BRANCH_MISMATCH_ROOT}/build_with_diy.sh"
 cp -R "${REPO_ROOT}/overwrite/lib" "${BRANCH_MISMATCH_ROOT}/lib"
-cp "${REPO_ROOT}/userpatches/lib.config" "${BRANCH_MISMATCH_ROOT}/userpatches/lib.config"
+cp "${REPO_ROOT}/userpatches/extensions/kernel-inject.sh" "${BRANCH_MISMATCH_ROOT}/userpatches/extensions/kernel-inject.sh"
 cat > "${BRANCH_MISMATCH_ROOT}/compile.sh" <<'FAKE_COMPILE'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -902,7 +917,7 @@ before="$(sha256sum \
 
 reset_hook_arrays
 cd "${KERNEL_ROOT}"
-custom_kernel_config
+custom_kernel_config__kernel_inject
 cd "${original_pwd}"
 
 after="$(sha256sum \
@@ -918,7 +933,7 @@ NEGATIVE_CASE_LOG="${TEST_ROOT}/negative-config-cases.log"
 : > "${NEGATIVE_CASE_LOG}"
 
 reset_hook_arrays
-if AMNEZIAWG_MODE=y WIREGUARD_MODE=y custom_kernel_config >>"${NEGATIVE_CASE_LOG}" 2>&1; then
+if AMNEZIAWG_MODE=y WIREGUARD_MODE=y custom_kernel_config__kernel_inject >>"${NEGATIVE_CASE_LOG}" 2>&1; then
 	fail "unsafe built-in AmneziaWG/WireGuard combination was accepted"
 fi
 assert_contains "${NEGATIVE_CASE_LOG}" \
@@ -926,7 +941,7 @@ assert_contains "${NEGATIVE_CASE_LOG}" \
 
 : > "${NEGATIVE_CASE_LOG}"
 reset_hook_arrays
-if WIREGUARD_MODE=invalid custom_kernel_config >>"${NEGATIVE_CASE_LOG}" 2>&1; then
+if WIREGUARD_MODE=invalid custom_kernel_config__kernel_inject >>"${NEGATIVE_CASE_LOG}" 2>&1; then
 	fail "invalid WIREGUARD_MODE value was accepted"
 fi
 assert_contains "${NEGATIVE_CASE_LOG}" \
@@ -934,7 +949,7 @@ assert_contains "${NEGATIVE_CASE_LOG}" \
 
 : > "${NEGATIVE_CASE_LOG}"
 reset_hook_arrays
-if ENABLE_FULL_NETWORKING=invalid custom_kernel_config >>"${NEGATIVE_CASE_LOG}" 2>&1; then
+if ENABLE_FULL_NETWORKING=invalid custom_kernel_config__kernel_inject >>"${NEGATIVE_CASE_LOG}" 2>&1; then
 	fail "invalid ENABLE_FULL_NETWORKING value was accepted"
 fi
 assert_contains "${NEGATIVE_CASE_LOG}" \

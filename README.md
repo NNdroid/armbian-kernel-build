@@ -76,7 +76,7 @@ Automatically tracks Armbian Rockchip64 kernel versions and reproducibly integra
 
 ## Injection design
 
-The injection logic lives in `userpatches/lib.config` and uses Armbian's `custom_kernel_config` hook:
+The injection logic lives in `userpatches/extensions/kernel-inject.sh` and uses Armbian's `custom_kernel_config__kernel_inject` extension hook. The wrapper enables both `kernel-inject` and `kernel-inject-evidence`, preserving caller extensions. Armbian no longer supports `userpatches/lib.config`; on a reused build checkout, move that legacy file outside `userpatches` and migrate any custom hooks into extensions before building. The wrapper preserves it and fails early if it remains.
 
 - immutable commit SHAs are used by default and the fetched revision is verified;
 - upstream file layouts are validated before kernel source directories are replaced;
@@ -150,7 +150,7 @@ When updating an upstream dependency, setting the immutable `*_COMMIT` is suffic
 ## Validation
 
 ```bash
-bash -n build.sh overwrite/build_with_diy.sh userpatches/lib.config tests/test_kernel_injection.sh
+bash -n build.sh overwrite/build_with_diy.sh userpatches/extensions/kernel-inject.sh tests/test_kernel_injection.sh
 bash tests/test_kernel_injection.sh
 python3 tests/test_live_log_server.py
 ```

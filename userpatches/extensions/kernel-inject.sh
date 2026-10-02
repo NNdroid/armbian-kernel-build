@@ -1132,7 +1132,7 @@ _kernel_inject_sources() (
 		"${nf_repository}" "${nf_ref}" "${nf_commit}"
 )
 
-custom_kernel_config() {
+custom_kernel_config__kernel_inject() {
 	local tcp_repository="${TCP_BRUTAL_REPOSITORY:-https://github.com/HyNetworks/tcp-brutal.git}"
 	# A COMMIT-only override is sufficient and becomes the default fetch ref.
 	# REF remains available for servers that need a branch/tag fetch hint.
@@ -1193,7 +1193,7 @@ custom_kernel_config() {
 		_kernel_inject_enable_full_networking || return 1
 	fi
 	kernel_config_modifying_hashes+=(
-		"kernel-injector-v7-modular-radio-stack"
+		"kernel-injector-v8-extension-entrypoint"
 		"tcp-brutal=${tcp_commit:-${tcp_ref}}"
 		"amneziawg=${awg_commit:-${awg_ref}}"
 		"nf-deaf=${nf_commit:-${nf_ref}}"
