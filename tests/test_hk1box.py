@@ -1,6 +1,6 @@
-"""Contracts for shared Armbian target profiles and the HK1 Box DTB adaptation."""
-import os
+"""Contracts for shared Armbian target profiles and the HK1 Box adaptation."""
 import hashlib
+import os
 from pathlib import Path
 import shutil
 import shlex
@@ -20,6 +20,14 @@ class TargetTests(unittest.TestCase):
         env.update(variables)
         return subprocess.run([BASH, "-c", script], cwd=ROOT, env=env,
                               text=True, capture_output=True)
+
+    @staticmethod
+    def write_arm64_image(path, text_offset=0x01080000, magic=b"ARM\x64"):
+        image = bytearray(64)
+        image[8:16] = text_offset.to_bytes(8, "little")
+        image[56:60] = magic
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(image)
 
     def test_rockchip_defaults_unchanged(self):
         result = self.run_bash('source scripts/build_targets.sh; load_build_target; '
@@ -174,30 +182,119 @@ validate_board_contract "$CASE_DIR/evidence" "$CASE_DIR/image" "$CASE_DIR/eviden
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn('docker', result.stderr)
 
-    def test_device_tree_patch_applies_without_overclock(self):
-        patch = ROOT / 'userpatches/kernel/archive/meson64-7.2/0001-hk1box-mainline-dtb.patch'
+    def test_device_tree_patches_match_hk1box_boot_contract(self):
+        patches = [
+            ROOT / 'userpatches/kernel/archive/meson64-7.2/0001-hk1box-mainline-dtb.patch',
+            ROOT / 'userpatches/kernel/archive/meson64-7.2/0002-hk1box-memory-map.patch',
+        ]
         with tempfile.TemporaryDirectory() as temporary:
             tree = Path(temporary)
             dts_dir = tree / 'arch/arm64/boot/dts/amlogic'
             dts_dir.mkdir(parents=True)
             (dts_dir / 'Makefile').write_text('dtb-$(CONFIG_ARCH_MESON) += meson-sm1-sei610.dtb\n')
-            result = subprocess.run(['git', 'apply', str(patch)], cwd=tree, capture_output=True, text=True)
-            self.assertEqual(result.returncode, 0, result.stderr)
+            for patch in patches:
+                result = subprocess.run(['git', 'apply', str(patch)], cwd=tree, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
             dts = (dts_dir / 'meson-sm1-hk1box-vontar-x3.dts').read_text()
             self.assertIn('#include "meson-sm1-ac2xx.dtsi"', dts)
             self.assertNotIn('opp-hz =', dts)
             self.assertIn('/delete-node/ opp-2100000000;', dts)
-            self.assertNotIn('0xFFFFFFFF', dts)
+            self.assertIn('reg = <0x0 0x0 0x0 0xFFFFFFFF>;', dts)
             self.assertIn('/delete-property/ sd-uhs-sdr104;', dts)
             self.assertIn('max-frequency = <25000000>', dts)
+
+    def test_legacy_amlogic_text_offset_patch_applies_to_linux_7_2_layout(self):
+        patch = ROOT / 'userpatches/kernel/archive/meson64-7.2/0003-amlogic-legacy-text-offset.patch'
+        with tempfile.TemporaryDirectory() as temporary:
+            tree = Path(temporary)
+            kernel = tree / 'arch/arm64/kernel'
+            kernel.mkdir(parents=True)
+            (kernel / 'head.S').write_text(
+                '\t/*\n\t * DO NOT MODIFY. Image header expected by Linux boot-loaders.\n\t */\n'
+                '\tefi_signature_nop\t\t\t// special NOP to identity as PE/COFF executable\n'
+                '\tb\tprimary_entry\t\t\t// branch to kernel start, magic\n'
+                '\t.quad\t0\t\t\t\t// Image load offset from start of RAM, little-endian\n'
+                '\tle64sym\t_kernel_size_le\t\t\t// Effective size of kernel image, little-endian\n'
+                '\tle64sym\t_kernel_flags_le\t\t// Informative flags, little-endian\n'
+                '\t.quad\t0\t\t\t\t// reserved\n')
+            (kernel / 'image.h').write_text(
+                '/* regardless of the endianness of the kernel. While constant values could be\n'
+                ' * endian swapped in head.S, all are done here for consistency.\n */\n'
+                '#define HEAD_SYMBOLS\t\t\t\t\t\t\\\n'
+                '\tDEFINE_IMAGE_LE64(_kernel_size_le, _end - _text);\t\\\n'
+                '\tDEFINE_IMAGE_LE64(_kernel_flags_le, __HEAD_FLAGS);\n\n'
+                '#endif /* __ARM64_KERNEL_IMAGE_H */\n')
+            (kernel / 'setup.c').write_text(
+                '\tefi_init();\n\n\tif (!efi_enabled(EFI_BOOT)) {\n'
+                '\t\tif ((u64)_text % MIN_KIMG_ALIGN)\n'
+                '\t\t\tpr_warn(FW_BUG "Kernel image misaligned at boot, please fix your bootloader!");\n'
+                '\t\tWARN_TAINT(mmu_enabled_at_boot, TAINT_FIRMWARE_WORKAROUND,\n'
+                '\t\t\t   FW_BUG "Booted with MMU enabled!");\n\t}\n')
+            result = subprocess.run(['git', 'apply', str(patch)], cwd=tree, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('le64sym\t_kernel_offset_le', (kernel / 'head.S').read_text())
+            self.assertIn('#define TEXT_OFFSET 0x01080000', (kernel / 'image.h').read_text())
+            self.assertIn('DEFINE_IMAGE_LE64(_kernel_offset_le, TEXT_OFFSET)', (kernel / 'image.h').read_text())
+            self.assertNotIn('pr_warn(FW_BUG "Kernel image misaligned', (kernel / 'setup.c').read_text())
+
+    def test_hk1box_kernel_image_header_is_mandatory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            tree = Path(temporary)
+            good = tree / 'Image.good'
+            zero_offset = tree / 'Image.zero-offset'
+            bad_magic = tree / 'Image.bad-magic'
+            self.write_arm64_image(good)
+            self.write_arm64_image(zero_offset, text_offset=0)
+            self.write_arm64_image(bad_magic, magic=b'BAD!')
+            command = 'source scripts/package_hk1box.sh; validate_hk1box_kernel_image "$IMAGE"'
+            self.assertEqual(self.run_bash(command, IMAGE=good.as_posix()).returncode, 0)
+            result = self.run_bash(command, IMAGE=zero_offset.as_posix())
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('TEXT_OFFSET 0x01080000', result.stderr)
+            result = self.run_bash(command, IMAGE=bad_magic.as_posix())
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('not a raw ARM64 Image', result.stderr)
+
+    def test_hk1box_uinitrd_is_arm64_gzip(self):
+        release = '7.2.8-edge-meson64'
+        with tempfile.TemporaryDirectory() as temporary:
+            tree = Path(temporary)
+            stage = tree / 'stage'
+            bindir = tree / 'bin'
+            call_log = tree / 'calls.log'
+            (stage / 'boot').mkdir(parents=True)
+            bindir.mkdir()
+            mkinitramfs = bindir / 'mkinitramfs'
+            mkinitramfs.write_text(
+                '#!/usr/bin/env bash\nset -eu\nprintf "mkinitramfs %s\\n" "$*" >> "$CALL_LOG"\n'
+                'out=""\nwhile (($#)); do\n  if [[ "$1" == -o ]]; then out="$2"; shift 2; else shift; fi\ndone\n'
+                ': > "$out"\n')
+            mkimage = bindir / 'mkimage'
+            mkimage.write_text(
+                '#!/usr/bin/env bash\nset -eu\nprintf "mkimage %s\\n" "$*" >> "$CALL_LOG"\n'
+                'out="${@: -1}"\n: > "$out"\n')
+            mkinitramfs.chmod(0o755)
+            mkimage.chmod(0o755)
+            result = self.run_bash(
+                'source scripts/package_hk1box.sh; build_hk1box_initramfs "$STAGE" "$RELEASE"',
+                STAGE=stage.as_posix(), RELEASE=release,
+                PATH=f'{bindir}{os.pathsep}{os.environ.get("PATH", "")}', CALL_LOG=call_log.as_posix())
+            self.assertEqual(result.returncode, 0, result.stderr)
+            calls = call_log.read_text()
+            self.assertIn('mkinitramfs -c gzip -o ', calls)
+            self.assertIn(f' {release}', calls)
+            self.assertIn('mkimage -A arm64 -O linux -T ramdisk -C gzip -n uInitrd', calls)
+            self.assertTrue((stage / f'boot/initrd.img-{release}').is_file())
+            self.assertTrue((stage / f'boot/uInitrd-{release}').is_file())
 
     def test_tar_payload_matches_ophub_installer(self):
         release = '7.2.8-edge-meson64'
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / 'root'
             stage = Path(temporary) / 'stage'
-            for name in [f'boot/vmlinuz-{release}', f'boot/config-{release}',
-                         f'boot/System.map-{release}',
+            image = root / f'boot/vmlinuz-{release}'
+            self.write_arm64_image(image)
+            for name in [f'boot/config-{release}', f'boot/System.map-{release}',
                          f'boot/dtb-{release}/amlogic/meson-sm1-hk1box-vontar-x3.dtb',
                          f'lib/modules/{release}/modules.builtin',
                          f'usr/lib/armbian-kernel-build/{release}/source-manifest.env',
