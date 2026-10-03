@@ -81,6 +81,7 @@ class TargetTests(unittest.TestCase):
     def test_target_loads_do_not_leak_prior_adapter_or_restrictions(self):
         result = self.run_bash('source scripts/build_targets.sh; BUILD_TARGET=hk1box; load_build_target; '
                                'BUILD_TARGET=rockchip64; load_build_target; validate_target_series edge 8.0; '
+                               '[[ ${#TARGET_REQUIRED_Y[@]} == 0 ]] || exit 1; '
                                'target_extra_release_assets 8.0; printf "%s" "${branch_list[*]}"')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, 'current edge bleedingedge')
@@ -115,16 +116,21 @@ class TargetTests(unittest.TestCase):
 
     def test_hk1box_boot_modes_override_module_requests(self):
         result = self.run_bash('''
+set -e
 source userpatches/extensions/kernel-inject.sh
 source userpatches/config/boards/hk1box.conf
 USERPATCHES_PATH="$PWD/userpatches"
-declare -a opts_y=() opts_m=(DWMAC_MESON CONFIG_MMC_MESON_GX) opts_n=(CONFIG_DWMAC_MESON) kernel_config_modifying_hashes=()
+declare -a opts_y=() opts_m=(DWMAC_MESON CONFIG_MMC_MESON_GX COMMON_CLK_G12A SERIAL_MESON) opts_n=(CONFIG_DWMAC_MESON CONFIG_PINCTRL_MESON_G12A) kernel_config_modifying_hashes=()
 custom_kernel_config__999_hk1box_storage_and_network
 [[ " ${opts_y[*]} " == *" DWMAC_MESON "* ]]
 [[ " ${opts_m[*]} " != *"DWMAC_MESON"* ]]
 [[ " ${opts_m[*]} " != *"MMC_MESON_GX"* ]]
 [[ " ${opts_n[*]} " != *"DWMAC_MESON"* ]]
 [[ " ${opts_y[*]} " != *"DWMAC_MESON8B"* ]]
+[[ " ${opts_y[*]} " == *" COMMON_CLK_G12A "* && " ${opts_m[*]} " != *"COMMON_CLK_G12A"* ]]
+[[ " ${opts_y[*]} " == *" SERIAL_MESON "* && " ${opts_m[*]} " != *"SERIAL_MESON"* ]]
+[[ " ${opts_y[*]} " == *" SERIAL_MESON_CONSOLE "* ]]
+[[ " ${opts_y[*]} " == *" PINCTRL_MESON_G12A "* && " ${opts_n[*]} " != *"PINCTRL_MESON_G12A"* ]]
 [[ " ${kernel_config_modifying_hashes[*]} " == *"hk1box-required=DWMAC_MESON=y"* ]]
 ''')
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -144,7 +150,7 @@ custom_kernel_config__999_hk1box_storage_and_network
 ''', CASE_DIR=tree.as_posix())
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('Unknown board Kconfig symbol', result.stderr)
-            self.assertIn('CONFIG_MMC_BLOCK', result.stderr)
+            self.assertIn('CONFIG_ARCH_MESON', result.stderr)
 
     def test_generic_board_contract_checks_packaged_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -186,12 +192,19 @@ validate_board_contract "$CASE_DIR/evidence" "$CASE_DIR/image" "$CASE_DIR/eviden
         patches = [
             ROOT / 'userpatches/kernel/archive/meson64-7.2/0001-hk1box-mainline-dtb.patch',
             ROOT / 'userpatches/kernel/archive/meson64-7.2/0002-hk1box-memory-map.patch',
+            ROOT / 'userpatches/kernel/archive/meson64-7.2/0004-hk1box-mmc-aliases.patch',
         ]
         with tempfile.TemporaryDirectory() as temporary:
             tree = Path(temporary)
             dts_dir = tree / 'arch/arm64/boot/dts/amlogic'
             dts_dir.mkdir(parents=True)
-            (dts_dir / 'Makefile').write_text('dtb-$(CONFIG_ARCH_MESON) += meson-sm1-sei610.dtb\n')
+            (dts_dir / 'Makefile').write_text(''.join(
+                f'dtb-$(CONFIG_ARCH_MESON) += {board}.dtb\n' for board in [
+                    'meson-sm1-odroid-c4', 'meson-sm1-odroid-hc4', 'meson-sm1-sei610',
+                    'meson-sm1-x96-air-gbit', 'meson-sm1-x96-air']))
+            shared = dts_dir / 'meson-g12-common.dtsi'
+            shared.write_text('/ { aliases { mmc0 = &sd_emmc_b; mmc1 = &sd_emmc_c; mmc2 = &sd_emmc_a; }; };\n')
+            original_shared = shared.read_bytes()
             for patch in patches:
                 result = subprocess.run(['git', 'apply', str(patch)], cwd=tree, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -202,6 +215,10 @@ validate_board_contract "$CASE_DIR/evidence" "$CASE_DIR/image" "$CASE_DIR/eviden
             self.assertIn('reg = <0x0 0x0 0x0 0xFFFFFFFF>;', dts)
             self.assertIn('/delete-property/ sd-uhs-sdr104;', dts)
             self.assertIn('max-frequency = <25000000>', dts)
+            self.assertIn('mmc0 = &sd_emmc_a;', dts)
+            self.assertIn('mmc1 = &sd_emmc_b;', dts)
+            self.assertIn('mmc2 = &sd_emmc_c;', dts)
+            self.assertEqual(shared.read_bytes(), original_shared)
 
     def test_legacy_amlogic_text_offset_patch_applies_to_linux_7_2_layout(self):
         patch = ROOT / 'userpatches/kernel/archive/meson64-7.2/0003-amlogic-legacy-text-offset.patch'
@@ -287,6 +304,34 @@ validate_board_contract "$CASE_DIR/evidence" "$CASE_DIR/image" "$CASE_DIR/eviden
             self.assertTrue((stage / f'boot/initrd.img-{release}').is_file())
             self.assertTrue((stage / f'boot/uInitrd-{release}').is_file())
 
+    def test_compiled_dtb_contract_rejects_wrong_or_missing_properties(self):
+        command = '''source scripts/package_hk1box.sh
+fdtget() {
+    [[ "$5" != "${FAIL_PROPERTY:-}" ]] || return 1
+    case "$5" in
+        mmc0) printf '%s\\n' "$MMC0";;
+        mmc1) echo /soc/mmc@ffe05000;;
+        mmc2) echo /soc/mmc@ffe07000;;
+        reg) printf '%s\\n' "$MEMORY";;
+        *) return 1;;
+    esac
+}
+validate_hk1box_dtb fixture.dtb
+'''
+        good = {'MMC0': '/soc/mmc@ffe03000', 'MEMORY': '0 0 0 ffffffff'}
+        self.assertEqual(self.run_bash(command, **good).returncode, 0)
+        for override, diagnostic in [
+            ({'MMC0': '/soc/mmc@ffe05000'}, 'mmc0 must identify controller'),
+            ({'MEMORY': '0 0 0 40000000'}, '4 GB DTB memory declaration mismatch'),
+            ({'MEMORY': '0 0 0 ffffffff 0 0'}, '4 GB DTB memory declaration mismatch'),
+        ]:
+            with self.subTest(override=override):
+                result = self.run_bash(command, **dict(good, **override))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(diagnostic, result.stderr)
+        for property_name in ['mmc1', 'reg']:
+            self.assertNotEqual(self.run_bash(command, **good, FAIL_PROPERTY=property_name).returncode, 0)
+
     def test_tar_payload_matches_ophub_installer(self):
         release = '7.2.8-edge-meson64'
         with tempfile.TemporaryDirectory() as temporary:
@@ -302,7 +347,11 @@ validate_board_contract "$CASE_DIR/evidence" "$CASE_DIR/image" "$CASE_DIR/eviden
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text('fixture')
-            script = ('source scripts/package_hk1box.sh; stage_hk1box_payload '
+            script = ('source scripts/package_hk1box.sh; '
+                      'fdtget() { case "$5" in '
+                      'mmc0) echo /soc/mmc@ffe03000;; mmc1) echo /soc/mmc@ffe05000;; '
+                      'mmc2) echo /soc/mmc@ffe07000;; reg) echo "0 0 0 ffffffff";; '
+                      '*) return 1;; esac; }; stage_hk1box_payload '
                       f'{shlex.quote(root.as_posix())} {shlex.quote(stage.as_posix())} {release}')
             result = self.run_bash(script)
             self.assertEqual(result.returncode, 0, result.stderr)

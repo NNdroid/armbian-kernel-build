@@ -19,14 +19,19 @@ DEB 证据校验、实时日志和 Release 元数据生成。默认 `edge / 7.2.
 源码与基线配置由 Armbian meson64 管理，**不再从 ophub 内核仓库编译**。
 
 板级差异集中在 `userpatches/config/build-targets/hk1box.conf`、`userpatches/config/boards/hk1box.conf` 和
-`userpatches/kernel/archive/meson64-7.2/0001-hk1box-mainline-dtb.patch`。
+`userpatches/kernel/archive/meson64-7.2/000*-hk1box-*.patch`，
+启动偏移由同目录的 `0003-amlogic-legacy-text-offset.patch` 提供。
 HK1 Box 设备树以 Linux 7.2 自带的 SM1/AC2xx 为基础，保留现有 FDT 文件名，
 适配千兆 PHY、SD/eMMC、USB、SDIO 和蓝牙接线，并屏蔽 Armbian SM1 补丁
 新增的 2.016/2.1 GHz OPP，保留主线频率表。
 板级接线参考 ophub/linux-6.12.y 的
 `4c0b3046f608fad852b55de1b234d43b8e178034`，保留原 GPL/MIT 许可证，
-只移植设备树，不引用其内核源码或配置。内存容量由现有 U-Boot 修正；
-实际容量、PHY 型号和 Wi-Fi 芯片仍需真机验证。
+选择性移植板级设备树和启动兼容性，不替换 Armbian 内核源码或整套配置。
+当前 HK1Box 目标按 **4 GB 型号**声明内存（`0xFFFFFFFF`）；2 GB 型号不能直接套用。
+板级 aliases 保持 Ophub 的 `mmc0=SDIO`、`mmc1=SD 卡`、`mmc2=eMMC`，
+避免依赖设备路径的启动参数和存储脚本因控制器编号变化而失效；仍建议使用 root UUID。
+SoC 时钟、引脚、电源域、GPIO 中断及串口控制台与存储、USB 等早期启动驱动均强制内置，
+最终包配置缺失这些能力时构建会失败。实际容量、PHY 型号和 Wi-Fi 芯片仍需真机验证。
 
 Actions 中选择 **Build and Upload Debs → Run workflow**：
 
@@ -52,6 +57,8 @@ defconfig 差异在 DEB 内嵌证据和 `build/output/release-metadata/edge` 中
 `scripts/package_hk1box.sh` 只转换本次构建的已校验 DEB，
 不再编译一遍内核：在隔离 ARM64 容器生成 initramfs，再生成
 `boot-*`、`dtb-amlogic-*`、`modules-*`、`header-*` 和 `sha256sums`。
+打包前会用 `fdtget` 校验实际 DTB 的 MMC aliases 和 4 GB 内存声明，
+并检查 ARM64 Image 启动偏移；initramfs 使用 gzip，uInitrd 按 ARM64/gzip 封装。
 总包输出 `build/output/hk1box/<完整 uname-r>.tar.gz`，随 DEB 一起发布。
 TAR 中的构建证据随版本模块目录安装到
 `/usr/lib/modules/<完整 uname-r>/armbian-kernel-build/`。

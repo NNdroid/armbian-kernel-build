@@ -45,6 +45,27 @@ build_hk1box_initramfs() {
         -d "${initrd}" "${uinitrd}"
 }
 
+validate_hk1box_dtb() {
+    local dtb="$1" alias path memory
+    local -a controllers=(ffe03000 ffe05000 ffe07000) cells=()
+    # Validate the compiled DTB, including inherited properties, rather than
+    # assuming a successfully applied board patch produced the right aliases.
+    for alias in 0 1 2; do
+        path="$(fdtget -t s "${dtb}" /aliases "mmc${alias}")" || return 1
+        [[ "${path}" =~ /(mmc|sd)@${controllers[alias]}$ ]] || {
+            printf '[ERROR] HK1 Box DTB mmc%s must identify controller %s, got %s\n' \
+                "${alias}" "${controllers[alias]}" "${path}" >&2
+            return 1
+        }
+    done
+    memory="$(fdtget -t x "${dtb}" /memory@0 reg)" || return 1
+    read -r -a cells <<< "${memory}"
+    [[ "${cells[*]}" == '0 0 0 ffffffff' ]] || {
+        printf '[ERROR] HK1 Box 4 GB DTB memory declaration mismatch: %s\n' "${memory}" >&2
+        return 1
+    }
+}
+
 package_hk1box() (
     local branch="$1" marker="$2" version="$3"
     [[ "${branch}" == edge && "${version}" == 7.2.* && -f "${marker}" ]] || return 1
@@ -91,6 +112,7 @@ stage_hk1box_payload() {
     local dtb="${root}/boot/dtb-${release}/amlogic/meson-sm1-hk1box-vontar-x3.dtb"
     [[ -s "${image}" && -s "${dtb}" && -d "${root}/usr/src/linux-headers-${release}" ]] || return 1
     validate_hk1box_kernel_image "${image}" || return 1
+    validate_hk1box_dtb "${dtb}" || return 1
     mkdir -p "${stage}/boot" "${stage}/dtb" "${stage}/modules" "${stage}/header"
     cp "${image}" "${stage}/boot/vmlinuz-${release}"
     cp "${root}/boot/config-${release}" "${stage}/boot/"
@@ -109,7 +131,7 @@ package_worker() {
     trap 'chown -R "${PACKAGE_OWNER}" /package' EXIT
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
-    apt-get install -y --no-install-recommends initramfs-tools u-boot-tools kmod
+    apt-get install -y --no-install-recommends initramfs-tools u-boot-tools kmod device-tree-compiler
     local root=/package/root stage=/package/stage release
     local -a releases=()
     mapfile -t releases < <(find "${root}/lib/modules" -mindepth 1 -maxdepth 1 -type d -printf '%f\n')
