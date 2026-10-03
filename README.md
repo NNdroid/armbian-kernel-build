@@ -1,5 +1,73 @@
 # armbian-kernel-build
 
+## 扩展构建目标
+
+构建脚本已分层：`build.sh` 是薄入口，公共流程位于 `scripts/lib/`，
+目标配置位于 `userpatches/config/build-targets/`，安装格式由 `adapters/` 插件处理。
+新增标准 DEB 板型不需要修改主流程或 workflow 目标枚举。
+详见 [构建架构与扩展指南](docs/build-architecture.md)。
+
+```bash
+bash build.sh --list-targets
+bash build.sh --describe-target hk1box
+```
+
+## HK1 Box / S905X3：统一 Armbian 7.2 构建
+
+`hk1box` 使用与 Rockchip64 相同的 Armbian 构建链、源码注入、最终配置校验、
+DEB 证据校验、实时日志和 Release 元数据生成。默认 `edge / 7.2.y`，
+源码与基线配置由 Armbian meson64 管理，**不再从 ophub 内核仓库编译**。
+
+板级差异集中在 `userpatches/config/build-targets/hk1box.conf`、`userpatches/config/boards/hk1box.conf` 和
+`userpatches/kernel/archive/meson64-7.2/0001-hk1box-mainline-dtb.patch`。
+HK1 Box 设备树以 Linux 7.2 自带的 SM1/AC2xx 为基础，保留现有 FDT 文件名，
+适配千兆 PHY、SD/eMMC、USB、SDIO 和蓝牙接线，并屏蔽 Armbian SM1 补丁
+新增的 2.016/2.1 GHz OPP，保留主线频率表。
+板级接线参考 ophub/linux-6.12.y 的
+`4c0b3046f608fad852b55de1b234d43b8e178034`，保留原 GPL/MIT 许可证，
+只移植设备树，不引用其内核源码或配置。内存容量由现有 U-Boot 修正；
+实际容量、PHY 型号和 Wi-Fi 芯片仍需真机验证。
+
+Actions 中选择 **Build and Upload Debs → Run workflow**：
+
+- `target=hk1box`、`branch=auto`（或 `edge`）。
+- `force=true` 可以在同版本已经发布时重新构建。
+- 首次测试建议 `publish=false`，下载 Actions artifacts 验证后再发布。
+- 定时任务保留 Rockchip64；其原有 Release 标签不变，HK1 Box 使用
+  `hk1box-edge-<version>`，避免平台之间误判“已构建”。
+
+Linux Docker 主机运行：
+
+```bash
+BUILD_TARGET=hk1box BUILD_FORCE=yes BUILD_PUBLISH=no bash build.sh
+```
+
+三个自定义组件默认内置 `y`，原生 WireGuard 为 `n`；
+eBPF/BTF/CO-RE 和完整网络能力复用既有严格校验；
+Bluetooth / Wi-Fi / MT7921E 保持 `m`，.ko、依赖和使用说明仍由共享逻辑导出。
+编译 MT7921E 不代表 HK1 Box 自带 PCIe 硬件；无线驱动运行还需要对应固件。
+
+标准 DEB 位于 `build/output/debs`，最终配置、源码 pin、功能清单及
+defconfig 差异在 DEB 内嵌证据和 `build/output/release-metadata/edge` 中。
+`scripts/package_hk1box.sh` 只转换本次构建的已校验 DEB，
+不再编译一遍内核：在隔离 ARM64 容器生成 initramfs，再生成
+`boot-*`、`dtb-amlogic-*`、`modules-*`、`header-*` 和 `sha256sums`。
+总包输出 `build/output/hk1box/<完整 uname-r>.tar.gz`，随 DEB 一起发布。
+TAR 中的构建证据随版本模块目录安装到
+`/usr/lib/modules/<完整 uname-r>/armbian-kernel-build/`。
+
+在现有 ophub Armbian 上，将 TAR 总包解压到空目录：
+
+```bash
+sha256sum -c sha256sums
+sudo armbian-update -k <总包对应的完整版本> -d tar
+```
+
+保留当前 `/boot/uEnv.txt` 的 root UUID 和
+`FDT=/dtb/amlogic/meson-sm1-hk1box-vontar-x3.dtb`。此目标仅支持内核构建，
+不生成或刷写 U-Boot，也不修改设备启动配置。请先备份旧内核并准备可启动
+SD/USB 恢复介质；不要把编译成功等同于 HK1 Box 已经启动成功。
+
 Automatically tracks Armbian Rockchip64 kernel versions and reproducibly integrates the following third-party networking components into the kernel build:
 
 - TCP-Brutal v2 (the pinned `HyNetworks/tcp-brutal` `exp/xan-fix` revision)
@@ -8,7 +76,9 @@ Automatically tracks Armbian Rockchip64 kernel versions and reproducibly integra
 
 ## Injection design
 
-The injection logic lives in `userpatches/lib.config` and uses Armbian's `custom_kernel_config` hook:
+The injection logic lives in `userpatches/extensions/kernel-inject.sh` and uses Armbian's `custom_kernel_config__kernel_inject` extension hook. The wrapper enables both `kernel-inject` and `kernel-inject-evidence`, preserving caller extensions. Armbian no longer supports `userpatches/lib.config`; on a reused build checkout, move that legacy file outside `userpatches` and migrate any custom hooks into extensions before building. The wrapper preserves it and fails early if it remains.
+
+CI preserves available build artifacts even after a failure, alongside a `build-diagnostics` artifact containing the sanitized build log and status. Artifacts from failed runs are diagnostic output, not validated installation releases; use only successfully verified releases on a device.
 
 - immutable commit SHAs are used by default and the fetched revision is verified;
 - upstream file layouts are validated before kernel source directories are replaced;
@@ -82,7 +152,7 @@ When updating an upstream dependency, setting the immutable `*_COMMIT` is suffic
 ## Validation
 
 ```bash
-bash -n build.sh overwrite/build_with_diy.sh userpatches/lib.config tests/test_kernel_injection.sh
+bash -n build.sh overwrite/build_with_diy.sh userpatches/extensions/kernel-inject.sh tests/test_kernel_injection.sh
 bash tests/test_kernel_injection.sh
 python3 tests/test_live_log_server.py
 ```

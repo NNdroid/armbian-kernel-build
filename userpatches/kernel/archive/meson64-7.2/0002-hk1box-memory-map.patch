@@ -1,0 +1,31 @@
+From 3a4de5a0f47a8afac1f578b46594b2712a2b42a7 Mon Sep 17 00:00:00 2001
+From: NNdroid <99177648+NNdroid@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 08:00:00 -0700
+Subject: [PATCH] arm64: dts: amlogic: preserve HK1 Box memory map
+
+The shared SM1 AC2xx include describes a conservative 1 GiB memory node.
+Ophub's validated HK1 Box device tree overrides that node so the vendor
+boot flow can expose the full 4 GiB model capacity. Keep the same board
+contract instead of relying on an implicit U-Boot FDT fixup.
+---
+ arch/arm64/boot/dts/amlogic/meson-sm1-hk1box-vontar-x3.dts | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm64/boot/dts/amlogic/meson-sm1-hk1box-vontar-x3.dts b/arch/arm64/boot/dts/amlogic/meson-sm1-hk1box-vontar-x3.dts
+--- a/arch/arm64/boot/dts/amlogic/meson-sm1-hk1box-vontar-x3.dts
++++ b/arch/arm64/boot/dts/amlogic/meson-sm1-hk1box-vontar-x3.dts
+@@ -15,7 +15,11 @@
+ 	compatible = "amlogic,sm1";
+ 	model = "HK1 Box/Vontar X3";
+ 
+-	/* Memory size is supplied by the vendor U-Boot fixup. */
++	memory@0 {
++		device_type = "memory";
++		reg = <0x0 0x0 0x0 0xFFFFFFFF>;
++	};
++
+ 
+ 	sound {
+ 		compatible = "amlogic,axg-sound-card";
+-- 
+2.51.0

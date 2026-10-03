@@ -2,6 +2,28 @@ name: Build and Upload Debs
 
 on:
   workflow_dispatch:
+    inputs:
+      target:
+        description: Build platform (scheduled builds remain Rockchip64)
+        type: string
+        default: rockchip64
+      branch:
+        description: Branch (HK1 Box auto selects edge / 7.2)
+        type: choice
+        default: auto
+        options:
+          - auto
+          - current
+          - edge
+          - bleedingedge
+      force:
+        description: Build even when the upstream version was already released
+        type: boolean
+        default: false
+      publish:
+        description: Publish validated packages and metadata to Release
+        type: boolean
+        default: true
   schedule:
     - cron: '10 13 * * *'
 
@@ -13,9 +35,30 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    name: Build on Ubuntu 24.04
+  prepare:
+    name: Resolve target profile
     runs-on: ubuntu-24.04
+    outputs:
+      runner: ${{ steps.target.outputs.runner }}
+      board: ${{ steps.target.outputs.board }}
+      family: ${{ steps.target.outputs.family }}
+      arch: ${{ steps.target.outputs.arch }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate target and select runner
+        id: target
+        env:
+          BUILD_TARGET: ${{ inputs.target || 'rockchip64' }}
+          BUILD_BRANCH: ${{ inputs.branch || 'auto' }}
+        run: bash build.sh --describe-target >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ inputs.target || 'rockchip64' }}
+    needs: prepare
+    runs-on: ${{ needs.prepare.outputs.runner }}
 
     steps:
       - name: Checkout code
@@ -48,7 +91,18 @@ jobs:
         run: |
           bash tests/test_kernel_injection.sh
           python3 tests/test_live_log_server.py
+          python3 tests/test_hk1box.py
           python3 tests/test_redact_log_stream.py
+
+      - name: Verify current Armbian extension integration
+        run: |
+          set -Eeuo pipefail
+          manager_source="$(mktemp)"
+          trap 'rm -f -- "$manager_source"' EXIT
+          curl --fail --location --silent --show-error --retry 4 --retry-all-errors \
+            https://raw.githubusercontent.com/armbian/build/main/lib/functions/general/extensions.sh \
+            --output "$manager_source"
+          bash tests/test_armbian_extensions.sh "$manager_source"
 
       - name: Start authenticated ngrok live log
         continue-on-error: true
@@ -56,6 +110,9 @@ jobs:
           NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
           LIVE_LOG_AUTH: ${{ secrets.NGROK_LOG_AUTH }}
           CONFIGURED_NGROK_URL: ${{ secrets.NGROK_URL }}
+          LIVE_LOG_BOARD: ${{ needs.prepare.outputs.board }}
+          LIVE_LOG_FAMILY: ${{ needs.prepare.outputs.family }}
+          LIVE_LOG_ARCH: ${{ needs.prepare.outputs.arch }}
         run: |
           set -Eeuo pipefail
 
@@ -93,9 +150,9 @@ jobs:
           sudo apt-get install -y ngrok
 
           nohup env LIVE_LOG_AUTH="${LIVE_LOG_AUTH}" \
-            LIVE_LOG_BOARD="nanopi-r5s" \
-            LIVE_LOG_ARCH="arm64" \
-            LIVE_LOG_FAMILY="rockchip64" \
+            LIVE_LOG_BOARD="${LIVE_LOG_BOARD}" \
+            LIVE_LOG_ARCH="${LIVE_LOG_ARCH}" \
+            LIVE_LOG_FAMILY="${LIVE_LOG_FAMILY}" \
             LIVE_LOG_RELEASE="trixie" \
             python3 scripts/live_log_server.py \
               --directory "${live_dir}" \
@@ -153,6 +210,10 @@ jobs:
       - name: Run build script
         env:
           GH_TOKEN: ${{ github.token }}
+          BUILD_TARGET: ${{ inputs.target || 'rockchip64' }}
+          BUILD_BRANCH: ${{ inputs.branch || 'auto' }}
+          BUILD_FORCE: ${{ inputs.force && 'yes' || 'no' }}
+          BUILD_PUBLISH: ${{ (github.event_name != 'workflow_dispatch' || inputs.publish) && 'yes' || 'no' }}
         run: |
           set -Eeuo pipefail
           live_dir="${RUNNER_TEMP}/kernel-live-log"
@@ -186,11 +247,25 @@ jobs:
           exit "${effective_exit_code}"
 
       - name: Upload Artifacts Backup
-        if: success()
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: built-images
-          path: build/output/debs/*
+          path: |
+            build/output/debs/*
+            build/output/hk1box/*
+            build/output/release-metadata/**
+          if-no-files-found: ignore
+          retention-days: 5
+
+      - name: Upload sanitized build diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: build-diagnostics
+          path: |
+            ${{ runner.temp }}/kernel-live-log/build.log
+            ${{ runner.temp }}/kernel-live-log/status.json
           if-no-files-found: ignore
           retention-days: 5
 

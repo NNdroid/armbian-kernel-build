@@ -183,7 +183,6 @@ NF_TABLES_NETDEV
 NF_TABLES_IPV4
 NF_TABLES_ARP
 NF_TABLES_IPV6
-NFT_EXTHDR_DCCP
 NF_FLOW_TABLE_PROCFS
 NETFILTER_FAMILY_BRIDGE
 BRIDGE
@@ -233,6 +232,11 @@ USB_FUNCTIONFS_GENERIC
 USB_G_MULTI_RNDIS
 USB_G_MULTI_CDC
 EOF
+	# Linux 6.12 does not define this newer DCCP nftables expression. All
+	# core nftables/tproxy/synproxy/NPT capabilities stay mandatory there.
+	if [[ "${KERNEL_MAJOR_MINOR:-}" != 6.12 ]]; then
+		printf 'NFT_EXTHDR_DCCP\n'
+	fi
 }
 
 # Tristate foundations that must be built in as well. A built-in child cannot
@@ -1128,7 +1132,7 @@ _kernel_inject_sources() (
 		"${nf_repository}" "${nf_ref}" "${nf_commit}"
 )
 
-custom_kernel_config() {
+custom_kernel_config__kernel_inject() {
 	local tcp_repository="${TCP_BRUTAL_REPOSITORY:-https://github.com/HyNetworks/tcp-brutal.git}"
 	# A COMMIT-only override is sufficient and becomes the default fetch ref.
 	# REF remains available for servers that need a branch/tag fetch hint.
@@ -1189,7 +1193,7 @@ custom_kernel_config() {
 		_kernel_inject_enable_full_networking || return 1
 	fi
 	kernel_config_modifying_hashes+=(
-		"kernel-injector-v7-modular-radio-stack"
+		"kernel-injector-v8-extension-entrypoint"
 		"tcp-brutal=${tcp_commit:-${tcp_ref}}"
 		"amneziawg=${awg_commit:-${awg_ref}}"
 		"nf-deaf=${nf_commit:-${nf_ref}}"

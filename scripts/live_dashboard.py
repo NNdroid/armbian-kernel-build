@@ -278,7 +278,7 @@ class DashboardAnalyzer:
             self._process_line(line.rstrip(b"\r"))
 
     def _configured_sources(self) -> list[dict[str, Any]]:
-        config_path = self.repository_root / "userpatches" / "lib.config"
+        config_path = self.repository_root / "userpatches" / "extensions" / "kernel-inject.sh"
         try:
             source = config_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
