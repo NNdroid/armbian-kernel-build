@@ -1,0 +1,57 @@
+From 1c1cdf75e442b42bb3e5074a1c7618c90f5ba121 Mon Sep 17 00:00:00 2001
+From: NNdroid <99177648+NNdroid@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 08:00:00 -0700
+Subject: [PATCH] arm64: add legacy Amlogic Image text offset
+
+Legacy Amlogic U-Boot flows used by HK1 Box expect the ARM64 Image header
+to advertise a 0x01080000 load offset. Ophub/unifreq kernels carry the same
+compatibility contract. Restore it for the meson64 7.2 target so the kernel
+can boot without requiring a u-boot.ext overload solely for a zero offset.
+---
+ arch/arm64/kernel/head.S  | 2 +-
+ arch/arm64/kernel/image.h | 2 ++
+ arch/arm64/kernel/setup.c | 4 ++--
+ 3 files changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/arch/arm64/kernel/head.S b/arch/arm64/kernel/head.S
+--- a/arch/arm64/kernel/head.S
++++ b/arch/arm64/kernel/head.S
+@@ -59,7 +59,7 @@
+ 	 */
+ 	efi_signature_nop			// special NOP to identity as PE/COFF executable
+ 	b	primary_entry			// branch to kernel start, magic
+-	.quad	0				// Image load offset from start of RAM, little-endian
++	le64sym	_kernel_offset_le		// Image load offset from start of RAM, little-endian
+ 	le64sym	_kernel_size_le			// Effective size of kernel image, little-endian
+ 	le64sym	_kernel_flags_le		// Informative flags, little-endian
+ 	.quad	0				// reserved
+diff --git a/arch/arm64/kernel/image.h b/arch/arm64/kernel/image.h
+--- a/arch/arm64/kernel/image.h
++++ b/arch/arm64/kernel/image.h
+@@ -60,8 +60,10 @@
+  * regardless of the endianness of the kernel. While constant values could be
+  * endian swapped in head.S, all are done here for consistency.
+  */
++#define TEXT_OFFSET 0x01080000
+ #define HEAD_SYMBOLS						\
+ 	DEFINE_IMAGE_LE64(_kernel_size_le, _end - _text);	\
++	DEFINE_IMAGE_LE64(_kernel_offset_le, TEXT_OFFSET);	\
+ 	DEFINE_IMAGE_LE64(_kernel_flags_le, __HEAD_FLAGS);
+ 
+ #endif /* __ARM64_KERNEL_IMAGE_H */
+diff --git a/arch/arm64/kernel/setup.c b/arch/arm64/kernel/setup.c
+--- a/arch/arm64/kernel/setup.c
++++ b/arch/arm64/kernel/setup.c
+@@ -322,8 +322,8 @@ void __init __no_sanitize_address setup_arch(char **cmdline_p)
+ 	efi_init();
+ 
+ 	if (!efi_enabled(EFI_BOOT)) {
+-		if ((u64)_text % MIN_KIMG_ALIGN)
+-			pr_warn(FW_BUG "Kernel image misaligned at boot, please fix your bootloader!");
++		// Legacy Amlogic U-Boot intentionally uses the compatibility offset.
++		// Do not report the resulting placement as a generic firmware bug.
+ 		WARN_TAINT(mmu_enabled_at_boot, TAINT_FIRMWARE_WORKAROUND,
+ 			   FW_BUG "Booted with MMU enabled!");
+ 	}
+-- 
+2.51.0
