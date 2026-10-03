@@ -28,9 +28,7 @@ diff --git a/arch/arm64/kernel/head.S b/arch/arm64/kernel/head.S
 diff --git a/arch/arm64/kernel/image.h b/arch/arm64/kernel/image.h
 --- a/arch/arm64/kernel/image.h
 +++ b/arch/arm64/kernel/image.h
-@@ -60,8 +60,10 @@
-  * regardless of the endianness of the kernel. While constant values could be
-  * endian swapped in head.S, all are done here for consistency.
+@@ -63,6 +63,8 @@
   */
 +#define TEXT_OFFSET 0x01080000
  #define HEAD_SYMBOLS						\
