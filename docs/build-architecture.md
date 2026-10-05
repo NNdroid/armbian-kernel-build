@@ -1,37 +1,39 @@
-# 构建脚本架构与扩展指南
+# Build script architecture and extension guide
 
-所有板型都走同一个 Armbian 编译入口，不为每个 CPU 架构复制一套构建脚本。
-默认目标仍是 Rockchip64；HK1 Box 保持 edge / 7.2 和现有 TAR 安装格式。
+Every board goes through the same Armbian compilation entry point; the build scripts are
+not duplicated per CPU architecture. The default target is still Rockchip64; HK1 Box stays
+on edge / 7.2 with its existing TAR installation format.
 
 ```text
-build.sh                         公共入口、只读目标查询
+build.sh                         Public entry point, read-only target queries
 ├── userpatches/config/build-targets/*.conf
-│                                目标数据：板型、family、架构、分支、runner
+│                                Target data: board, family, architecture, branches, runner
 └── scripts/lib/
-    ├── targets.sh               发现目标、校验配置、加载适配器
-    ├── pipeline.sh              版本比较 → 编译 → 校验 → 打包 → 发布
-    ├── logging.sh / host.sh     日志、主机依赖、文件同步
-    ├── versions.sh              Armbian / kernel.org / Release 版本解析
-    ├── artifacts.sh             本次构建产物定位
-    ├── release.sh               发布与附件清单
-    ├── armbian.sh               在正确目录调用构建包装器
-    ├── board-contract.sh        对 DEB 内证据执行板级检查
-    └── adapters/*.sh            可插拔安装格式转换
+    ├── targets.sh               Discover targets, validate config, load adapters
+    ├── pipeline.sh              Version compare → build → validate → package → publish
+    ├── logging.sh / host.sh     Logging, host dependencies, file sync
+    ├── versions.sh              Armbian / kernel.org / release version parsing
+    ├── artifacts.sh             Locate the artifacts of the current build
+    ├── release.sh               Publishing and attachment inventory
+    ├── armbian.sh               Invoke the build wrapper in the correct directory
+    ├── board-contract.sh        Run board-level checks against DEB-embedded evidence
+    └── adapters/*.sh            Pluggable installation format conversion
 
-overwrite/build_with_diy.sh      Armbian 构建与产物验证流程
+overwrite/build_with_diy.sh      Armbian build and artifact validation flow
 └── overwrite/lib/kernel-build/
-    ├── common.sh               参数、配置、证据读取与临时文件清理
-    ├── module-assets.sh        从已构建 DEB 导出模块附件
-    └── release-metadata.sh     最终配置、差异、模块说明和发布元数据
+    ├── common.sh                Arguments, config, evidence reads, temp file cleanup
+    ├── module-assets.sh         Export module attachments from the built DEB
+    └── release-metadata.sh      Final config, diffs, module guide, release metadata
 
-userpatches/config/boards/              Armbian 板型与驱动配置钩子
-userpatches/kernel/archive/      板级源码补丁
-userpatches/extensions/          在打包阶段保存源代码与配置证据
+userpatches/config/boards/              Armbian board and driver config hooks
+userpatches/kernel/archive/             Board-level source patches
+userpatches/extensions/                 Persist source and config evidence at package time
 ```
 
-## 只读查询
+## Read-only queries
 
-查询命令不会安装软件、克隆源码、编译或发布：
+The query commands install no software, clone no source, compile nothing, and publish
+nothing:
 
 ```bash
 bash build.sh --list-targets
@@ -39,20 +41,44 @@ bash build.sh --describe-target hk1box
 BUILD_BRANCH=edge bash build.sh --describe-target rockchip64
 ```
 
-`--describe-target` 输出稳定的 `key=value` 信息。GitHub Actions 的 prepare 作业
-直接用它选择 runner 和页面设备信息，目标输入是字符串，无需再维护目标枚举。
-`scripts/build_targets.sh` 保留为旧调用者的兼容入口；测试仍可使用
-`BUILD_SCRIPT_LIB_ONLY=yes source build.sh` 加载函数而不执行构建。
+`--describe-target` prints stable `key=value` information. The GitHub Actions prepare job
+uses it directly to select the runner and the page device metadata, so the target input is
+a plain string and no target enumeration has to be maintained.
+`scripts/build_targets.sh` is kept as a compatibility entry point for older callers; tests
+can still load the functions without running a build by using
+`BUILD_SCRIPT_LIB_ONLY=yes source build.sh`.
 
-## 新增一个标准 DEB 目标
+## Adding a target
 
-1. 添加 `userpatches/config/build-targets/<目标名>.conf`。
-2. 确认 Armbian 已有对应 BOARD；否则添加自己的 `userpatches/config/boards` 配置。
-3. 有板级差异时，添加对应内核系列的补丁，并声明启动关键驱动要求。
-4. 添加回归测试，运行只读查询、构建和实际设备验证。
+Adding a target is a configuration change. Nothing outside `userpatches/config/` needs to
+be edited — not the pipeline, not the packaging scripts, not the workflow.
 
-目标名只能包含小写字母、数字和连字符，不允许路径、换行或 shell 表达式。
-以下是模板，不是已经适配或验证过的 RISC-V 板型：
+```bash
+bash build.sh --new-target my-board        # scaffold profile + Armbian board shim
+bash build.sh --describe-target my-board   # inspect the fully resolved profile
+bash build.sh --check-targets             # validate every profile in the repo
+```
+
+The scaffold writes two files:
+
+| File | Role |
+|---|---|
+| `userpatches/config/build-targets/my-board.conf` | The single source of truth: build identity, series lock, DTB, required built-in drivers, Armbian board variables, and the `custom_kernel_config` / `post_family_config` hooks |
+| `userpatches/config/boards/my-board.conf` | A shim that sources the profile. Armbian resolves a board at this path, so the file must exist, but it must never carry configuration of its own |
+
+The board shim is named after the **Armbian board id** (`TARGET_BOARD`), which is not
+always the same as the target id — the `rockchip64` target builds `nanopi-r5s`. Loading a
+profile fails immediately when the matching shim is missing, rather than after Docker has
+already started.
+
+Then, if the board needs kernel patches, add them under
+`userpatches/kernel/archive/<family>-<series>/` and declare the boot-critical driver
+requirements. Finally add a regression test and run the read-only queries, the build, and
+real-device verification.
+
+Target names may only contain lowercase letters, digits, and hyphens; paths, newlines, and
+shell expressions are not allowed. The template below is not an adapted or verified RISC-V
+board:
 
 ```bash
 TARGET_BOARD=my-riscv-board
@@ -64,65 +90,106 @@ TARGET_VERSION_CONFIG=include/my-riscv-family_common.inc
 TARGET_RELEASE_PREFIX=my-riscv-
 TARGET_ADAPTER=deb
 TARGET_BRANCHES=(current edge)
-TARGET_SERIES=()
-TARGET_BOARD_DTB=''
-TARGET_REQUIRED_Y=()
 ```
 
-| 配置 | 作用 |
-|---|---|
-| `TARGET_BOARD` / `TARGET_FAMILY` | Armbian 板型与 DEB family；二者不可混用 |
-| `TARGET_ARCH` / `TARGET_KBUILD_ARCH` | Debian 包架构与 Kbuild 架构；产物证据必须一致 |
-| `TARGET_RUNNER` | Actions runner 标签；跨架构编译能力由 Armbian/工具链决定 |
-| `TARGET_VERSION_CONFIG` | Armbian `config/sources/families/` 下的版本配置相对路径 |
-| `TARGET_BRANCHES` | 支持的分支；请求未声明的分支会在构建前失败 |
-| `TARGET_SERIES` | 可选的分支系列锁，如 `([edge]=7.2)`；防止补丁误用于新系列 |
-| `TARGET_RELEASE_PREFIX` | 平台独立的 Release 前缀；保留原 Rockchip 标签兼容性 |
-| `TARGET_ADAPTER` | `scripts/lib/adapters/` 下的适配器名称 |
-| `TARGET_BOARD_DTB` | 可选 DTB 相对路径；声明后必须在包内找到源码哈希和已编译 DTB |
-| `TARGET_REQUIRED_Y` | 可选启动关键符号列表；在最终配置里必须全部为 `y` |
-
-当前架构映射接口支持 `arm64→arm64`、`armhf→arm`、`amd64→x86`、
-`riscv64→riscv`，但**实际启用并提供配置的目标只有 Rockchip64 与 HK1 Box**。
-新增配置能加载不等于该架构已通过编译；工具链、驱动、BTF/JIT 和启动验证仍需完成。
-
-配置是仓库内可信的 Bash 文件，加载会执行其中内容；不是可安全上传任意用户配置的接口。
-`BUILD_TARGETS_DIR` 仅用于可信开发配置和测试，不接受网页上传或远程下载的配置。
-多次加载会清空前一个目标的数据和适配器，避免分支、架构或打包模式泄漏。
-
-## 新增安装格式适配器
-
-普通 Armbian DEB 使用 `deb`。当前 `ophub-tar` 专用于 HK1 Box ARM64，调用隔离的
-打包容器生成 initramfs 和安装 TAR，不重新编译内核。其实现保留在
-`scripts/package_hk1box.sh`，板型专用细节不会进入公共构建流程。
-
-新增 `scripts/lib/adapters/<名称>.sh`，定义三个函数：
+Only the required fields need to be set; everything else falls back to the schema
+default. `TARGET_SERIES=()` and `TARGET_REQUIRED_Y=()` do not need to be written at all,
+and when a series lock *is* needed it must be assigned into a declared map —
+a bare `TARGET_SERIES=([edge]=7.2)` literal makes bash parse `[edge]` as an arithmetic
+subscript and fail under `set -u`:
 
 ```bash
-target_adapter_validate() { :; } # 验证支持的板型/架构，不进行外部操作
+declare -gA TARGET_SERIES=()
+TARGET_SERIES["edge"]=7.2
+```
+
+### The target schema
+
+`TARGET_SCHEMA` in `scripts/lib/targets.sh` is the authoritative field list. Each entry is
+`field|kind|required|validator|default`, and the loader derives the reset list, the
+required-field check and the format check from it. Adding a profile field is therefore a
+one-line change that cannot be half-implemented.
+
+| Setting | Purpose |
+|---|---|
+| `TARGET_BOARD` / `TARGET_FAMILY` | Armbian board and DEB family; the two must not be mixed up |
+| `TARGET_ARCH` / `TARGET_KBUILD_ARCH` | Debian package architecture and Kbuild architecture; artifact evidence must agree |
+| `TARGET_RUNNER` | Actions runner label; cross-architecture build capability is decided by Armbian and the toolchain |
+| `TARGET_VERSION_CONFIG` | Relative path to the version config under Armbian `config/sources/families/` |
+| `TARGET_BRANCHES` | Supported branches; requesting an undeclared branch fails before the build |
+| `TARGET_SERIES` | Optional per-branch series lock; prevents patches from being misapplied to a new series. Locking a branch the target does not build is rejected |
+| `TARGET_RELEASE_PREFIX` | Platform-independent release prefix; preserves compatibility with the original Rockchip tags |
+| `TARGET_ADAPTER` | Adapter name under `scripts/lib/adapters/` |
+| `TARGET_BOARD_DTB` | Optional relative DTB path; once declared, the source hash and the compiled DTB must both be found in the package |
+| `TARGET_BOOT_TEXT_OFFSET` | Optional required `text_offset` in the ARM64 Image header. Written the way it appears in prose (`01080000`); the packaging script normalizes and byte-swaps it for comparison |
+| `TARGET_DTB_MMC_ALIASES` | Optional ordered controller addresses that `mmc0..N` must resolve to |
+| `TARGET_DTB_MEMORY_REG` | Optional expected `/memory@0 reg` value as space-separated hex cells |
+| `TARGET_REQUIRED_Y` | Optional list of boot-critical symbols; all of them must be `y` in the final configuration |
+| `BOARD_NAME`, `BOARDFAMILY`, `KERNEL_TARGET`, `BOOT_FDT_FILE`, `SERIALCON`, `BOOTCONFIG`, `BOARD_VENDOR` | Armbian's own board variables, kept under their upstream names because Armbian reads them by exactly those names. `BOARDFAMILY` (the board DTS family) is deliberately distinct from `TARGET_FAMILY` (the kernel linuxfamily) |
+
+These boot-contract fields are **data, not code**, which is what lets a second board reuse
+the HK1 Box packaging unchanged.
+
+The current architecture mapping interface supports `arm64→arm64`, `armhf→arm`,
+`amd64→x86`, and `riscv64→riscv`, but **the only targets actually enabled and provided with
+configuration are Rockchip64 and HK1 Box**. A configuration that loads successfully does
+not mean that architecture has passed a build; the toolchain, drivers, BTF/JIT, and boot
+verification still have to be completed.
+
+Profiles are trusted Bash files inside the repository and loading one executes its content;
+this is not an interface that is safe for arbitrary user-supplied configuration.
+`BUILD_TARGETS_DIR` exists only for trusted developer configuration and tests, and never
+accepts web uploads or remotely downloaded profiles. Loading multiple times clears the
+previous target's data and adapter so branches, architecture, and packaging mode cannot
+leak across targets. When `BUILD_TARGETS_DIR` is redirected, the board-shim requirement is
+not enforced, because such a caller is exercising profiles in isolation rather than
+performing a full build.
+
+## Adding an installation format adapter
+
+Regular Armbian DEBs use `deb`. The `ophub-tar` adapter produces the `armbian-update`
+installation TAR: it calls an isolated packaging container to build the initramfs and the
+bundle and does not recompile the kernel. It is **not tied to any single board** — the
+series lock, DTB path and boot checks all come from the target profile, so a new board that
+needs the same treatment selects this adapter without any code change. Its implementation
+lives in `scripts/package_ophub_tar.sh`.
+
+To add a new adapter, create `scripts/lib/adapters/<name>.sh` and define three functions:
+
+```bash
+target_adapter_validate() { :; } # validate supported boards/architectures, no external work
 target_package_artifacts() {
-    # 参数依次为 branch、构建开始时间 marker、实际内核版本。
-    # 仅处理本次构建且已校验的产物；失败必须返回非零。
+    # Arguments are, in order: branch, build start marker, actual kernel version.
+    # Only handle artifacts from this build that were already validated;
+    # failure must return non-zero.
     :
 }
 target_extra_release_assets() {
-    # 参数为实际内核版本。stdout 每行只输出一个附件路径。
-    # 日志写 stderr；必须存在的安装包缺失时返回非零。
+    # The argument is the actual kernel version. Print exactly one attachment
+    # path per line on stdout. Log to stderr; return non-zero when a
+    # mandatory installation bundle is missing.
     :
 }
 ```
 
-适配器被 source 时只应声明函数。编译、校验和发布由公共流程负责；
-不得在适配器里再维护一套源码下载或模块注入过程。
+An adapter should only declare functions when sourced. Compilation, validation, and
+publishing belong to the shared pipeline; never maintain a second copy of the source
+download or module injection flow inside an adapter.
 
-## 必须保持的边界
+## Boundaries that must be preserved
 
-- CPU 架构、Armbian family、板型、安装格式是不同概念，各自独立配置。
-- 每个作业只构建一个目标，可以顺序构建它声明的多个分支；并行目标应使用独立作业/目录。
-- 验证依据是本次构建的 DEB 和内嵌证据，不依赖 Docker 清理后的临时内核 worktree。
-- 通用模块模式、源码 pin、eBPF/网络能力和 `.ko` 说明继续由共享代码处理。
-- 发布关闭仍执行编译、证据验证和必要安装包转换，不发布不完整的产物。
-- 当前不生成整机镜像或刷写 U-Boot；本地测试、CI 编译、真机启动分别报告。
+- CPU architecture, Armbian family, board, and installation format are different concepts
+  and are configured independently.
+- Each job builds exactly one target and may build the branches it declares sequentially;
+  parallel targets should use separate jobs and directories.
+- Validation relies on the DEBs and embedded evidence of the current build, never on a
+  temporary kernel worktree that Docker may have removed.
+- Generic module modes, source pins, eBPF/network capabilities, and `.ko` documentation
+  stay in the shared code.
+- Publishing disabled still runs the compilation, evidence validation, and required
+  installation bundle conversion; incomplete artifacts are never published.
+- Full-system images and U-Boot flashing are not generated; local testing, CI builds, and
+  real-device boots are reported separately.
 
 ```bash
 python3 tests/test_hk1box.py

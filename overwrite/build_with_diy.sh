@@ -182,8 +182,13 @@ image_deb="${image_deb_entry#* }"
 if [[ -z "${requested_branch}" ]]; then
 	_kernel_inject_log warn "Artifact discovery" "BRANCH was not provided; selecting the newest by modification time: $(basename "${image_deb}")"
 fi
+# `date -d @<epoch>` is a GNU extension that BSD/macOS date rejects. The
+# container image pins GNU coreutils today, but this line is pure diagnostics and
+# must never be the thing that breaks a build on a different host, so fall back
+# to the raw epoch when the format is unsupported.
+image_deb_mtime_utc="$(date -u -d "@${image_deb_mtime}" +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || printf 'epoch-%s' "${image_deb_mtime}")"
 _kernel_inject_log info "Artifact discovery" \
-	"Selected $(basename "${image_deb}") ($(du -h "${image_deb}" | awk '{print $1}'), mtime $(date -u -d "@${image_deb_mtime}" +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo unknown))"
+	"Selected $(basename "${image_deb}") ($(du -h "${image_deb}" | awk '{print $1}'), mtime ${image_deb_mtime_utc})"
 
 built_branch="$(basename "${image_deb}" | sed -n "s/^linux-image-\([A-Za-z0-9._-]*\)-${expected_family}_.*/\1/p")"
 if [[ -z "${built_branch}" ]]; then
@@ -379,6 +384,14 @@ if [[ "${ENABLE_FULL_NETWORKING}" == yes ]]; then
 	_kernel_inject_verify_full_network_config "${final_config}"
 fi
 
-generate_release_metadata "${evidence_dir}" "${requested_branch:-${built_branch}}" \
+# The release metadata carries the provenance that downstream verification and
+# the dashboard read. If generation fails the build must stop here, otherwise
+# the pipeline would go on to publish a release whose notes describe a kernel
+# that was never verified.
+if ! generate_release_metadata "${evidence_dir}" "${requested_branch:-${built_branch}}" \
 	"${requested_board:-unknown}" "${userspace_release:-unknown}" \
-	"${package_extract_root}"
+	"${package_extract_root}"; then
+	_kernel_inject_log err "Release metadata" \
+		"Unable to generate release metadata from ${evidence_dir}"
+	exit 1
+fi

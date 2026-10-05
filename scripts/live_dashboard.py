@@ -8,13 +8,25 @@ import re
 import shutil
 import subprocess
 import threading
-from collections import deque
+from collections import OrderedDict, deque
 from pathlib import Path
 from typing import Any
 
 
 ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-_])")
-BUILD_LOG_PREFIX = r"^\[INFO\]\s+\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\s+"
+# The prefix every rendered line carries: level tag, UTC timestamp, elapsed
+# counter, and an optional [seq/total step] context tag. The elapsed and step
+# parts are matched loosely on purpose -- they are diagnostics for the reader,
+# not data the dashboard needs, and pinning their exact shape here would make
+# every logging change a dashboard change too.
+BUILD_LOG_PREFIX = (
+    r"^\[(?:INFO|WARN|ERROR|DEBUG)\]\s+"
+    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\s+"
+    r"(?:\+\d+:\d{2}:\d{2}\s+)?"
+    r"(?:\[\d+/\d+[^\]]*\]\s+)?"
+)
+# Step banners. The sequence number is emitted by the logger rather than written
+# by hand at each call site, so "4." here is always the fourth banner that ran.
 STAGE_END_RE = re.compile(
     BUILD_LOG_PREFIX
     + r"────\s*(\d+\.\s+.+?)\s+completed\s*\(elapsed\s*(\d+)s\)\s*────$"
@@ -36,6 +48,7 @@ MAX_DIAGNOSTICS = 120
 MAX_PACKAGE_LIST = 100
 MAX_PACKAGE_OUTPUT = 4 * 1024 * 1024
 MAX_PACKAGE_FILES = 6000
+MAX_HASH_CACHE = 256
 
 SOURCE_REPOSITORIES = {
     "tcp_brutal_commit": ("TCP-Brutal v2", "https://github.com/HyNetworks/tcp-brutal"),
@@ -149,7 +162,10 @@ class DashboardAnalyzer:
         self._diagnostics: deque[dict[str, Any]] = deque(maxlen=MAX_DIAGNOSTICS)
         self._resources: deque[dict[str, Any]] = deque(maxlen=360)
         self._last_resource_timestamp = 0
-        self._hash_cache: dict[tuple[str, int, int], str] = {}
+        # Bounded on purpose. The key carries st_mtime_ns, so every rebuild adds
+        # fresh entries; in an unbounded dict a long-lived dashboard process would
+        # grow one stale entry per artifact per build and never release them.
+        self._hash_cache: "OrderedDict[tuple[str, int, int], str]" = OrderedDict()
 
     def record_metrics(self, metrics: dict[str, Any]) -> None:
         timestamp = int(metrics.get("generated_at", 0) or 0)
@@ -306,9 +322,16 @@ class DashboardAnalyzer:
     def _cached_sha256(self, path: Path) -> str:
         stat_result = path.stat()
         key = (str(path), stat_result.st_size, stat_result.st_mtime_ns)
-        if key not in self._hash_cache:
-            self._hash_cache[key] = _sha256(path)
-        return self._hash_cache[key]
+        cached = self._hash_cache.get(key)
+        if cached is not None:
+            # Re-insert so the most recently used artifacts survive eviction.
+            self._hash_cache.move_to_end(key)
+            return cached
+        digest = _sha256(path)
+        self._hash_cache[key] = digest
+        if len(self._hash_cache) > MAX_HASH_CACHE:
+            self._hash_cache.popitem(last=False)
+        return digest
 
     def _metadata(self) -> dict[str, Any]:
         root = self.files_root
@@ -508,17 +531,23 @@ def list_deb_packages(files_root: Path | None) -> dict[str, Any]:
         return {"available": False, "tool_available": bool(shutil.which("dpkg-deb")), "packages": []}
     tool = shutil.which("dpkg-deb")
     packages = []
-    paths = sorted(
-        (
-            path
-            for path in debs_root.glob("*.deb")
-            if _safe_regular_file(path, files_root)
-        ),
-        key=lambda item: item.stat().st_mtime_ns,
-        reverse=True,
-    )[:MAX_PACKAGE_LIST]
-    for path in paths:
-        stat_result = path.stat()
+    # The build writes these files while the dashboard reads them, so a package
+    # can vanish between glob and stat. Collect the mtime defensively and drop
+    # what is gone rather than letting OSError escape and kill the request.
+    dated: list[tuple[int, Path]] = []
+    for path in debs_root.glob("*.deb"):
+        if not _safe_regular_file(path, files_root):
+            continue
+        try:
+            dated.append((path.stat().st_mtime_ns, path))
+        except OSError:
+            continue
+    dated.sort(key=lambda item: item[0], reverse=True)
+    for _, path in dated[:MAX_PACKAGE_LIST]:
+        try:
+            stat_result = path.stat()
+        except OSError:
+            continue
         control: dict[str, str] = {}
         inspection = "unavailable"
         if tool:

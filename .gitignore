@@ -5,3 +5,6 @@ meson64_common.inc
 
 # Local workspace data (memory, test images, etc.)
 .workbuddy/
+# Local scratch for pre-commit verification runs (trap-stripped test copies,
+# downloaded upstream sources). Never committed.
+.cicheck/

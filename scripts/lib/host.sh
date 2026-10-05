@@ -16,7 +16,7 @@ resolve_repository_url() {
 }
 
 ensure_host_dependencies() {
-	local required=(git curl jq gh)
+	local required=(git curl gh)
 	local -a missing=()
 	local tool
 
@@ -49,55 +49,52 @@ ensure_host_dependencies() {
 }
 
 function sync_tree() {
-    if [ "$#" -ne 2 ]; then
-        log_error "Usage: ${FUNCNAME[0]} <source-directory> <destination-directory>"
-        return 1
-    fi
+	if [ "$#" -ne 2 ]; then
+		log_error "Usage: ${FUNCNAME[0]} <source-directory> <destination-directory>"
+		return 1
+	fi
 
-    local SRC_DIR="${1%/}"
-    local DEST_DIR="${2%/}"
+	local SRC_DIR="${1%/}"
+	local DEST_DIR="${2%/}"
 
-    if [ ! -d "$SRC_DIR" ]; then
-        log_error "Source directory '$SRC_DIR' does not exist."
-        return 1
-    fi
+	if [ ! -d "$SRC_DIR" ]; then
+		log_error "Source directory '$SRC_DIR' does not exist."
+		return 1
+	fi
 
-    local DEST_ABS
-    case "$DEST_DIR" in
-        /*) DEST_ABS="$DEST_DIR" ;;
-        *)  DEST_ABS="$PWD/$DEST_DIR" ;;
-    esac
+	local DEST_ABS
+	case "$DEST_DIR" in
+	/*) DEST_ABS="$DEST_DIR" ;;
+	*)  DEST_ABS="$PWD/$DEST_DIR" ;;
+	esac
 
-    log_debug "Starting exact mapped sync: [$SRC_DIR] => [$DEST_ABS]"
+	log_debug "Starting exact mapped sync: [$SRC_DIR] => [$DEST_ABS]"
 
-    local copied_count=0
-    if (
-        cd "$SRC_DIR" || exit 1
+	local copied_count=0
+	if (
+		cd "$SRC_DIR" || exit 1
 		while IFS= read -r -d '' ITEM; do
+			local REL_PATH="${ITEM#./}"
+			local TARGET_ITEM="$DEST_ABS/$REL_PATH"
 
-            local REL_PATH="${ITEM#./}"
-            local TARGET_ITEM="$DEST_ABS/$REL_PATH"
-
-            if [ -d "$ITEM" ]; then
-                if [ ! -d "$TARGET_ITEM" ]; then
-                    mkdir -p "$TARGET_ITEM"
-                    log_debug "  [create directory] $TARGET_ITEM"
-                fi
-            elif [ -f "$ITEM" ]; then
-                local TARGET_DIR="${TARGET_ITEM%/*}"
-                mkdir -p "$TARGET_DIR"
-                cp -af "$ITEM" "$TARGET_ITEM"
-                log_debug "  [overwrite file] $TARGET_ITEM"
-            fi
+			if [ -d "$ITEM" ]; then
+				if [ ! -d "$TARGET_ITEM" ]; then
+					mkdir -p "$TARGET_ITEM"
+					log_debug "  [create directory] $TARGET_ITEM"
+				fi
+			elif [ -f "$ITEM" ]; then
+				local TARGET_DIR="${TARGET_ITEM%/*}"
+				mkdir -p "$TARGET_DIR"
+				cp -af "$ITEM" "$TARGET_ITEM"
+				log_debug "  [overwrite file] $TARGET_ITEM"
+			fi
 		done < <(find . -mindepth 1 -print0)
-    ); then
-        copied_count="$(find "$SRC_DIR" -type f | wc -l | tr -d ' ')"
-        log_info "Directory sync completed: $SRC_DIR (${copied_count} files)"
-        return 0
-    else
-        log_error "An error occurred during directory synchronization."
-        return 1
-    fi
+	); then
+		copied_count="$(find "$SRC_DIR" -type f | wc -l | tr -d ' ')"
+		log_info "Directory sync completed: $SRC_DIR (${copied_count} files)"
+		return 0
+	else
+		log_error "An error occurred during directory synchronization."
+		return 1
+	fi
 }
-
-# ==============================================================================

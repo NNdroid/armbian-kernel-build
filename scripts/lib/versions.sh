@@ -103,5 +103,3 @@ load_kernel_org_version() {
 	log_error "Failed to query kernel.org for ${configured_version}.x; this is not an unpublished-version condition."
 	return 1
 }
-
-# ==============================================================================

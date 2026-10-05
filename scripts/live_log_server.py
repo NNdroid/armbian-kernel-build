@@ -14,6 +14,7 @@ import platform
 import re
 import shutil
 import socket
+import threading
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -65,6 +66,10 @@ class ArtifactNotFoundError(FileNotFoundError):
 
 class LiveLogServer(ThreadingHTTPServer):
     daemon_threads = True
+    # Without a read timeout a client that opens a socket and never sends a
+    # request keeps a handler thread parked forever; the default is to block
+    # indefinitely.
+    timeout = 30
 
     def __init__(
         self,
@@ -76,6 +81,7 @@ class LiveLogServer(ThreadingHTTPServer):
         sse_poll_interval: float,
         sse_heartbeat_interval: float,
         metrics_interval: float,
+        max_event_streams: int = 8,
     ):
         super().__init__(address, LiveLogHandler)
         self.root = root
@@ -102,8 +108,26 @@ class LiveLogServer(ThreadingHTTPServer):
         }
         self.last_build_branch = ""
         self.last_kernel_version = ""
+        self.max_event_streams = max_event_streams
+        self._event_streams = 0
+        self._event_streams_lock = threading.Lock()
         encoded = base64.b64encode(auth_spec.encode("utf-8")).decode("ascii")
-        self.expected_authorization = f"Basic {encoded}"
+        # Store the expected credential as bytes so _authorized() can compare it
+        # against an encoded header without tripping over non-ASCII input.
+        self.expected_authorization = f"Basic {encoded}".encode("ascii")
+
+    def acquire_event_slot(self) -> bool:
+        """Reserve one of the bounded SSE slots; False when all are taken."""
+        with self._event_streams_lock:
+            if self._event_streams >= self.max_event_streams:
+                return False
+            self._event_streams += 1
+            return True
+
+    def release_event_slot(self) -> None:
+        with self._event_streams_lock:
+            if self._event_streams > 0:
+                self._event_streams -= 1
 
 
 class LiveLogHandler(BaseHTTPRequestHandler):
@@ -146,7 +170,11 @@ class LiveLogHandler(BaseHTTPRequestHandler):
         self._write(status, "application/json; charset=utf-8", body)
 
     def _authorized(self) -> bool:
-        supplied = self.headers.get("Authorization", "")
+        # BaseHTTPRequestHandler decodes headers as latin-1, so a client can put
+        # arbitrary non-ASCII bytes in Authorization. hmac.compare_digest raises
+        # TypeError for non-ASCII str, which would escape before the caller's
+        # try block and surface as a 500; compare the encoded bytes instead.
+        supplied = self.headers.get("Authorization", "").encode("latin-1", "replace")
         if hmac.compare_digest(supplied, self.server.expected_authorization):
             return True
         body = b"Authentication required\n"
@@ -597,6 +625,23 @@ class LiveLogHandler(BaseHTTPRequestHandler):
 
     def _serve_events(self, query: str) -> None:
         offset = self._requested_sse_offset(query)
+        # An SSE response occupies a thread for the whole build. Cap the number
+        # of concurrent streams so a stuck browser tab (or an unauthenticated
+        # client that got past Basic auth once) cannot pin every thread and make
+        # /healthz unresponsive.
+        if not self.server.acquire_event_slot():
+            self._write(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "text/plain; charset=utf-8",
+                b"Too many concurrent log streams; retry later.\n",
+            )
+            return
+        try:
+            self._serve_event_stream(offset)
+        finally:
+            self.server.release_event_slot()
+
+    def _serve_event_stream(self, offset: int) -> None:
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache, no-transform")
@@ -794,6 +839,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sse-poll-interval", default=0.25, type=float)
     parser.add_argument("--sse-heartbeat-interval", default=15.0, type=float)
     parser.add_argument("--metrics-interval", default=2.0, type=float)
+    parser.add_argument(
+        "--max-event-streams",
+        default=8,
+        type=int,
+        help="maximum number of concurrent /api/events streams",
+    )
     return parser.parse_args()
 
 
@@ -808,6 +859,8 @@ def main() -> int:
         or args.metrics_interval <= 0
     ):
         raise SystemExit("SSE and metrics intervals must be greater than zero")
+    if args.max_event_streams < 1:
+        raise SystemExit("--max-event-streams must be at least 1")
     root = args.directory.resolve()
     root.mkdir(parents=True, exist_ok=True)
     files_root = args.files_directory.resolve() if args.files_directory else None
@@ -819,8 +872,13 @@ def main() -> int:
         sse_poll_interval=args.sse_poll_interval,
         sse_heartbeat_interval=args.sse_heartbeat_interval,
         metrics_interval=args.metrics_interval,
+        max_event_streams=args.max_event_streams,
     )
-    print(f"[live-log-http] listening on http://{args.host}:{args.port}", flush=True)
+    # Report the address actually bound, not the one requested. With --port 0 the
+    # kernel picks a free port, and a caller that has to guess it would be
+    # racing every other process on the host.
+    bound_host, bound_port = server.server_address[:2]
+    print(f"[live-log-http] listening on http://{bound_host}:{bound_port}", flush=True)
     if files_root is not None:
         print(f"[live-log-http] read-only files root: {files_root}", flush=True)
     try:

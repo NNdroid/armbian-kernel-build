@@ -2,20 +2,44 @@
 # The single orchestration path shared by all registered build targets.
 build_main() {
     cd "${BUILD_PROJECT_ROOT}"
-    load_build_target
 
+    # Installed before the profile is loaded, not after. Loading is where an
+    # unsupported branch or a malformed profile fails, which makes it the single
+    # most likely place for a run to die -- and with the trap set afterwards
+    # those failures produced a bare error line with no failing command, no
+    # elapsed time and no replayed context.
     trap 'report_unhandled_error "$?" "$LINENO" "$BASH_COMMAND"' ERR
 
-    begin_step "1. Environment initialization"
+    load_build_target
+
+    # Echo the resolved configuration before anything can fail. When a build
+    # produces the wrong artifact -- the classic version of this bug -- the
+    # question is always "which profile, which board, which branch did it
+    # actually use", and answering it from a failure five hours later means
+    # scrolling back through a log that may no longer be available.
+    log_info "Resolved profile: ${BUILD_TARGET} (board=${BUILD_BOARD} family=${BUILD_FAMILY} arch=${BUILD_ARCH} adapter=${TARGET_ADAPTER})"
+    log_info "Branches in scope: ${branch_list[*]}"
+
+    # Declared once so every step banner can report "n/total" and so a failing
+    # step names itself without the caller having to remember what it called.
+    _log_declare_steps 5
+
+    begin_step "Environment initialization"
     ensure_host_dependencies
 
     FAMILY_CONFIG_FILE="./${BUILD_FAMILY}_common.inc"
     FAMILY_CONFIG_TMP="$(mktemp "${FAMILY_CONFIG_FILE}.XXXXXX")"
+    # The download is retried on failure, and any later early return between here
+    # and the mv would otherwise leave the temp file next to the family config in
+    # the working tree, where the next run would treat it as stale state.
+    trap 'rm -f -- "${FAMILY_CONFIG_TMP}"' RETURN
     log_debug "Downloading ${FAMILY_CONFIG_FILE}..."
     if curl --fail --location --silent --show-error --retry 4 --retry-all-errors \
         --output "${FAMILY_CONFIG_TMP}" \
         "https://raw.githubusercontent.com/armbian/build/refs/heads/main/config/sources/families/${TARGET_VERSION_CONFIG}"; then
         mv -- "${FAMILY_CONFIG_TMP}" "${FAMILY_CONFIG_FILE}"
+        # The file has been renamed into place; nothing left to clean up.
+        trap - RETURN
     else
         rm -f -- "${FAMILY_CONFIG_TMP}"
         log_error "Failed to download family version config. Check network connectivity."
@@ -26,7 +50,7 @@ build_main() {
         return 1
     fi
     log_info "${BUILD_FAMILY}_common.inc downloaded ($(wc -l < "${FAMILY_CONFIG_FILE}" | tr -d ' ') lines)"
-    end_step "1. Environment initialization"
+    end_step "Environment initialization"
 
     if ! CUR_GIT_REPO_URL="$(resolve_repository_url "${PWD}")"; then
         log_error "Unable to determine the current GitHub repository. Check GITHUB_REPOSITORY or the origin remote."
@@ -34,7 +58,7 @@ build_main() {
     fi
     log_info "Release repository: ${CUR_GIT_REPO_URL}"
 
-    begin_step "2. Version comparison"
+    begin_step "Version comparison"
     declare -A BRANCH_UPSTREAM_VER=()
     declare -A NEED_BUILD=()
 
@@ -67,7 +91,7 @@ build_main() {
             log_info "${branch}: released ${RELEASED_TAG} >= upstream ${KERNEL_ORG_VER} -> no build needed"
         fi
     done
-    end_step "2. Version comparison"
+    end_step "Version comparison"
 
     planned_branches=()
     for branch in "${branch_list[@]}"; do
@@ -82,7 +106,7 @@ build_main() {
     fi
     log_info "Branches scheduled for build: ${planned_branches[*]}"
 
-    begin_step "3. Prepare Armbian build environment"
+    begin_step "Prepare Armbian build environment"
     if [[ -d build && ! -f build/compile.sh ]]; then
         log_error "Existing build directory is not an Armbian checkout; move it aside before building."
         return 1
@@ -103,10 +127,13 @@ build_main() {
         sync_tree ./scripts/lib ./build/kernel-build/lib
     fi
     validate_armbian_board_registration ./build "${BUILD_BOARD}" || return 1
-    end_step "3. Prepare Armbian build environment"
+    end_step "Prepare Armbian build environment"
 
     for branch in "${planned_branches[@]}"; do
-        begin_step "4. Build ${branch} kernel (target ${BRANCH_UPSTREAM_VER[${branch}]})"
+        # Steps inside a loop legitimately run more than once, so the banner
+        # reports "seq/total" rather than a hardcoded ordinal that would be
+        # wrong for every branch after the first.
+        begin_step "Build ${branch} kernel (upstream ${BRANCH_UPSTREAM_VER[${branch}]})"
         BUILD_MARKER="$(mktemp "${TMPDIR:-/tmp}/kernel-build-${branch}.XXXXXX")"
         if ! run_armbian_build ./build kernel BOARD="${BUILD_BOARD}" BRANCH="${branch}" RELEASE=trixie KERNEL_HEADERS=yes; then
             rm -f -- "${BUILD_MARKER}"
@@ -119,7 +146,7 @@ build_main() {
             return 1
         }
         log_info "${branch}: derived kernel version from artifact = ${BUILT_KERNEL_VER}"
-        end_step "4. Build ${branch} kernel"
+        end_step "Build ${branch} kernel"
 
         target_package_artifacts "${branch}" "${BUILD_MARKER}" "${BUILT_KERNEL_VER}"
         rm -f -- "${BUILD_MARKER}"
@@ -127,12 +154,13 @@ build_main() {
             log_info "Publishing disabled; validated artifacts remain in build/output"
             continue
         fi
-        begin_step "5. Publish ${RELEASE_PREFIX}${branch}-${BUILT_KERNEL_VER}"
+        begin_step "Publish ${RELEASE_PREFIX}${branch}-${BUILT_KERNEL_VER}"
         upload_to_github_release "${RELEASE_PREFIX}${branch}-${BUILT_KERNEL_VER}" "${branch}" \
             "${BUILT_KERNEL_VER}" "${BRANCH_UPSTREAM_VER[${branch}]}" \
             "./build/output/debs/*-${branch}-${BUILD_FAMILY}_*__${BUILT_KERNEL_VER}-*.deb"
-        end_step "5. Publish ${branch}-${BUILT_KERNEL_VER}"
+        end_step "Publish ${branch}-${BUILT_KERNEL_VER}"
     done
 
     log_info "All automation steps completed successfully."
+    log_info "Total elapsed: $(_log_elapsed)"
 }

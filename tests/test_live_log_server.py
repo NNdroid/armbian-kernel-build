@@ -7,11 +7,12 @@ import base64
 import hashlib
 import json
 import os
-import socket
+import re
 import subprocess
 import sys
 import tempfile
 import time
+import unittest
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -24,10 +25,29 @@ AUTH_SPEC = "ci-user:a-long-test-password"
 AUTH_HEADER = "Basic " + base64.b64encode(AUTH_SPEC.encode("utf-8")).decode("ascii")
 
 
-def reserve_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
-        listener.bind(("127.0.0.1", 0))
-        return int(listener.getsockname()[1])
+def read_bound_port(process: subprocess.Popen[bytes]) -> int:
+    """Read the port the server actually bound from its startup line.
+
+    The server is started with --port 0 so the kernel assigns a free port while
+    the socket is already held. Picking a port in the test instead would mean
+    binding, closing, and hoping nobody else claims the number in between --
+    a TOCTOU race that only shows up as a flake under parallel runs.
+    """
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        line = process.stdout.readline()
+        if not line:
+            if process.poll() is not None:
+                raise AssertionError(
+                    f"live-log server exited before announcing its port "
+                    f"({process.returncode})"
+                )
+            continue
+        text = line.decode("utf-8", errors="replace")
+        match = re.search(r"listening on http://[^:]+:(\d+)", text)
+        if match:
+            return int(match.group(1))
+    raise AssertionError("live-log server never announced its listening port")
 
 
 def request(
@@ -136,518 +156,606 @@ def wait_until_ready(base_url: str, process: subprocess.Popen[bytes]) -> None:
     raise AssertionError("live-log server did not become ready")
 
 
-def main() -> int:
-    with tempfile.TemporaryDirectory(prefix="live-log-test-") as temp_directory:
-        log_root = Path(temp_directory) / "live"
-        files_root = Path(temp_directory) / "artifacts"
-        log_root.mkdir()
-        (files_root / "debs").mkdir(parents=True)
-        (files_root / "release-metadata").mkdir()
-        package = b"\x00ar-test-package\xffpayload"
-        summary = "# Build summary\n\nKernel: 6.18\n"
-        (files_root / "debs" / "linux-image-test.deb").write_bytes(package)
-        (files_root / "release-metadata" / "build-summary.md").write_bytes(
-            summary.encode("utf-8")
-        )
-        (files_root / "release-metadata" / "large.log").write_bytes(
-            b"x" * (512 * 1024 + 17)
-        )
-        evidence_root = files_root / "release-metadata" / "current"
-        evidence_root.mkdir()
-        kernel_config = (
-            "CONFIG_TCP_CONG_BRUTAL=y\n"
-            "CONFIG_AMNEZIAWG=y\n"
-            "CONFIG_NETFILTER_DEAF=y\n"
-            "# CONFIG_WIREGUARD is not set\n"
-            "CONFIG_BPF=y\n"
-            "CONFIG_DEBUG_INFO_BTF=y\n"
-            "CONFIG_MPLS_ROUTING=y\n"
-            "CONFIG_VXLAN=y\n"
-            "CONFIG_NF_TABLES=y\n"
-            "CONFIG_TCP_CONG_BBR=y\n"
-            "CONFIG_USB_GADGET=y\n"
-            "CONFIG_BT=m\n"
-            "CONFIG_CFG80211=m\n"
-            "CONFIG_MT7921E=m\n"
-        ).encode("utf-8")
-        config_path = evidence_root / "current-kernel.config"
-        config_path.write_bytes(kernel_config)
-        config_digest = hashlib.sha256(kernel_config).hexdigest()
-        commits = {
-            "tcp_brutal_commit": "1" * 40,
-            "amneziawg_commit": "2" * 40,
-            "nf_deaf_commit": "3" * 40,
-        }
-        manifest_lines = [
-            "evidence_format=1",
-            "branch=current",
-            "kernel_release=6.18.53-current-rockchip64",
-            f"config_sha256={config_digest}",
-            "baseline_status=generated",
-            "diff_count=2",
-            *(f"{key}={value}" for key, value in commits.items()),
-        ]
-        (evidence_root / "current-source-manifest.env").write_bytes(
-            ("\n".join(manifest_lines) + "\n").encode("utf-8")
-        )
-        (evidence_root / "current-config-vs-arm64-defconfig.txt").write_bytes(
-            b"-CONFIG_OLD=y\n+CONFIG_BPF=y\n"
-        )
-        module_data = b"synthetic module"
-        (evidence_root / "current-test.ko").write_bytes(module_data)
-        (evidence_root / "current-loadable-modules-SHA256SUMS").write_bytes(
-            f"{hashlib.sha256(module_data).hexdigest()}  current-test.ko\n".encode(
-                "ascii"
+class LiveLogServerTests(unittest.TestCase):
+    """End-to-end scenario: one server process, every endpoint exercised."""
+
+    maxDiff = None
+
+    def test_full_api_surface(self):
+        with tempfile.TemporaryDirectory(prefix="live-log-test-") as temp_directory:
+            log_root = Path(temp_directory) / "live"
+            files_root = Path(temp_directory) / "artifacts"
+            log_root.mkdir()
+            (files_root / "debs").mkdir(parents=True)
+            (files_root / "release-metadata").mkdir()
+            package = b"\x00ar-test-package\xffpayload"
+            summary = "# Build summary\n\nKernel: 6.18\n"
+            (files_root / "debs" / "linux-image-test.deb").write_bytes(package)
+            (files_root / "release-metadata" / "build-summary.md").write_bytes(
+                summary.encode("utf-8")
             )
-        )
-        (files_root / ".secret").write_text("must not be listed", encoding="utf-8")
-        symlink_path = files_root / "linked-summary.md"
-        try:
-            symlink_path.symlink_to(files_root / "release-metadata" / "build-summary.md")
-            symlink_created = True
-        except OSError:
-            symlink_created = False
-        (log_root / "build.log").write_bytes(b"first line\n")
-        (log_root / "status.json").write_text(
-            json.dumps({"state": "running"}), encoding="utf-8"
-        )
-
-        port = reserve_port()
-        base_url = f"http://127.0.0.1:{port}"
-        environment = os.environ.copy()
-        environment["LIVE_LOG_AUTH"] = AUTH_SPEC
-        environment["LIVE_LOG_BOARD"] = "test-board"
-        environment["LIVE_LOG_ARCH"] = "test-arch"
-        environment["LIVE_LOG_FAMILY"] = "test-family"
-        environment["LIVE_LOG_RELEASE"] = "test-release"
-        process = subprocess.Popen(
-            [
-                sys.executable,
-                "-B",
-                str(SERVER_SCRIPT),
-                "--directory",
-                str(log_root),
-                "--files-directory",
-                str(files_root),
-                "--port",
-                str(port),
-                "--sse-poll-interval",
-                "0.02",
-                "--sse-heartbeat-interval",
-                "0.15",
-                "--metrics-interval",
-                "0.05",
-            ],
-            env=environment,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-
-        try:
-            wait_until_ready(base_url, process)
-
-            status, _, headers = request(f"{base_url}/")
-            assert status == 401, status
-            assert headers.get("WWW-Authenticate") == 'Basic realm="Armbian build log"'
-
-            status, body, root_headers = request(f"{base_url}/", authenticated=True)
-            assert status == 200, status
-            assert root_headers.get("X-Frame-Options") == "DENY", root_headers
-            assert "frame-ancestors 'none'" in root_headers.get("Content-Security-Policy", ""), root_headers
-            assert "object-src 'none'" in root_headers.get("Content-Security-Policy", ""), root_headers
-            assert root_headers.get("Permissions-Policy"), root_headers
-            assert b"Armbian Kernel Build" in body
-            assert b"(?:\\[[0-?]*[ -/]*[@-~]|[@-_])" in body
-            assert b"new EventSource(`/api/events?offset=${state.offset}`" in body
-            assert b'id="search"' in body
-            assert b'id="jump-line"' in body
-            assert b'id="theme"' in body
-            assert b'id="tab-files"' in body
-            assert b'id="tab-dashboard"' in body
-            assert b'id="tab-config"' in body
-            assert b'id="tab-packages"' in body
-            assert b'id="notifications"' in body
-            assert b'id="file-filter"' in body
-            assert b'id="file-preview"' in body
-            assert b"/api/file-hash" in body
-            assert b'value="ja"' in body
-            assert b'value="fr"' in body
-            assert b'value="de"' in body
-            assert b'value="zh-CN"' not in body
-            assert b"::group::" in body
-            assert b"::endgroup::" in body
-            assert b"log-group-row" in body
-            assert b"collapsedGroups" in body
-            assert b"expandGroupsForRow" in body
-            assert b"tail_bytes=" in body
-            assert b"const maxLines = 15000" in body
-            assert b"--scrollbar-thumb:" in body
-            assert b"::-webkit-scrollbar-thumb:hover" in body
-            assert b"scrollbar-color:" in body
-            assert b"scrollbar-gutter: stable" in body
-            for translation_key in (
-                b"dashboardTab:",
-                b"timelineTitle:",
-                b"featuresTitle:",
-                b"diagnosticsTitle:",
-                b"sourcesTitle:",
-                b"integrityTitle:",
-                b"packagesTitle:",
-                b"enableNotifications:",
-            ):
-                assert body.count(translation_key) == 4, translation_key
-
-            status, _, _ = request(f"{base_url}/api/files")
-            assert status == 401, status
-            status, body, _ = request(f"{base_url}/api/files", authenticated=True)
-            assert status == 200, status
-            listing = json.loads(body)
-            assert listing["enabled"] is True, listing
-            assert listing["available"] is True, listing
-            assert listing["path"] == "", listing
-            assert [entry["name"] for entry in listing["entries"]] == [
-                "debs",
-                "release-metadata",
-            ], listing
-
-            nested_path = urllib.parse.quote("release-metadata", safe="")
-            status, body, _ = request(
-                f"{base_url}/api/files?path={nested_path}", authenticated=True
+            (files_root / "release-metadata" / "large.log").write_bytes(
+                b"x" * (512 * 1024 + 17)
             )
-            assert status == 200, status
-            nested = json.loads(body)
-            assert nested["path"] == "release-metadata", nested
-            summary_entry = next(
-                entry for entry in nested["entries"] if entry["name"] == "build-summary.md"
+            evidence_root = files_root / "release-metadata" / "current"
+            evidence_root.mkdir()
+            kernel_config = (
+                "CONFIG_TCP_CONG_BRUTAL=y\n"
+                "CONFIG_AMNEZIAWG=y\n"
+                "CONFIG_NETFILTER_DEAF=y\n"
+                "# CONFIG_WIREGUARD is not set\n"
+                "CONFIG_BPF=y\n"
+                "CONFIG_DEBUG_INFO_BTF=y\n"
+                "CONFIG_MPLS_ROUTING=y\n"
+                "CONFIG_VXLAN=y\n"
+                "CONFIG_NF_TABLES=y\n"
+                "CONFIG_TCP_CONG_BBR=y\n"
+                "CONFIG_USB_GADGET=y\n"
+                "CONFIG_BT=m\n"
+                "CONFIG_CFG80211=m\n"
+                "CONFIG_MT7921E=m\n"
+            ).encode("utf-8")
+            config_path = evidence_root / "current-kernel.config"
+            config_path.write_bytes(kernel_config)
+            config_digest = hashlib.sha256(kernel_config).hexdigest()
+            commits = {
+                "tcp_brutal_commit": "1" * 40,
+                "amneziawg_commit": "2" * 40,
+                "nf_deaf_commit": "3" * 40,
+            }
+            manifest_lines = [
+                "evidence_format=1",
+                "branch=current",
+                "kernel_release=6.18.53-current-rockchip64",
+                f"config_sha256={config_digest}",
+                "baseline_status=generated",
+                "diff_count=2",
+                *(f"{key}={value}" for key, value in commits.items()),
+            ]
+            (evidence_root / "current-source-manifest.env").write_bytes(
+                ("\n".join(manifest_lines) + "\n").encode("utf-8")
             )
-            assert summary_entry["previewable"] is True, nested
-
-            summary_path = urllib.parse.quote(
-                "release-metadata/build-summary.md", safe=""
+            (evidence_root / "current-config-vs-arm64-defconfig.txt").write_bytes(
+                b"-CONFIG_OLD=y\n+CONFIG_BPF=y\n"
             )
-            status, body, _ = request(
-                f"{base_url}/api/file?path={summary_path}", authenticated=True
+            module_data = b"synthetic module"
+            (evidence_root / "current-test.ko").write_bytes(module_data)
+            (evidence_root / "current-loadable-modules-SHA256SUMS").write_bytes(
+                f"{hashlib.sha256(module_data).hexdigest()}  current-test.ko\n".encode(
+                    "ascii"
+                )
             )
-            assert status == 200, status
-            preview = json.loads(body)
-            assert preview["text"] == summary, preview
-            assert preview["truncated"] is False, preview
-
-            large_path = urllib.parse.quote("release-metadata/large.log", safe="")
-            status, body, _ = request(
-                f"{base_url}/api/file?path={large_path}", authenticated=True
-            )
-            assert status == 200, status
-            large_preview = json.loads(body)
-            assert large_preview["truncated"] is True, large_preview
-            assert len(large_preview["text"]) == 512 * 1024, len(
-                large_preview["text"]
+            (files_root / ".secret").write_text("must not be listed", encoding="utf-8")
+            symlink_path = files_root / "linked-summary.md"
+            try:
+                symlink_path.symlink_to(files_root / "release-metadata" / "build-summary.md")
+                symlink_created = True
+            except OSError:
+                symlink_created = False
+            (log_root / "build.log").write_bytes(b"first line\n")
+            (log_root / "status.json").write_text(
+                json.dumps({"state": "running"}), encoding="utf-8"
             )
 
-            package_path = urllib.parse.quote("debs/linux-image-test.deb", safe="")
-            status, body, _ = request(
-                f"{base_url}/api/file?path={package_path}", authenticated=True
+            environment = os.environ.copy()
+            environment["LIVE_LOG_AUTH"] = AUTH_SPEC
+            environment["LIVE_LOG_BOARD"] = "test-board"
+            environment["LIVE_LOG_ARCH"] = "test-arch"
+            environment["LIVE_LOG_FAMILY"] = "test-family"
+            environment["LIVE_LOG_RELEASE"] = "test-release"
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-B",
+                    str(SERVER_SCRIPT),
+                    "--directory",
+                    str(log_root),
+                    "--files-directory",
+                    str(files_root),
+                    "--port",
+                    "0",
+                    "--sse-poll-interval",
+                    "0.02",
+                    "--sse-heartbeat-interval",
+                    "0.15",
+                    "--metrics-interval",
+                    "0.05",
+                    "--max-event-streams",
+                    "2",
+                ],
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
             )
-            assert status == 415, (status, body)
 
-            status, body, headers = request(
-                f"{base_url}/files/download?path={package_path}", authenticated=True
-            )
-            assert status == 200, status
-            assert body == package, body
-            assert headers.get("Accept-Ranges") == "bytes", headers
-            assert "linux-image-test.deb" in headers.get("Content-Disposition", "")
+            try:
+                base_url = f"http://127.0.0.1:{read_bound_port(process)}"
+                wait_until_ready(base_url, process)
 
-            status, body, headers = request(
-                f"{base_url}/files/download?path={package_path}",
-                authenticated=True,
-                headers={"Range": "bytes=2-7"},
-            )
-            assert status == 206, status
-            assert body == package[2:8], body
-            assert headers.get("Content-Range") == f"bytes 2-7/{len(package)}", headers
+                status, _, headers = request(f"{base_url}/")
+                self.assertEqual(status, 401, status)
+                self.assertTrue(headers.get("WWW-Authenticate") == 'Basic realm="Armbian build log"')
 
-            status, body, headers = request(
-                f"{base_url}/files/download?path={package_path}",
-                authenticated=True,
-                headers={"Range": "bytes=999-1000"},
-            )
-            assert status == 416, status
-            assert headers.get("Content-Range") == f"bytes */{len(package)}", headers
+                status, body, root_headers = request(f"{base_url}/", authenticated=True)
+                self.assertEqual(status, 200, status)
+                self.assertEqual(root_headers.get("X-Frame-Options"), "DENY", root_headers)
+                self.assertTrue("frame-ancestors 'none'" in root_headers.get("Content-Security-Policy", ""))
+                self.assertTrue("object-src 'none'" in root_headers.get("Content-Security-Policy", ""))
+                self.assertTrue(root_headers.get("Permissions-Policy"), root_headers)
+                self.assertTrue(b"Armbian Kernel Build" in body)
+                self.assertTrue(b"(?:\\[[0-?]*[ -/]*[@-~]|[@-_])" in body)
+                self.assertTrue(b"new EventSource(`/api/events?offset=${state.offset}`" in body)
+                self.assertTrue(b'id="search"' in body)
+                self.assertTrue(b'id="jump-line"' in body)
+                self.assertTrue(b'id="theme"' in body)
+                self.assertTrue(b'id="tab-files"' in body)
+                self.assertTrue(b'id="tab-dashboard"' in body)
+                self.assertTrue(b'id="tab-config"' in body)
+                self.assertTrue(b'id="tab-packages"' in body)
+                self.assertTrue(b'id="notifications"' in body)
+                self.assertTrue(b'id="file-filter"' in body)
+                self.assertTrue(b'id="file-preview"' in body)
+                self.assertTrue(b"/api/file-hash" in body)
+                self.assertTrue(b'value="ja"' in body)
+                self.assertTrue(b'value="fr"' in body)
+                self.assertTrue(b'value="de"' in body)
+                self.assertTrue(b'value="zh-CN"' not in body)
+                self.assertTrue(b"::group::" in body)
+                self.assertTrue(b"::endgroup::" in body)
+                self.assertTrue(b"log-group-row" in body)
+                self.assertTrue(b"collapsedGroups" in body)
+                self.assertTrue(b"expandGroupsForRow" in body)
+                self.assertTrue(b"tail_bytes=" in body)
+                self.assertTrue(b"const maxLines = 15000" in body)
+                self.assertTrue(b"--scrollbar-thumb:" in body)
+                self.assertTrue(b"::-webkit-scrollbar-thumb:hover" in body)
+                self.assertTrue(b"scrollbar-color:" in body)
+                self.assertTrue(b"scrollbar-gutter: stable" in body)
+                for translation_key in (
+                    b"dashboardTab:",
+                    b"timelineTitle:",
+                    b"featuresTitle:",
+                    b"diagnosticsTitle:",
+                    b"sourcesTitle:",
+                    b"integrityTitle:",
+                    b"packagesTitle:",
+                    b"enableNotifications:",
+                ):
+                    self.assertEqual(body.count(translation_key), 4, translation_key)
 
-            status, body, _ = request(
-                f"{base_url}/api/file-hash?path={package_path}", authenticated=True
-            )
-            assert status == 200, status
-            checksum = json.loads(body)
-            assert checksum["digest"] == hashlib.sha256(package).hexdigest(), checksum
+                status, _, _ = request(f"{base_url}/api/files")
+                self.assertEqual(status, 401, status)
+                status, body, _ = request(f"{base_url}/api/files", authenticated=True)
+                self.assertEqual(status, 200, status)
+                listing = json.loads(body)
+                self.assertTrue(listing["enabled"] is True, listing)
+                self.assertTrue(listing["available"] is True, listing)
+                self.assertEqual(listing["path"], "", listing)
+                self.assertEqual(
+                    [entry["name"] for entry in listing["entries"]],
+                    [
+                        "debs",
+                        "release-metadata",
+                    ],
+                    listing,
+                )
 
-            status, body, _ = request(
-                f"{base_url}/api/files?path=..%2Flive", authenticated=True
-            )
-            assert status == 400, (status, body)
-            assert b"first line" not in body
-            status, body, _ = request(
-                f"{base_url}/api/file?path=.secret", authenticated=True
-            )
-            assert status == 400, (status, body)
-            assert b"must not be listed" not in body
-            if symlink_created:
+                nested_path = urllib.parse.quote("release-metadata", safe="")
+                status, body, _ = request(
+                    f"{base_url}/api/files?path={nested_path}", authenticated=True
+                )
+                self.assertEqual(status, 200, status)
+                nested = json.loads(body)
+                self.assertEqual(nested["path"], "release-metadata", nested)
+                summary_entry = next(
+                    entry for entry in nested["entries"] if entry["name"] == "build-summary.md"
+                )
+                self.assertTrue(summary_entry["previewable"] is True, nested)
+
+                summary_path = urllib.parse.quote(
+                    "release-metadata/build-summary.md", safe=""
+                )
+                status, body, _ = request(
+                    f"{base_url}/api/file?path={summary_path}", authenticated=True
+                )
+                self.assertEqual(status, 200, status)
+                preview = json.loads(body)
+                self.assertEqual(preview["text"], summary, preview)
+                self.assertTrue(preview["truncated"] is False, preview)
+
+                large_path = urllib.parse.quote("release-metadata/large.log", safe="")
+                status, body, _ = request(
+                    f"{base_url}/api/file?path={large_path}", authenticated=True
+                )
+                self.assertEqual(status, 200, status)
+                large_preview = json.loads(body)
+                self.assertTrue(large_preview["truncated"] is True, large_preview)
+                self.assertEqual(
+                    len(large_preview["text"]),
+                    512 * 1024,
+                    len(large_preview["text"]),
+                )
+
+                package_path = urllib.parse.quote("debs/linux-image-test.deb", safe="")
+                status, body, _ = request(
+                    f"{base_url}/api/file?path={package_path}", authenticated=True
+                )
+                self.assertEqual(status, 415, (status, body))
+
+                status, body, headers = request(
+                    f"{base_url}/files/download?path={package_path}", authenticated=True
+                )
+                self.assertEqual(status, 200, status)
+                self.assertEqual(body, package, body)
+                self.assertEqual(headers.get("Accept-Ranges"), "bytes", headers)
+                self.assertTrue("linux-image-test.deb" in headers.get("Content-Disposition", ""))
+
+                status, body, headers = request(
+                    f"{base_url}/files/download?path={package_path}",
+                    authenticated=True,
+                    headers={"Range": "bytes=2-7"},
+                )
+                self.assertEqual(status, 206, status)
+                self.assertEqual(body, package[2:8], body)
+                self.assertTrue(headers.get("Content-Range") == f"bytes 2-7/{len(package)}")
+
+                status, body, headers = request(
+                    f"{base_url}/files/download?path={package_path}",
+                    authenticated=True,
+                    headers={"Range": "bytes=999-1000"},
+                )
+                self.assertEqual(status, 416, status)
+                self.assertEqual(headers.get("Content-Range"), f"bytes */{len(package)}", headers)
+
+                status, body, _ = request(
+                    f"{base_url}/api/file-hash?path={package_path}", authenticated=True
+                )
+                self.assertEqual(status, 200, status)
+                checksum = json.loads(body)
+                self.assertEqual(checksum["digest"], hashlib.sha256(package).hexdigest(), checksum)
+
+                status, body, _ = request(
+                    f"{base_url}/api/files?path=..%2Flive", authenticated=True
+                )
+                self.assertEqual(status, 400, (status, body))
+                self.assertTrue(b"first line" not in body)
+                status, body, _ = request(
+                    f"{base_url}/api/file?path=.secret", authenticated=True
+                )
+                self.assertEqual(status, 400, (status, body))
+                self.assertTrue(b"must not be listed" not in body)
+                # Skipping silently would turn a traversal-protection regression into
+                # a green run. Only an environment that genuinely cannot create
+                # symlinks (unprivileged Windows) may skip, and it must say so.
+                if not symlink_created:
+                    raise unittest.SkipTest(
+                        "cannot create symlinks here; traversal protection is unverified"
+                    )
                 status, body, _ = request(
                     f"{base_url}/api/file?path=linked-summary.md", authenticated=True
                 )
-                assert status == 400, (status, body)
-                assert b"Build summary" not in body
+                self.assertEqual(status, 400, (status, body))
+                self.assertTrue(b"Build summary" not in body)
 
-            status, _, _ = request(f"{base_url}/api/metrics")
-            assert status == 401, status
-            status, body, _ = request(f"{base_url}/api/metrics", authenticated=True)
-            assert status == 200, status
-            metrics = json.loads(body)
-            assert metrics["target"] == {
-                "board": "test-board",
-                "arch": "test-arch",
-                "family": "test-family",
-                "release": "test-release",
-                "branch": "",
-                "kernel": "",
-            }, metrics
-            assert metrics["host"]["cpu_count"] >= 1, metrics
-            assert metrics["log_bytes"] == len(b"first line\n"), metrics
-
-            with (log_root / "build.log").open("ab") as log_file:
-                log_file.write(
-                    b"[INFO] Build wrapper Arguments: target=kernel BRANCH=current BOARD=test\n"
+                status, _, _ = request(f"{base_url}/api/metrics")
+                self.assertEqual(status, 401, status)
+                status, body, _ = request(f"{base_url}/api/metrics", authenticated=True)
+                self.assertEqual(status, 200, status)
+                metrics = json.loads(body)
+                self.assertEqual(
+                    metrics["target"],
+                    {
+                        "board": "test-board",
+                        "arch": "test-arch",
+                        "family": "test-family",
+                        "release": "test-release",
+                        "branch": "",
+                        "kernel": "",
+                    },
+                    metrics,
                 )
-            status, body, _ = request(f"{base_url}/api/metrics", authenticated=True)
-            assert status == 200, status
-            metrics = json.loads(body)
-            assert metrics["target"]["branch"] == "current", metrics
-
-            with (log_root / "build.log").open("ab") as log_file:
-                log_file.write(b"x" * (300 * 1024))
-            status, body, _ = request(f"{base_url}/api/metrics", authenticated=True)
-            assert status == 200, status
-            metrics = json.loads(body)
-            assert metrics["target"]["branch"] == "current", metrics
-
-            with (log_root / "build.log").open("ab") as log_file:
-                log_file.write(
-                    b"\n[INFO] Build wrapper Arguments: target=kernel BRANCH=edge BOARD=test\n"
-                )
-            status, body, _ = request(f"{base_url}/api/metrics", authenticated=True)
-            assert status == 200, status
-            metrics = json.loads(body)
-            assert metrics["target"]["branch"] == "edge", metrics
-            assert metrics["target"]["kernel"] == "", metrics
-
-            (log_root / "build.log").write_bytes(b"first line\n")
-
-            status, _, _ = request(f"{base_url}/api/events")
-            assert status == 401, status
-
-            with open_sse(f"{base_url}/api/events?offset=0") as stream:
-                assert stream.status == 200
-                assert stream.headers.get_content_type() == "text/event-stream"
-                assert stream.headers.get("Cache-Control") == "no-cache, no-transform"
-                assert stream.headers.get("X-Accel-Buffering") == "no"
-
-                frame = read_until_event(stream, "log")
-                payload = json.loads(str(frame["data"]))
-                first_offset = len(b"first line\n")
-                assert frame["id"] == str(first_offset), frame
-                assert payload == {"offset": first_offset, "text": "first line\n"}, payload
-
-                frame = read_until_event(stream, "state")
-                assert json.loads(str(frame["data"])) == {"state": "running"}, frame
-                frame = read_until_event(stream, "metrics")
-                metrics = json.loads(str(frame["data"]))
-                assert metrics["target"]["board"] == "test-board", frame
-                assert metrics["log_bytes"] == first_offset, frame
-                heartbeat = read_until_heartbeat(stream)
-                assert heartbeat["comments"] == ["keepalive"], heartbeat
+                self.assertTrue(metrics["host"]["cpu_count"] >= 1, metrics)
+                self.assertEqual(metrics["log_bytes"], len(b"first line\n"), metrics)
 
                 with (log_root / "build.log").open("ab") as log_file:
-                    log_file.write(b"second line\n")
-                frame = read_until_event(stream, "log")
-                payload = json.loads(str(frame["data"]))
-                final_offset = len(b"first line\nsecond line\n")
-                assert frame["id"] == str(final_offset), frame
-                assert payload == {"offset": final_offset, "text": "second line\n"}, payload
+                    log_file.write(
+                        b"[INFO] Build wrapper Arguments: target=kernel BRANCH=current BOARD=test\n"
+                    )
+                status, body, _ = request(f"{base_url}/api/metrics", authenticated=True)
+                self.assertEqual(status, 200, status)
+                metrics = json.loads(body)
+                self.assertEqual(metrics["target"]["branch"], "current", metrics)
+
+                with (log_root / "build.log").open("ab") as log_file:
+                    log_file.write(b"x" * (300 * 1024))
+                status, body, _ = request(f"{base_url}/api/metrics", authenticated=True)
+                self.assertEqual(status, 200, status)
+                metrics = json.loads(body)
+                self.assertEqual(metrics["target"]["branch"], "current", metrics)
+
+                with (log_root / "build.log").open("ab") as log_file:
+                    log_file.write(
+                        b"\n[INFO] Build wrapper Arguments: target=kernel BRANCH=edge BOARD=test\n"
+                    )
+                status, body, _ = request(f"{base_url}/api/metrics", authenticated=True)
+                self.assertEqual(status, 200, status)
+                metrics = json.loads(body)
+                self.assertEqual(metrics["target"]["branch"], "edge", metrics)
+                self.assertEqual(metrics["target"]["kernel"], "", metrics)
+
+                (log_root / "build.log").write_bytes(b"first line\n")
+
+                status, _, _ = request(f"{base_url}/api/events")
+                self.assertEqual(status, 401, status)
+
+                with open_sse(f"{base_url}/api/events?offset=0") as stream:
+                    self.assertTrue(stream.status == 200)
+                    self.assertTrue(stream.headers.get_content_type() == "text/event-stream")
+                    self.assertTrue(stream.headers.get("Cache-Control") == "no-cache, no-transform")
+                    self.assertTrue(stream.headers.get("X-Accel-Buffering") == "no")
+
+                    frame = read_until_event(stream, "log")
+                    payload = json.loads(str(frame["data"]))
+                    first_offset = len(b"first line\n")
+                    self.assertEqual(frame["id"], str(first_offset), frame)
+                    self.assertTrue(payload == {"offset": first_offset, "text": "first line\n"})
+
+                    frame = read_until_event(stream, "state")
+                    self.assertEqual(json.loads(str(frame["data"])), {"state": "running"}, frame)
+                    frame = read_until_event(stream, "metrics")
+                    metrics = json.loads(str(frame["data"]))
+                    self.assertEqual(metrics["target"]["board"], "test-board", frame)
+                    self.assertEqual(metrics["log_bytes"], first_offset, frame)
+                    heartbeat = read_until_heartbeat(stream)
+                    self.assertEqual(heartbeat["comments"], ["keepalive"], heartbeat)
+
+                    with (log_root / "build.log").open("ab") as log_file:
+                        log_file.write(b"second line\n")
+                    frame = read_until_event(stream, "log")
+                    payload = json.loads(str(frame["data"]))
+                    final_offset = len(b"first line\nsecond line\n")
+                    self.assertEqual(frame["id"], str(final_offset), frame)
+                    self.assertTrue(payload == {"offset": final_offset, "text": "second line\n"})
+
+                    (log_root / "status.json").write_text(
+                        json.dumps({"state": "success", "exit_code": 0}), encoding="utf-8"
+                    )
+                    frame = read_until_event(stream, "state")
+                    self.assertEqual(
+                        json.loads(str(frame["data"])),
+                        {
+                            "state": "success",
+                            "exit_code": 0,
+                        },
+                        frame,
+                    )
+                    frame = read_until_event(stream, "complete")
+                    self.assertEqual(
+                        json.loads(str(frame["data"])),
+                        {
+                            "state": "success",
+                            "exit_code": 0,
+                            "offset": final_offset,
+                        },
+                        frame,
+                    )
+
+                with open_sse(
+                    f"{base_url}/api/events?offset=0", last_event_id=first_offset
+                ) as resumed_stream:
+                    frame = read_until_event(resumed_stream, "log")
+                    payload = json.loads(str(frame["data"]))
+                    self.assertTrue(payload == {"offset": final_offset, "text": "second line\n"})
+                    frame = read_until_event(resumed_stream, "complete")
+                    self.assertTrue(json.loads(str(frame["data"]))["offset"] == final_offset)
+
+                status, body, _ = request(f"{base_url}/api/log?offset=0", authenticated=True)
+                self.assertEqual(status, 200, status)
+                payload = json.loads(body)
+                self.assertEqual(
+                    payload,
+                    {
+                        "offset": final_offset,
+                        "start_offset": 0,
+                        "start_line": 1,
+                        "reset": False,
+                        "state": "success",
+                        "text": "first line\nsecond line\n",
+                    },
+                    payload,
+                )
+
+                status, body, _ = request(
+                    f"{base_url}/api/log?offset={first_offset}", authenticated=True
+                )
+                self.assertEqual(status, 200, status)
+                payload = json.loads(body)
+                self.assertEqual(payload["text"], "second line\n", payload)
+                self.assertEqual(payload["state"], "success", payload)
+
+                # The server was started with --max-event-streams 2. Each open
+                # SSE response holds a thread for the whole build, so a client
+                # that never closes must be turned away rather than allowed to
+                # pin every thread in the process. The status is terminal by now,
+                # so pin the streams open by resetting the build back to running
+                # first; otherwise they end immediately and release their slot.
+                (log_root / "status.json").write_text(
+                    json.dumps({"state": "running"}), encoding="utf-8"
+                )
+                held: list[object] = []
+                try:
+                    for _ in range(2):
+                        held.append(open_sse(f"{base_url}/api/events?offset=0"))
+                        # Consume the first frame so the request is fully live.
+                        read_until_event(held[-1], "log")
+                    status, body, _ = request(
+                        f"{base_url}/api/events?offset=0", authenticated=True
+                    )
+                    self.assertEqual(status, 503, (status, body))
+                    self.assertTrue(b"concurrent log streams" in body, body)
+                finally:
+                    for stream in held:
+                        stream.close()
+
+                # A refused stream must not consume a slot: once the held
+                # connections go away the endpoint works again.
+                time.sleep(0.3)
+                with open_sse(f"{base_url}/api/events?offset=0") as recovered:
+                    read_until_event(recovered, "log")
 
                 (log_root / "status.json").write_text(
                     json.dumps({"state": "success", "exit_code": 0}), encoding="utf-8"
                 )
-                frame = read_until_event(stream, "state")
-                assert json.loads(str(frame["data"])) == {
-                    "state": "success",
-                    "exit_code": 0,
-                }, frame
-                frame = read_until_event(stream, "complete")
-                assert json.loads(str(frame["data"])) == {
-                    "state": "success",
-                    "exit_code": 0,
-                    "offset": final_offset,
-                }, frame
 
-            with open_sse(
-                f"{base_url}/api/events?offset=0", last_event_id=first_offset
-            ) as resumed_stream:
-                frame = read_until_event(resumed_stream, "log")
-                payload = json.loads(str(frame["data"]))
-                assert payload == {"offset": final_offset, "text": "second line\n"}, payload
-                frame = read_until_event(resumed_stream, "complete")
-                assert json.loads(str(frame["data"]))["offset"] == final_offset
-
-            status, body, _ = request(f"{base_url}/api/log?offset=0", authenticated=True)
-            assert status == 200, status
-            payload = json.loads(body)
-            assert payload == {
-                "offset": final_offset,
-                "start_offset": 0,
-                "start_line": 1,
-                "reset": False,
-                "state": "success",
-                "text": "first line\nsecond line\n",
-            }, payload
-
-            status, body, _ = request(
-                f"{base_url}/api/log?offset={first_offset}", authenticated=True
-            )
-            assert status == 200, status
-            payload = json.loads(body)
-            assert payload["text"] == "second line\n", payload
-            assert payload["state"] == "success", payload
-
-            large_log = b"".join(
-                f"line-{index:05d}\n".encode("ascii") for index in range(5000)
-            )
-            (log_root / "build.log").write_bytes(large_log)
-            status, body, _ = request(
-                f"{base_url}/api/log?tail_bytes=4096", authenticated=True
-            )
-            assert status == 200, status
-            tail_payload = json.loads(body)
-            assert tail_payload["start_offset"] > 0, tail_payload
-            assert tail_payload["start_line"] > 1, tail_payload
-            assert tail_payload["text"].startswith("line-"), tail_payload
-            assert "line-00000" not in tail_payload["text"], tail_payload
-            (log_root / "build.log").write_bytes(b"first line\nsecond line\n")
-
-            status, body, headers = request(f"{base_url}/download", authenticated=True)
-            assert status == 200, status
-            assert body == b"first line\nsecond line\n", body
-            assert "attachment" in headers.get("Content-Disposition", "")
-
-            status, _, _ = request(f"{base_url}/api/dashboard")
-            assert status == 401, status
-            with (log_root / "build.log").open("ab") as log_file:
-                log_file.write(
-                    "\x1b[32m[INFO]\x1b[0m \x1b[2m2026-09-24T03:30:00Z\x1b[0m ──── 1. Environment initialization ────\n"
-                    "[INFO] ──── Armbian internal banner ────\n"
-                    "──── another internal separator ────\n"
-                    "[WARN] synthetic warning\n"
-                    "[🐳|🔨] test.dtb: Warning (spi_bus_reg): Failed prerequisite 'reg_format'\n"
-                    "[🐳|🔨] patch title: keep reset deasserted on failed resume\n"
-                    "[ERROR] synthetic failure evidence\n"
-                    "\x1b[32m[INFO]\x1b[0m \x1b[2m2026-09-24T03:30:03Z\x1b[0m ──── 1. Environment initialization completed (elapsed 3s) ────\n".encode(
-                        "utf-8"
-                    )
+                large_log = b"".join(
+                    f"line-{index:05d}\n".encode("ascii") for index in range(5000)
                 )
-            status, body, _ = request(
-                f"{base_url}/api/dashboard", authenticated=True
-            )
-            assert status == 200, status
-            dashboard = json.loads(body)
-            assert dashboard["timeline"][0]["label"] == "1. Environment initialization", dashboard
-            assert dashboard["timeline"][0]["status"] == "success", dashboard
-            assert dashboard["timeline"][0]["duration_seconds"] == 3, dashboard
-            assert len(dashboard["timeline"]) == 1, dashboard
-            diagnostics = dashboard["diagnostics"]
-            assert {item["severity"] for item in diagnostics} == {
-                "warning",
-                "error",
-            }, dashboard
-            assert len(diagnostics) == 3, diagnostics
-            dtc_warning = next(
-                item for item in diagnostics if "Failed prerequisite" in item["message"]
-            )
-            assert dtc_warning["severity"] == "warning", dtc_warning
-            assert not any(
-                "failed resume" in item["message"] for item in diagnostics
-            ), diagnostics
-            assert dashboard["features"][0]["branch"] == "current", dashboard
-            custom_group = next(
-                group
-                for group in dashboard["features"][0]["groups"]
-                if group["id"] == "custom"
-            )
-            assert custom_group["items"][0] == {
-                "symbol": "TCP_CONG_BRUTAL",
-                "value": "y",
-            }, custom_group
-            assert len(dashboard["sources"]) == 3, dashboard
-            assert dashboard["config_diffs"][0]["added"] == 1, dashboard
-            assert dashboard["config_diffs"][0]["removed"] == 1, dashboard
-            assert {
-                (item["kind"], item["status"])
-                for item in dashboard["integrity"]
-            } >= {
-                ("config", "verified"),
-                ("sources", "verified"),
-                ("modules", "verified"),
-            }, dashboard
-            assert dashboard["resources"], dashboard
+                (log_root / "build.log").write_bytes(large_log)
+                status, body, _ = request(
+                    f"{base_url}/api/log?tail_bytes=4096", authenticated=True
+                )
+                self.assertEqual(status, 200, status)
+                tail_payload = json.loads(body)
+                self.assertTrue(tail_payload["start_offset"] > 0, tail_payload)
+                self.assertTrue(tail_payload["start_line"] > 1, tail_payload)
+                self.assertTrue(tail_payload["text"].startswith("line-"), tail_payload)
+                self.assertTrue("line-00000" not in tail_payload["text"], tail_payload)
+                (log_root / "build.log").write_bytes(b"first line\nsecond line\n")
 
-            with (log_root / "build.log").open("ab") as log_file:
-                for index in range(130):
+                status, body, headers = request(f"{base_url}/download", authenticated=True)
+                self.assertEqual(status, 200, status)
+                self.assertEqual(body, b"first line\nsecond line\n", body)
+                self.assertTrue("attachment" in headers.get("Content-Disposition", ""))
+
+                status, _, _ = request(f"{base_url}/api/dashboard")
+                self.assertEqual(status, 401, status)
+                with (log_root / "build.log").open("ab") as log_file:
                     log_file.write(
-                        f"[WARN] warning flood {index}\n".encode("utf-8")
+                        "\x1b[32m[INFO]\x1b[0m \x1b[2m2026-09-24T03:30:00Z\x1b[0m ──── 1. Environment initialization ────\n"
+                        "[INFO] ──── Armbian internal banner ────\n"
+                        "──── another internal separator ────\n"
+                        "[WARN] synthetic warning\n"
+                        "[🐳|🔨] test.dtb: Warning (spi_bus_reg): Failed prerequisite 'reg_format'\n"
+                        "[🐳|🔨] patch title: keep reset deasserted on failed resume\n"
+                        "[ERROR] synthetic failure evidence\n"
+                        "\x1b[32m[INFO]\x1b[0m \x1b[2m2026-09-24T03:30:03Z\x1b[0m ──── 1. Environment initialization completed (elapsed 3s) ────\n".encode(
+                            "utf-8"
+                        )
                     )
-            status, body, _ = request(
-                f"{base_url}/api/dashboard", authenticated=True
-            )
-            assert status == 200, status
-            flooded_dashboard = json.loads(body)
-            assert any(
-                item["severity"] == "error"
-                and "synthetic failure evidence" in item["message"]
-                for item in flooded_dashboard["diagnostics"]
-            ), flooded_dashboard["diagnostics"]
-            assert len(flooded_dashboard["diagnostics"]) <= 120
+                status, body, _ = request(
+                    f"{base_url}/api/dashboard", authenticated=True
+                )
+                self.assertEqual(status, 200, status)
+                dashboard = json.loads(body)
+                self.assertTrue(dashboard["timeline"][0]["label"] == "1. Environment initialization")
+                self.assertEqual(dashboard["timeline"][0]["status"], "success", dashboard)
+                self.assertEqual(dashboard["timeline"][0]["duration_seconds"], 3, dashboard)
+                self.assertEqual(len(dashboard["timeline"]), 1, dashboard)
+                diagnostics = dashboard["diagnostics"]
+                self.assertEqual(
+                    {item["severity"] for item in diagnostics},
+                    {
+                        "warning",
+                        "error",
+                    },
+                    dashboard,
+                )
+                self.assertEqual(len(diagnostics), 3, diagnostics)
+                dtc_warning = next(
+                    item for item in diagnostics if "Failed prerequisite" in item["message"]
+                )
+                self.assertEqual(dtc_warning["severity"], "warning", dtc_warning)
+                self.assertFalse(
+                    any("failed resume" in item["message"] for item in diagnostics),
+                    diagnostics,
+                )
+                self.assertEqual(dashboard["features"][0]["branch"], "current", dashboard)
+                custom_group = next(
+                    group
+                    for group in dashboard["features"][0]["groups"]
+                    if group["id"] == "custom"
+                )
+                self.assertEqual(
+                    custom_group["items"][0],
+                    {
+                        "symbol": "TCP_CONG_BRUTAL",
+                        "value": "y",
+                    },
+                    custom_group,
+                )
+                self.assertEqual(len(dashboard["sources"]), 3, dashboard)
+                self.assertEqual(dashboard["config_diffs"][0]["added"], 1, dashboard)
+                self.assertEqual(dashboard["config_diffs"][0]["removed"], 1, dashboard)
+                self.assertTrue(
+                    {
+                        (item["kind"], item["status"])
+                        for item in dashboard["integrity"]
+                    }
+                    >= {
+                        ("config", "verified"),
+                        ("sources", "verified"),
+                        ("modules", "verified"),
+                    },
+                    dashboard,
+                )
+                self.assertTrue(dashboard["resources"], dashboard)
 
-            status, _, _ = request(f"{base_url}/api/packages")
-            assert status == 401, status
-            status, body, _ = request(
-                f"{base_url}/api/packages", authenticated=True
-            )
-            assert status == 200, status
-            packages = json.loads(body)
-            assert packages["packages"][0]["path"] == "debs/linux-image-test.deb", packages
-            status, body, _ = request(
-                f"{base_url}/api/package?path={package_path}", authenticated=True
-            )
-            assert status == 200, status
-            package_inspection = json.loads(body)
-            assert package_inspection["inspection"] in {
-                "ready",
-                "invalid",
-                "unavailable",
-            }, package_inspection
+                with (log_root / "build.log").open("ab") as log_file:
+                    for index in range(130):
+                        log_file.write(
+                            f"[WARN] warning flood {index}\n".encode("utf-8")
+                        )
+                status, body, _ = request(
+                    f"{base_url}/api/dashboard", authenticated=True
+                )
+                self.assertEqual(status, 200, status)
+                flooded_dashboard = json.loads(body)
+                self.assertTrue(
+                    any(
+                        item["severity"] == "error"
+                        and "synthetic failure evidence" in item["message"]
+                        for item in flooded_dashboard["diagnostics"]
+                    ),
+                    flooded_dashboard["diagnostics"],
+                )
+                self.assertTrue(len(flooded_dashboard["diagnostics"]) <= 120)
 
-            status, _, _ = request(f"{base_url}/missing", authenticated=True)
-            assert status == 404, status
-        finally:
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=5)
+                status, _, _ = request(f"{base_url}/api/packages")
+                self.assertEqual(status, 401, status)
+                status, body, _ = request(
+                    f"{base_url}/api/packages", authenticated=True
+                )
+                self.assertEqual(status, 200, status)
+                packages = json.loads(body)
+                self.assertTrue(packages["packages"][0]["path"] == "debs/linux-image-test.deb")
+                status, body, _ = request(
+                    f"{base_url}/api/package?path={package_path}", authenticated=True
+                )
+                self.assertEqual(status, 200, status)
+                package_inspection = json.loads(body)
+                self.assertIn(
+                    package_inspection["inspection"],
+                    {
+                        "ready",
+                        "invalid",
+                        "unavailable",
+                    },
+                    package_inspection,
+                )
 
-    print("live log server tests passed")
-    return 0
+                status, _, _ = request(f"{base_url}/missing", authenticated=True)
+                self.assertEqual(status, 404, status)
+            finally:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+
+
+
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    unittest.main(verbosity=2)

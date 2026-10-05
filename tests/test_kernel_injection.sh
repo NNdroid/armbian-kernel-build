@@ -81,11 +81,51 @@ reset_hook_arrays() {
 	opts_n=()
 	# shellcheck disable=SC2034
 	kernel_config_modifying_hashes=()
+	# Reset the compatibility-skip report too, otherwise an assertion about it
+	# can be satisfied by entries left over from an earlier hook invocation.
+	# shellcheck disable=SC2034
+	_kernel_inject_skipped_symbols=()
+	# shellcheck disable=SC2034
+	KERNEL_INJECT_MISSING_SYMBOLS=()
 }
 
 TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/kernel-injection-test.XXXXXX")"
 trap 'rm -rf -- "${TEST_ROOT}"' EXIT
 KERNEL_ROOT="${TEST_ROOT}/linux"
+
+# Windows (Git Bash) compatibility.
+#
+# Git for Windows resolves a POSIX absolute path such as /tmp/foo by treating
+# the leading slash as the root of the current drive, so the checkout lands in
+# C:\tmp\foo instead of the MSYS /tmp mapping. Every git command still exits 0
+# and `rev-parse HEAD` returns the pinned SHA, so the injector only notices when
+# the required-files check finds an empty work tree. The production build runs
+# inside a Linux container and never hits this, so the shim lives here rather
+# than in the injector: this keeps the shipped script free of platform branches.
+if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* || "$(uname -s)" == CYGWIN* ]] &&
+	command -v cygpath > /dev/null 2>&1; then
+	_GIT_SHIM_BIN="${TEST_ROOT}/git-shim-bin"
+	# Resolve the real git before the shim shadows it on PATH; hardcoding
+	# /usr/bin/git would break on Git Bash installations that live elsewhere.
+	_GIT_REAL="$(command -v git)"
+	mkdir -p "${_GIT_SHIM_BIN}"
+	cat > "${_GIT_SHIM_BIN}/git" <<GIT_SHIM
+#!/usr/bin/env bash
+# Translate only absolute POSIX path arguments; everything else is passed
+# through untouched so ordinary repository URLs and refs keep working.
+set -e
+declare -a translated=()
+for argument in "\$@"; do
+	case "\${argument}" in
+		/*) translated+=("\$(cygpath -m "\${argument}")") ;;
+		*) translated+=("\${argument}") ;;
+	esac
+done
+exec ${_GIT_REAL} "\${translated[@]}"
+GIT_SHIM
+	chmod +x "${_GIT_SHIM_BIN}/git"
+	export PATH="${_GIT_SHIM_BIN}:${PATH}"
+fi
 
 mkdir -p \
 	"${KERNEL_ROOT}/net/ipv4" \
@@ -338,12 +378,18 @@ fi
 VERIFY_TREE="${TEST_ROOT}/verify-tree"
 mkdir -p "${VERIFY_TREE}"
 : > "${VERIFY_TREE}/Kconfig"
+# DEBUG_INFO_NONE / DEBUG_INFO_REDUCED are deliberately excluded here. They are
+# force-disabled via _kernel_inject_force_mode, so they DO appear in opts_n and a
+# naive loop over every opts_* entry would define them in the synthetic tree --
+# making the "undefined legacy symbol" compatibility branch unreachable and
+# silently voiding the only coverage it has. Newer kernels dropped both symbols.
 for symbol in "${opts_y[@]}" "${opts_m[@]}" "${opts_n[@]}"; do
+	case "${symbol}" in
+		DEBUG_INFO_NONE | DEBUG_INFO_REDUCED) continue ;;
+	esac
 	printf 'config %s\n\tbool "synthetic"\n' "${symbol}" >> "${VERIFY_TREE}/Kconfig"
 done
 printf 'config HAVE_EBPF_JIT\n\tbool "synthetic"\n' >> "${VERIFY_TREE}/Kconfig"
-printf 'config DEBUG_INFO_NONE\n\tbool "synthetic"\n' >> "${VERIFY_TREE}/Kconfig"
-printf 'config DEBUG_INFO_REDUCED\n\tbool "synthetic"\n' >> "${VERIFY_TREE}/Kconfig"
 
 EFFECTIVE_CONFIG="${VERIFY_TREE}/effective-ebpf.config"
 {
@@ -363,6 +409,52 @@ EFFECTIVE_CONFIG="${VERIFY_TREE}/effective-ebpf.config"
 } > "${EFFECTIVE_CONFIG}"
 _kernel_inject_verify_full_ebpf_config "${EFFECTIVE_CONFIG}"
 _kernel_inject_verify_full_network_config "${EFFECTIVE_CONFIG}"
+
+# The undefined legacy debug symbols must be skipped rather than treated as a
+# missing capability, and they must be reported so release notes can disclose it.
+for legacy_symbol in DEBUG_INFO_NONE DEBUG_INFO_REDUCED; do
+	printf '%s\n' "${_kernel_inject_skipped_symbols[@]:-}" | \
+		grep -qx "${legacy_symbol}" || \
+		fail "undefined legacy symbol ${legacy_symbol} was not recorded in _kernel_inject_skipped_symbols"
+done
+printf '%s\n' "${_kernel_inject_skipped_symbols[@]}" | \
+	grep -qx DEBUG_INFO_NONE || \
+	fail "skipping an undefined legacy symbol did not log a compatibility warning"
+
+# Reverse direction: once the tree DOES define a legacy debug symbol it must be
+# checked for real, and a config that leaves it enabled must fail. This guards
+# against "fixing" the missing coverage by skipping unconditionally. The two
+# symbols are excluded from the bulk loop and declared explicitly below so each
+# Kconfig block appears exactly once.
+LEGACY_TREE="${TEST_ROOT}/legacy-tree"
+mkdir -p "${LEGACY_TREE}"
+: > "${LEGACY_TREE}/Kconfig"
+for symbol in "${opts_y[@]}" "${opts_m[@]}" "${opts_n[@]}"; do
+	case "${symbol}" in
+		DEBUG_INFO_NONE | DEBUG_INFO_REDUCED) continue ;;
+	esac
+	printf 'config %s\n\tbool "synthetic"\n' "${symbol}" >> "${LEGACY_TREE}/Kconfig"
+done
+printf 'config HAVE_EBPF_JIT\n\tbool "synthetic"\n' >> "${LEGACY_TREE}/Kconfig"
+printf 'config DEBUG_INFO_NONE\n\tbool "synthetic"\n' >> "${LEGACY_TREE}/Kconfig"
+printf 'config DEBUG_INFO_REDUCED\n\tbool "synthetic"\n' >> "${LEGACY_TREE}/Kconfig"
+LEGACY_CONFIG="${LEGACY_TREE}/effective.config"
+cp -- "${EFFECTIVE_CONFIG}" "${LEGACY_CONFIG}"
+sed -i 's/^# CONFIG_DEBUG_INFO_NONE is not set$/CONFIG_DEBUG_INFO_NONE=y/' "${LEGACY_CONFIG}"
+reset_hook_arrays
+if _kernel_inject_verify_full_ebpf_config "${LEGACY_CONFIG}"; then
+	fail "ebpf verifier accepted CONFIG_DEBUG_INFO_NONE=y when the tree defines it"
+fi
+if printf '%s\n' "${_kernel_inject_skipped_symbols[@]:-}" | grep -qx DEBUG_INFO_NONE; then
+	fail "a defined legacy debug symbol must not be reported as skipped"
+fi
+# Restore the negative check and confirm the tree-defined case passes cleanly.
+sed -i 's/^CONFIG_DEBUG_INFO_NONE=y$/# CONFIG_DEBUG_INFO_NONE is not set/' "${LEGACY_CONFIG}"
+reset_hook_arrays
+_kernel_inject_verify_full_ebpf_config "${LEGACY_CONFIG}"
+# Point the symbol inventory back at the undefined-symbol tree for the checks below.
+reset_hook_arrays
+_kernel_inject_load_defined_symbols "${VERIFY_TREE}" || fail "symbol rescan failed"
 
 # Complete networking is a built-in contract: a feature that survives merely
 # as a loadable module must be rejected before a release is uploaded.
@@ -486,10 +578,29 @@ printf 'must not upload\n' > \
 	fi
 	CAPTURED_NOTES="${RELEASE_TEST_ROOT}/captured-notes.md"
 	CAPTURED_ARGS="${RELEASE_TEST_ROOT}/captured-gh-args.txt"
+	CAPTURED_LOG="${RELEASE_TEST_ROOT}/captured-gh-log.txt"
+	# The publish path has three outcomes: create succeeds, create fails but the
+	# release already exists (edit + upload --clobber), and create fails with no
+	# existing release. A mock that always succeeds leaves the last two untested
+	# even though the second one is the "half-finished release" risk: edit
+	# publishes the notes before upload can fail.
+	GH_MODE=create_ok
+	: > "${CAPTURED_LOG}"
 	gh() {
-		local argument
+		local argument subcommand="${1:-} ${2:-}"
 		local notes_next=no
-		printf '%s\n' "$@" > "${CAPTURED_ARGS}"
+		# Append, never truncate. The publish path issues several separate gh
+		# invocations (create, or view + edit + upload on recovery, then view on
+		# the dead end), and each assertion below is about the run as a whole:
+		# a per-call overwrite would leave the transcript holding only the last
+		# invocation, which is a bare `release view` with no files attached.
+		printf '%s\n' "$@" >> "${CAPTURED_LOG}"
+		printf '%s\n' "$@" >> "${CAPTURED_ARGS}"
+		case "${GH_MODE}:${subcommand}" in
+			create_fails:release\ create) return 1 ;;
+			view_fails:release\ create) return 1 ;;
+			view_fails:release\ view) return 1 ;;
+		esac
 		for argument in "$@"; do
 			if [[ "${notes_next}" == yes ]]; then
 				cp "${argument}" "${CAPTURED_NOTES}"
@@ -499,9 +610,39 @@ printf 'must not upload\n' > \
 			fi
 		done
 	}
+	# Start each scenario from an empty transcript.
+	reset_gh_log() { : > "${CAPTURED_LOG}"; : > "${CAPTURED_ARGS}"; }
+	reset_gh_log
 	export GITHUB_SHA=0123456789abcdef0123456789abcdef01234567
 	upload_to_github_release edge-7.2.1 edge 7.2.1 7.2.0 \
 		'./build/output/debs/*-edge-rockchip64_*__7.2.1-*.deb'
+
+	# Recovery path: create fails, the release exists, notes are updated and every
+	# asset is re-uploaded with --clobber.
+	reset_gh_log
+	GH_MODE=create_fails
+	if ! upload_to_github_release edge-7.2.1 edge 7.2.1 7.2.0 \
+		'./build/output/debs/*-edge-rockchip64_*__7.2.1-*.deb'; then
+		fail "publishing must recover when the release already exists"
+	fi
+	[[ "$(grep -c '^release$' "${CAPTURED_LOG}")" -ge 1 ]] || \
+		fail "recovery path did not retry 'gh release view'"
+	grep -q -- '--clobber' "${CAPTURED_LOG}" || \
+		fail "recovery path did not replace existing assets with --clobber"
+	grep -q -- '--notes-file' "${CAPTURED_LOG}" || \
+		fail "recovery path did not update the release notes"
+
+	# Dead end: create fails and no release exists, so there is nothing to update.
+	reset_gh_log
+	GH_MODE=view_fails
+	if upload_to_github_release edge-7.2.1 edge 7.2.1 7.2.0 \
+		'./build/output/debs/*-edge-rockchip64_*__7.2.1-*.deb' 2>/dev/null; then
+		fail "publishing must fail when the release cannot be created or found"
+	fi
+	if grep -q 'upload' "${CAPTURED_LOG}"; then
+		fail "dead-end path must not attempt to upload assets to a missing release"
+	fi
+	GH_MODE=create_ok
 
 	built_version="$(resolve_built_version edge)"
 	[[ "${built_version}" == '7.2.1' ]] || \
@@ -509,7 +650,10 @@ printf 'must not upload\n' > \
 	if resolve_built_version current; then
 		fail "resolve_built_version invented a version for a branch with no artifact"
 	fi
-	BUILD_MARKER="$(mktemp ./build/.resolve-marker.XXXXXX)"
+	# Inside the sandboxed fixture root, not ./build: the EXIT trap only cleans
+	# TEST_ROOT, so a marker created in the working tree would survive the run and
+	# show up as untracked noise in git status.
+	BUILD_MARKER="$(mktemp "${RELEASE_TEST_ROOT}/resolve-marker.XXXXXX")"
 	if resolve_built_version edge "${BUILD_MARKER}"; then
 		fail "resolve_built_version accepted a stale artifact from before this build"
 	fi
@@ -584,6 +728,14 @@ FAKE_DPKG_DEB
 	chmod +x "${FAKE_DPKG_BIN}/dpkg-deb"
 	export PATH="${FAKE_DPKG_BIN}:${PATH}"
 fi
+
+# Every package case below stages its payload through dpkg-deb, so from here on a
+# resolvable dpkg-deb is a precondition rather than a nicety: the block above
+# guarantees it, either from the platform or from the shim. Stop loudly if it
+# somehow does not hold. Silently continuing would run the packaging assertions
+# against a stale .deb and report a pass that tested nothing.
+command -v dpkg-deb >/dev/null 2>&1 \
+	|| fail "dpkg-deb is unresolvable after the shim block; the packaging cases cannot run"
 
 cat > "${WRAPPER_ROOT}/compile.sh" <<'FAKE_COMPILE'
 #!/usr/bin/env bash
@@ -775,26 +927,25 @@ build_fake_image_deb
 
 # TCP-Brutal v2's built-in inventory name is brutal.ko. An inventory containing
 # only the old tcp_brutal.ko name must not pass merely because its directory
-# contains the text "tcp_brutal".
-if command -v dpkg-deb >/dev/null 2>&1; then
-	sed -i 's#/brutal\.ko$#/tcp_brutal.ko#' \
-		"${DEB_STAGE}/usr/lib/modules/fake/modules.builtin"
-	build_fake_image_deb
-	if (
-		cd "${WRAPPER_ROOT}"
-		EFFECTIVE_CONFIG="${EFFECTIVE_CONFIG}" \
-		FAKE_IMAGE_DEB_SOURCE="${FAKE_DEB_TEMPLATE}" \
-		TCP_BRUTAL_COMMIT="${TCP_BRUTAL_COMMIT}" \
-		AMNEZIAWG_COMMIT="${AMNEZIAWG_COMMIT}" \
-		NF_DEAF_COMMIT="${NF_DEAF_COMMIT}" \
-		./build_with_diy.sh kernel BOARD=fake
-	); then
-		fail "build wrapper accepted tcp_brutal.ko instead of built-in TCP-Brutal v2 brutal.ko"
-	fi
-	sed -i 's#/tcp_brutal\.ko$#/brutal.ko#' \
-		"${DEB_STAGE}/usr/lib/modules/fake/modules.builtin"
-	build_fake_image_deb
+# contains the text "tcp_brutal". Unconditional: dpkg-deb is a precondition
+# established above, so there is no environment in which this case is dropped.
+sed -i 's#/brutal\.ko$#/tcp_brutal.ko#' \
+	"${DEB_STAGE}/usr/lib/modules/fake/modules.builtin"
+build_fake_image_deb
+if (
+	cd "${WRAPPER_ROOT}"
+	EFFECTIVE_CONFIG="${EFFECTIVE_CONFIG}" \
+	FAKE_IMAGE_DEB_SOURCE="${FAKE_DEB_TEMPLATE}" \
+	TCP_BRUTAL_COMMIT="${TCP_BRUTAL_COMMIT}" \
+	AMNEZIAWG_COMMIT="${AMNEZIAWG_COMMIT}" \
+	NF_DEAF_COMMIT="${NF_DEAF_COMMIT}" \
+	./build_with_diy.sh kernel BOARD=fake
+); then
+	fail "build wrapper accepted tcp_brutal.ko instead of built-in TCP-Brutal v2 brutal.ko"
 fi
+sed -i 's#/tcp_brutal\.ko$#/brutal.ko#' \
+	"${DEB_STAGE}/usr/lib/modules/fake/modules.builtin"
+build_fake_image_deb
 
 sed -i 's/^CONFIG_DEBUG_INFO_BTF=y$/# CONFIG_DEBUG_INFO_BTF is not set/' \
 	"${DEB_EVIDENCE}/kernel.config"

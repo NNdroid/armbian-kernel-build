@@ -26,61 +26,61 @@ _kernel_inject_log() {
 }
 
 _kernel_inject_array_remove() {
-    local array_name="$1"
-    local symbol="$2"
-    local -n array_ref="${array_name}"
-    local -a filtered=()
-    local item
+	local array_name="$1"
+	local symbol="$2"
+	local -n array_ref="${array_name}"
+	local -a filtered=()
+	local item
 
-    for item in "${array_ref[@]}"; do
-        case "${item}" in
-            "${symbol}"|"CONFIG_${symbol}")
-                ;;
-            *)
-                filtered+=("${item}")
-                ;;
-        esac
-    done
+	for item in "${array_ref[@]}"; do
+		case "${item}" in
+			"${symbol}"|"CONFIG_${symbol}")
+				;;
+			*)
+				filtered+=("${item}")
+				;;
+		esac
+	done
 
-    array_ref=("${filtered[@]}")
+	array_ref=("${filtered[@]}")
 }
 
 _kernel_inject_force_mode() {
-    local symbol="$1"
-    local mode="$2"
+	local symbol="$1"
+	local mode="$2"
 
-    #
-    # Armbian applies opts_n -> opts_y -> opts_m.
-    # A symbol must therefore exist in exactly one mode array.
-    #
-    _kernel_inject_array_remove opts_n "${symbol}"
-    _kernel_inject_array_remove opts_y "${symbol}"
-    _kernel_inject_array_remove opts_m "${symbol}"
+	#
+	# Armbian applies opts_n -> opts_y -> opts_m.
+	# A symbol must therefore exist in exactly one mode array.
+	#
+	_kernel_inject_array_remove opts_n "${symbol}"
+	_kernel_inject_array_remove opts_y "${symbol}"
+	_kernel_inject_array_remove opts_m "${symbol}"
 
-    case "${mode}" in
-        y)
-            opts_y+=("${symbol}")
-            ;;
-        m)
-            opts_m+=("${symbol}")
-            ;;
-        n)
-            opts_n+=("${symbol}")
-            ;;
-        *)
-            _kernel_inject_log err \
-                "Invalid configuration" \
-                "CONFIG_${symbol}: invalid mode '${mode}'"
-            return 1
-            ;;
-    esac
+	case "${mode}" in
+		y)
+			opts_y+=("${symbol}")
+			;;
+		m)
+			opts_m+=("${symbol}")
+			;;
+		n)
+			opts_n+=("${symbol}")
+			;;
+		*)
+			_kernel_inject_log err \
+				"Invalid configuration" \
+				"CONFIG_${symbol}: invalid mode '${mode}'"
+			return 1
+			;;
+	esac
 }
 
 _kernel_inject_add_mode() {
-    local symbol="$1"
-    local mode="$2"
+	local symbol="$1"
+	local mode="$2"
 
-    _kernel_inject_force_mode "${symbol}" "${mode}"
+	_kernel_inject_force_mode "${symbol}" "${mode}"
 }
 
 _kernel_inject_full_ebpf_y_options() {
@@ -476,67 +476,75 @@ _kernel_inject_enable_bpf_lsm_order() {
 }
 
 _kernel_inject_enable_full_ebpf() {
-    local -a ebpf_y=()
-    local -a ebpf_m=()
-    local symbol
+	local -a ebpf_y=()
+	local -a ebpf_m=()
+	local symbol
 
-    mapfile -t ebpf_y < <(_kernel_inject_full_ebpf_y_options)
-    mapfile -t ebpf_m < <(_kernel_inject_full_ebpf_m_options)
+	mapfile -t ebpf_y < <(_kernel_inject_full_ebpf_y_options)
+	mapfile -t ebpf_m < <(_kernel_inject_full_ebpf_m_options)
 
-    _kernel_inject_force_mode DEBUG_INFO_NONE n
-    _kernel_inject_force_mode DEBUG_INFO_REDUCED n
+	# DEBUG_INFO_NONE is one arm of lib/Kconfig.debug's "Debug information" choice;
+	# the same choice holds DEBUG_INFO_DWARF5 and DEBUG_INFO_BTF. Setting both is
+	# not a duplicate, it is a contradiction: olddefconfig resolves the choice by
+	# the last prompt written, so leaving DEBUG_INFO_NONE enabled would silently
+	# drop DEBUG_INFO_BTF and every BPF CO-RE relocation with it. Clear the NONE arm
+	# first so the forced BTF below actually decides the outcome. DEBUG_INFO_REDUCED
+	# is listed for the same reason: it is a separate symbol that shrinks the BTF
+	# payload BPF needs, not an alternative to BTF.
+	_kernel_inject_force_mode DEBUG_INFO_NONE n
+	_kernel_inject_force_mode DEBUG_INFO_REDUCED n
 
-    for symbol in "${ebpf_y[@]}"; do
-        _kernel_inject_force_mode "${symbol}" y || return 1
-    done
+	for symbol in "${ebpf_y[@]}"; do
+		_kernel_inject_force_mode "${symbol}" y || return 1
+	done
 
-    for symbol in "${ebpf_m[@]}"; do
-        _kernel_inject_force_mode "${symbol}" m || return 1
-    done
+	for symbol in "${ebpf_m[@]}"; do
+		_kernel_inject_force_mode "${symbol}" m || return 1
+	done
 
-    kernel_config_modifying_hashes+=(
-        "full-ebpf-btf-core-v2-mode-conflict-safe"
-        "bpf-lsm-runtime-order-v1"
-    )
+	kernel_config_modifying_hashes+=(
+		"full-ebpf-btf-core-v2-mode-conflict-safe"
+		"bpf-lsm-runtime-order-v1"
+	)
 
-    [[ -f .config ]] || return 0
-    _kernel_inject_enable_bpf_lsm_order .config
+	[[ -f .config ]] || return 0
+	_kernel_inject_enable_bpf_lsm_order .config
 }
 
 _kernel_inject_enable_full_networking() {
-    local -a network_y=()
-    local -a network_foundations=()
-    local -a network_builtins=()
-    local -a radio_modules=()
-    local symbol
+	local -a network_y=()
+	local -a network_foundations=()
+	local -a network_builtins=()
+	local -a radio_modules=()
+	local symbol
 
-    mapfile -t network_y < <(_kernel_inject_full_network_y_options)
-    mapfile -t network_foundations < <(_kernel_inject_full_network_foundation_options)
-    mapfile -t network_builtins < <(_kernel_inject_full_network_builtin_options)
-    mapfile -t radio_modules < <(_kernel_inject_radio_module_options)
+	mapfile -t network_y < <(_kernel_inject_full_network_y_options)
+	mapfile -t network_foundations < <(_kernel_inject_full_network_foundation_options)
+	mapfile -t network_builtins < <(_kernel_inject_full_network_builtin_options)
+	mapfile -t radio_modules < <(_kernel_inject_radio_module_options)
 
-    #
-    # custom_kernel_config runs after Armbian's core hook, but Armbian keeps
-    # all requested modes in shared arrays and applies opts_m last.
-    #
-    # Therefore simply appending to opts_y is NOT sufficient to override an
-    # earlier opts_m request. Remove conflicting announcements first.
-    #
-    for symbol in \
-        "${network_y[@]}" \
-        "${network_foundations[@]}" \
-        "${network_builtins[@]}"
-    do
-        _kernel_inject_force_mode "${symbol}" y || return 1
-    done
+	#
+	# custom_kernel_config runs after Armbian's core hook, but Armbian keeps
+	# all requested modes in shared arrays and applies opts_m last.
+	#
+	# Therefore simply appending to opts_y is NOT sufficient to override an
+	# earlier opts_m request. Remove conflicting announcements first.
+	#
+	for symbol in \
+		"${network_y[@]}" \
+		"${network_foundations[@]}" \
+		"${network_builtins[@]}"
+	do
+		_kernel_inject_force_mode "${symbol}" y || return 1
+	done
 
-    for symbol in "${radio_modules[@]}"; do
-        _kernel_inject_force_mode "${symbol}" m || return 1
-    done
+	for symbol in "${radio_modules[@]}"; do
+		_kernel_inject_force_mode "${symbol}" m || return 1
+	done
 
-    kernel_config_modifying_hashes+=(
-        "full-networking-v6-force-tristate-foundations"
-    )
+	kernel_config_modifying_hashes+=(
+		"full-networking-v6-force-tristate-foundations"
+	)
 }
 
 # ============================================================================
@@ -626,6 +634,11 @@ _kernel_inject_verify_symbol_list() {
 	local -a missing=()
 	local actual
 	local symbols_available=yes
+
+	# Always reset the global report: it is only meaningful for the most recent
+	# call, and leaving a previous failure in place would let a later caller read
+	# stale entries as if they described the config it just verified.
+	KERNEL_INJECT_MISSING_SYMBOLS=()
 
 	if ! _kernel_inject_load_defined_symbols "$(dirname "${config_file}")"; then
 		symbols_available=no
@@ -1185,7 +1198,13 @@ custom_kernel_config__kernel_inject() {
 		return 1
 	fi
 
-	opts_y+=(NET INET PROC_FS CRYPTO NETFILTER IPV6 NET_SCHED NET_SCH_FQ)
+	# These foundations must use force_mode, not a bare opts_y append: Armbian
+	# applies opts_m last, so a plain "+=" would lose to any earlier opts_m
+	# announcement for the same symbol and olddefconfig would silently keep it
+	# modular. See _kernel_inject_force_mode.
+	for symbol in NET INET PROC_FS CRYPTO NETFILTER IPV6 NET_SCHED NET_SCH_FQ; do
+		_kernel_inject_add_mode "${symbol}" y || return 1
+	done
 	if [[ "${enable_full_ebpf}" == yes ]]; then
 		_kernel_inject_enable_full_ebpf || return 1
 	fi

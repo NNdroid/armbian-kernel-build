@@ -4,7 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       target:
-        description: Build platform (scheduled builds remain Rockchip64)
+        # A free-form string on purpose: adding a target must not require editing
+        # this workflow. `bash build.sh --list-targets` shows the valid ids, and
+        # an unknown one fails in the prepare step before any runner is started.
+        description: 'Build platform; run `bash build.sh --list-targets` for valid ids (scheduled builds remain Rockchip64)'
         type: string
         default: rockchip64
       branch:
@@ -38,6 +41,8 @@ jobs:
   prepare:
     name: Resolve target profile
     runs-on: ubuntu-24.04
+    # Fail fast instead of hanging on a stuck network call or a wedged resolver.
+    timeout-minutes: 10
     outputs:
       runner: ${{ steps.target.outputs.runner }}
       board: ${{ steps.target.outputs.board }}
@@ -59,6 +64,10 @@ jobs:
     name: Build ${{ inputs.target || 'rockchip64' }}
     needs: prepare
     runs-on: ${{ needs.prepare.outputs.runner }}
+    # A full Armbian kernel build is long. Declare the ceiling explicitly so a
+    # hung compile fails with this reason instead of the silent 360-minute
+    # platform default, and leave headroom for packaging and upload.
+    timeout-minutes: 360
 
     steps:
       - name: Checkout code
@@ -82,7 +91,7 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git curl sudo qemu-user-static jq gh
+          sudo apt-get install -y git curl sudo qemu-user-static gh
 
       - name: Make script executable
         run: chmod +x build.sh overwrite/build_with_diy.sh tests/test_kernel_injection.sh
@@ -93,14 +102,26 @@ jobs:
           python3 tests/test_live_log_server.py
           python3 tests/test_hk1box.py
           python3 tests/test_redact_log_stream.py
+          # The logging contract: level gating, the step banners live_dashboard.py
+          # parses, and the failure report. It is a contract with the dashboard
+          # and with log files left behind by CI, so it has to gate merges rather
+          # than only run locally.
+          python3 tests/test_logging.py
 
       - name: Verify current Armbian extension integration
+        env:
+          # Pinned so an upstream refactor cannot silently redefine the extension
+          # contract this repository is tested against. Bump deliberately after
+          # checking that lib/functions/general/extensions.sh still exposes the
+          # hook points used by userpatches/extensions/*.sh.
+          ARMBIAN_BUILD_REF: ec48552082d5ceeb9b01e33182ee1b3b6daff105
         run: |
           set -Eeuo pipefail
           manager_source="$(mktemp)"
           trap 'rm -f -- "$manager_source"' EXIT
           curl --fail --location --silent --show-error --retry 4 --retry-all-errors \
-            https://raw.githubusercontent.com/armbian/build/main/lib/functions/general/extensions.sh \
+            --connect-timeout 20 --max-time 120 \
+            "https://raw.githubusercontent.com/armbian/build/${ARMBIAN_BUILD_REF}/lib/functions/general/extensions.sh" \
             --output "$manager_source"
           bash tests/test_armbian_extensions.sh "$manager_source"
 

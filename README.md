@@ -1,81 +1,133 @@
 # armbian-kernel-build
 
-## 扩展构建目标
+## Extensible build targets
 
-构建脚本已分层：`build.sh` 是薄入口，公共流程位于 `scripts/lib/`，
-目标配置位于 `userpatches/config/build-targets/`，安装格式由 `adapters/` 插件处理。
-新增标准 DEB 板型不需要修改主流程或 workflow 目标枚举。
-详见 [构建架构与扩展指南](docs/build-architecture.md)。
+The build scripts are layered: `build.sh` is a thin entry point, shared logic lives in
+`scripts/lib/`, target profiles live in `userpatches/config/build-targets/`, and the
+installation format is handled by pluggable adapters in `adapters/`. Adding a board is a
+configuration change, never a code change.
+See [Build architecture and extension guide](docs/build-architecture.md).
 
 ```bash
-bash build.sh --list-targets
-bash build.sh --describe-target hk1box
+bash build.sh --list-targets      # every declared target
+bash build.sh --describe-target hk1box   # the fully resolved profile
+bash build.sh --check-targets     # load and validate every profile
 ```
 
-## HK1 Box / S905X3：统一 Armbian 7.2 构建
+### Adding a target
 
-`hk1box` 使用与 Rockchip64 相同的 Armbian 构建链、源码注入、最终配置校验、
-DEB 证据校验、实时日志和 Release 元数据生成。默认 `edge / 7.2.y`，
-源码与基线配置由 Armbian meson64 管理，**不再从 ophub 内核仓库编译**。
+One command scaffolds the profile and the Armbian board shim:
 
-板级差异集中在 `userpatches/config/build-targets/hk1box.conf`、`userpatches/config/boards/hk1box.conf` 和
-`userpatches/kernel/archive/meson64-7.2/000*-hk1box-*.patch`，
-启动偏移由同目录的 `0003-amlogic-legacy-text-offset.patch` 提供。
-HK1 Box 设备树以 Linux 7.2 自带的 SM1/AC2xx 为基础，保留现有 FDT 文件名，
-适配千兆 PHY、SD/eMMC、USB、SDIO 和蓝牙接线，并屏蔽 Armbian SM1 补丁
-新增的 2.016/2.1 GHz OPP，保留主线频率表。
-板级接线参考 ophub/linux-6.12.y 的
-`4c0b3046f608fad852b55de1b234d43b8e178034`，保留原 GPL/MIT 许可证，
-选择性移植板级设备树和启动兼容性，不替换 Armbian 内核源码或整套配置。
-当前 HK1Box 目标按 **4 GB 型号**声明内存（`0xFFFFFFFF`）；2 GB 型号不能直接套用。
-板级 aliases 保持 Ophub 的 `mmc0=SDIO`、`mmc1=SD 卡`、`mmc2=eMMC`，
-避免依赖设备路径的启动参数和存储脚本因控制器编号变化而失效；仍建议使用 root UUID。
-SoC 时钟、引脚、电源域、GPIO 中断及串口控制台与存储、USB 等早期启动驱动均强制内置，
-最终包配置缺失这些能力时构建会失败。实际容量、PHY 型号和 Wi-Fi 芯片仍需真机验证。
+```bash
+bash build.sh --new-target my-board
+```
 
-Actions 中选择 **Build and Upload Debs → Run workflow**：
+That writes two files and requires no edit anywhere else:
 
-- `target=hk1box`、`branch=auto`（或 `edge`）。
-- `force=true` 可以在同版本已经发布时重新构建。
-- 首次测试建议 `publish=false`，下载 Actions artifacts 验证后再发布。
-- 定时任务保留 Rockchip64；其原有 Release 标签不变，HK1 Box 使用
-  `hk1box-edge-<version>`，避免平台之间误判“已构建”。
+- `userpatches/config/build-targets/my-board.conf` — the single source of truth. Build
+  identity, kernel series lock, DTB, required built-in drivers, the Armbian board
+  variables and the `custom_kernel_config` / `post_family_config` hooks all live here.
+  The generated file documents every field the schema knows about.
+- `userpatches/config/boards/my-board.conf` — a shim that sources the profile. Armbian
+  resolves a board by that path, so the file has to exist, but it must never hold
+  configuration of its own or it will drift from the profile.
 
-Linux Docker 主机运行：
+Then set the required identity fields and validate:
+
+```bash
+bash build.sh --describe-target my-board
+```
+
+A board that needs the same `armbian-update` TAR treatment as HK1 Box requires **no new
+script**. Declare `TARGET_ADAPTER=ophub-tar` plus the boot contract it must satisfy
+(`TARGET_BOARD_DTB`, `TARGET_BOOT_TEXT_OFFSET`, `TARGET_DTB_MMC_ALIASES`,
+`TARGET_DTB_MEMORY_REG`) and `scripts/package_ophub_tar.sh` validates them against the
+built artifacts. Fields left unset are skipped rather than defaulted to a wrong value.
+
+The field list lives in `TARGET_SCHEMA` in `scripts/lib/targets.sh`; resetting,
+validation and `--describe-target` all derive from it, so a new profile field is declared
+in exactly one place.
+
+## HK1 Box / S905X3: unified Armbian 7.2 build
+
+`hk1box` reuses the same Armbian build chain, source injection, final configuration
+validation, DEB evidence validation, live log, and release metadata generation as
+Rockchip64. It defaults to `edge / 7.2.y`; the source tree and baseline configuration are
+managed by Armbian meson64, so **nothing is compiled from the ophub kernel repository
+anymore**.
+
+Board-specific differences are isolated in `userpatches/config/build-targets/hk1box.conf`
+and `userpatches/kernel/archive/meson64-7.2/000*-hk1box-*.patch`. The boot offset comes
+from `0003-amlogic-legacy-text-offset.patch` in the same directory. The HK1 Box device
+tree is based on the SM1/AC2xx implementation shipped with Linux 7.2 and keeps the
+existing FDT file name. It adapts the gigabit PHY, SD/eMMC, USB, SDIO, and Bluetooth
+wiring, and disables the 2.016/2.1 GHz OPPs added by the Armbian SM1 patches so the
+mainline frequency table is preserved. Board wiring references ophub/linux-6.12.y commit
+`4c0b3046f608fad852b55de1b234d43b8e178034`; the original GPL/MIT licenses are retained and
+only the board device tree and boot compatibility are selectively ported. The Armbian
+kernel source and the full configuration set are never replaced.
+
+The HK1 Box target currently declares memory for the **4 GB model** (`0xFFFFFFFF`); the
+2 GB model cannot reuse it as-is. Board aliases keep the ophub numbering
+(`mmc0=SDIO`, `mmc1=SD card`, `mmc2=eMMC`) so boot arguments and storage scripts that depend
+on device paths do not break when controller numbering changes; using the root UUID is
+still recommended. SoC clocks, pinmux, power domains, GPIO interrupts, the serial console,
+and early boot drivers for storage and USB are all forced built-in, and the build fails
+when the final package configuration lacks any of them. Real capacity, PHY model, and Wi-Fi
+chip still require on-device verification.
+
+In Actions, choose **Build and Upload Debs → Run workflow**:
+
+- `target=hk1box`, `branch=auto` (or `edge`).
+- `force=true` rebuilds even when the same version is already released.
+- For a first run, prefer `publish=false`; verify the Actions artifacts before publishing.
+- The scheduled job still covers Rockchip64. Its existing release tags are unchanged,
+  while HK1 Box uses `hk1box-edge-<version>` so platforms cannot mistake each other's
+  builds as already done.
+
+On a Linux Docker host:
 
 ```bash
 BUILD_TARGET=hk1box BUILD_FORCE=yes BUILD_PUBLISH=no bash build.sh
 ```
 
-三个自定义组件默认内置 `y`，原生 WireGuard 为 `n`；
-eBPF/BTF/CO-RE 和完整网络能力复用既有严格校验；
-Bluetooth / Wi-Fi / MT7921E 保持 `m`，.ko、依赖和使用说明仍由共享逻辑导出。
-编译 MT7921E 不代表 HK1 Box 自带 PCIe 硬件；无线驱动运行还需要对应固件。
+The three custom components are built in (`y`) by default and native WireGuard is `n`.
+The existing strict validation for eBPF/BTF/CO-RE and the full network feature set is
+reused unchanged. Bluetooth, Wi-Fi, and MT7921E stay modular (`m`), and the shared logic
+still exports the `.ko` files, dependencies, and usage instructions. Compiling MT7921E
+does not mean the HK1 Box ships PCIe hardware; running the wireless driver additionally
+requires matching firmware.
 
-标准 DEB 位于 `build/output/debs`，最终配置、源码 pin、功能清单及
-defconfig 差异在 DEB 内嵌证据和 `build/output/release-metadata/edge` 中。
-`scripts/package_hk1box.sh` 只转换本次构建的已校验 DEB，
-不再编译一遍内核：在隔离 ARM64 容器生成 initramfs，再生成
-`boot-*`、`dtb-amlogic-*`、`modules-*`、`header-*` 和 `sha256sums`。
-打包前会用 `fdtget` 校验实际 DTB 的 MMC aliases 和 4 GB 内存声明，
-并检查 ARM64 Image 启动偏移；initramfs 使用 gzip，uInitrd 按 ARM64/gzip 封装。
-总包输出 `build/output/hk1box/<完整 uname-r>.tar.gz`，随 DEB 一起发布。
-TAR 中的构建证据随版本模块目录安装到
-`/usr/lib/modules/<完整 uname-r>/armbian-kernel-build/`。
+Standard DEBs land in `build/output/debs`. The final configuration, source pins, feature
+inventory, and defconfig differences are stored in the evidence embedded in the DEB and in
+`build/output/release-metadata/edge`. `scripts/package_ophub_tar.sh` only converts DEBs that
+were already verified in the current build and does not compile the kernel a second time:
+it produces the initramfs inside an isolated ARM64 container, then generates `boot-*`,
+`dtb-amlogic-*`, `modules-*`, `header-*`, and `sha256sums`. Before packaging, `fdtget`
+validates the MMC aliases and the 4 GB memory declaration of the actual DTB, and the
+ARM64 Image boot offset is checked; the initramfs uses gzip and the uInitrd is wrapped as
+ARM64/gzip. The final bundle is written to
+`build/output/hk1box/<full uname-r>.tar.gz` and published alongside the DEBs. The build
+evidence inside the TAR is installed with the versioned module directory to
+`/usr/lib/modules/<full uname-r>/armbian-kernel-build/`.
 
-在现有 ophub Armbian 上，将 TAR 总包解压到空目录：
+On an existing ophub Armbian system, extract the bundle into an empty directory:
 
 ```bash
 sha256sum -c sha256sums
-sudo armbian-update -k <总包对应的完整版本> -d tar
+sudo armbian-update -k <full version matching the bundle> -d tar
 ```
 
-保留当前 `/boot/uEnv.txt` 的 root UUID 和
-`FDT=/dtb/amlogic/meson-sm1-hk1box-vontar-x3.dtb`。此目标仅支持内核构建，
-不生成或刷写 U-Boot，也不修改设备启动配置。请先备份旧内核并准备可启动
-SD/USB 恢复介质；不要把编译成功等同于 HK1 Box 已经启动成功。
+Keep the root UUID from the current `/boot/uEnv.txt` together with
+`FDT=/dtb/amlogic/meson-sm1-hk1box-vontar-x3.dtb`. This target supports kernel builds
+only: it neither generates nor flashes U-Boot, and it does not modify the device boot
+configuration. Back up the old kernel and prepare bootable SD/USB recovery media first; a
+successful compilation is not the same as a successful HK1 Box boot.
 
-Automatically tracks Armbian Rockchip64 kernel versions and reproducibly integrates the following third-party networking components into the kernel build:
+## Injected components
+
+The build automatically tracks Armbian Rockchip64 kernel versions and reproducibly
+integrates the following third-party networking components into the kernel build:
 
 - TCP-Brutal v2 (the pinned `HyNetworks/tcp-brutal` `exp/xan-fix` revision)
 - AmneziaWG

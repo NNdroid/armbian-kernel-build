@@ -834,12 +834,19 @@
       const maxChars = 3 * 1024 * 1024;
       const maxLines = 15000;
       const initialTailBytes = maxChars;
+      // Give a dropped stream a few chances to heal on its own before giving up
+      // on server-sent events entirely: a laptop sleep or an ngrok hiccup
+      // should not cost the whole session its live tail.
+      const SSE_FAILURE_LIMIT = 6;
+      const SSE_RECONNECT_MIN_MS = 1000;
+      const SSE_RECONNECT_MAX_MS = 30000;
       const mediaTheme = window.matchMedia('(prefers-color-scheme: dark)');
       const state = {
         locale: detectLocale(), theme: loadPreference('theme', 'auto'),
         wrap: loadPreference('wrap', 'true') !== 'false', follow: loadPreference('follow', 'true') !== 'false',
         buildState: 'connecting', transport: 'sse', offset: 0, busy: false,
         eventSource: null, pollingTimer: null, metricsTimer: null, sseFailures: 0,
+        reconnectTimer: null, reconnectDelay: 0,
         nextLine: 1, rowCount: 0, charCount: 0, pendingRaw: '', pendingRow: null,
         groupStack: [], collapsedGroups: new Set(), nextGroupId: 1,
         searchMatches: [], activeMatch: -1, selectedLine: '', metrics: null, searchTimer: null,
@@ -1586,15 +1593,25 @@
       }
       function trimBuffer() {
         let groupStateChanged = false;
+        // Walk the children directly and keep a cursor. A per-iteration
+        // querySelector re-scans from the start of the subtree, so evicting N
+        // rows to get back under the cap costs O(N * total rows) on a long
+        // build log; advancing a node reference keeps it linear.
+        let node = elements.body.firstElementChild;
         while ((state.charCount > maxChars || state.rowCount > maxLines) && state.rowCount > 1) {
-          const first = elements.body.querySelector('.log-row:not([data-pending])');
-          if (!first) break;
-          state.charCount -= (first.dataset.text || '').length + 1;
+          let candidate = node;
+          while (candidate && candidate.dataset.pending) {
+            candidate = candidate.nextElementSibling;
+          }
+          if (!candidate) break;
+          const next = candidate.nextElementSibling;
+          state.charCount -= (candidate.dataset.text || '').length + 1;
           state.rowCount -= 1;
-          if (first.dataset.groupId && state.collapsedGroups.delete(first.dataset.groupId)) {
+          if (candidate.dataset.groupId && state.collapsedGroups.delete(candidate.dataset.groupId)) {
             groupStateChanged = true;
           }
-          first.remove();
+          candidate.remove();
+          node = next;
         }
         if (groupStateChanged) applyGroupVisibility();
       }
@@ -1789,10 +1806,12 @@
       function stopPolling() {
         if (state.pollingTimer) clearInterval(state.pollingTimer);
         if (state.metricsTimer) clearInterval(state.metricsTimer);
-        state.pollingTimer = state.metricsTimer = null;
+        if (state.reconnectTimer) clearTimeout(state.reconnectTimer);
+        state.pollingTimer = state.metricsTimer = state.reconnectTimer = null;
       }
       function startPolling() {
         if (state.pollingTimer) return;
+        if (state.reconnectTimer) { clearTimeout(state.reconnectTimer); state.reconnectTimer = null; }
         if (state.eventSource) state.eventSource.close();
         state.eventSource = null;
         updateTransport('poll');
@@ -1824,7 +1843,12 @@
         if (!window.EventSource) { startPolling(); return; }
         updateTransport('sse');
         state.eventSource = new EventSource(`/api/events?offset=${state.offset}`, {withCredentials: true});
-        state.eventSource.onopen = () => updateBuildState(state.buildState === 'connecting' ? 'running' : state.buildState);
+        state.eventSource.onopen = () => {
+          state.sseFailures = 0;
+          state.reconnectDelay = 0;
+          clearTimeout(state.reconnectTimer);
+          updateBuildState(state.buildState === 'connecting' ? 'running' : state.buildState);
+        };
         state.eventSource.addEventListener('log', (event) => parseEvent(event, (payload) => {
           state.sseFailures = 0;
           state.offset = payload.offset;
@@ -1848,7 +1872,22 @@
         state.eventSource.onerror = () => {
           state.sseFailures += 1;
           updateBuildState('reconnecting');
-          if (state.sseFailures >= 3) startPolling();
+          if (state.sseFailures >= SSE_FAILURE_LIMIT) { startPolling(); return; }
+          // A transient blip (proxy timeout, laptop sleep) must heal on its own
+          // instead of degrading the whole session to 2-second polling. Back off
+          // exponentially and reset the delay the moment a stream opens again.
+          if (state.reconnectTimer) clearTimeout(state.reconnectTimer);
+          state.reconnectDelay = Math.min(
+            (state.reconnectDelay || 0) * 2 || SSE_RECONNECT_MIN_MS,
+            SSE_RECONNECT_MAX_MS
+          );
+          state.reconnectTimer = setTimeout(() => {
+            state.reconnectTimer = null;
+            if (!state.eventSource) return;
+            state.eventSource.close();
+            state.eventSource = null;
+            startEventStream();
+          }, state.reconnectDelay);
         };
       }
 

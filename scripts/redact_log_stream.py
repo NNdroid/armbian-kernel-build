@@ -20,9 +20,20 @@ def secret_values() -> list[bytes]:
     for name, value in os.environ.items():
         if not SECRET_NAME_RE.search(name):
             continue
+        # The length floor is a deliberate trade-off, not an oversight. Short
+        # values are far more likely to collide with ordinary log text -- a
+        # 5-character token would turn every matching substring into "***" and
+        # make the log unreadable -- so the redactor prefers a missed edge case
+        # over a build log full of holes. A newlines check is not a trade-off at
+        # all: a value spanning lines would corrupt the stream framing.
         if not value or len(value) < 6 or "\n" in value or "\r" in value:
             continue
         values.add(value.encode("utf-8", errors="ignore"))
+    # Longest first, and this ordering is load-bearing rather than cosmetic:
+    # redact() replaces values one by one, so masking a short value that is a
+    # prefix of a longer one would leave the remainder of the longer secret
+    # exposed. The empty filter is redundant but keeps the contract explicit
+    # should the length check above ever change.
     return sorted((value for value in values if value), key=len, reverse=True)
 
 
@@ -84,14 +95,16 @@ def redact_safe_prefix(
 def main() -> int:
     values = secret_values()
     if not values:
-        while chunk := sys.stdin.buffer.read(64 * 1024):
+        # read1 (not read) matters on a pipe: read(n) blocks until n bytes or
+        # EOF, which would stall the live log until 64 KiB accumulated.
+        while chunk := sys.stdin.buffer.read1(64 * 1024):
             sys.stdout.buffer.write(chunk)
             sys.stdout.buffer.flush()
         return 0
 
     keep_bytes = max(len(value) for value in values) - 1
     pending = b""
-    while chunk := sys.stdin.buffer.read(64 * 1024):
+    while chunk := sys.stdin.buffer.read1(64 * 1024):
         pending += chunk
         emit, pending = redact_safe_prefix(pending, values, keep_bytes)
         if emit:
