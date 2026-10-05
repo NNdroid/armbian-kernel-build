@@ -2,6 +2,28 @@ name: Build and Upload Debs
 
 on:
   workflow_dispatch:
+    inputs:
+      target:
+        description: Build platform (scheduled builds remain Rockchip64)
+        type: string
+        default: rockchip64
+      branch:
+        description: Branch (HK1 Box auto selects edge / 7.2)
+        type: choice
+        default: auto
+        options:
+          - auto
+          - current
+          - edge
+          - bleedingedge
+      force:
+        description: Build even when the upstream version was already released
+        type: boolean
+        default: false
+      publish:
+        description: Publish validated packages and metadata to Release
+        type: boolean
+        default: true
   schedule:
     - cron: '10 13 * * *'
 
@@ -13,18 +35,37 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    name: Build on Ubuntu 24.04
+  prepare:
+    name: Resolve target profile
     runs-on: ubuntu-24.04
+    outputs:
+      runner: ${{ steps.target.outputs.runner }}
+      board: ${{ steps.target.outputs.board }}
+      family: ${{ steps.target.outputs.family }}
+      arch: ${{ steps.target.outputs.arch }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate target and select runner
+        id: target
+        env:
+          BUILD_TARGET: ${{ inputs.target || 'rockchip64' }}
+          BUILD_BRANCH: ${{ inputs.branch || 'auto' }}
+        run: bash build.sh --describe-target >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ inputs.target || 'rockchip64' }}
+    needs: prepare
+    runs-on: ${{ needs.prepare.outputs.runner }}
 
     steps:
-      # 1. 检出代码
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      # 2. 清理磁盘空间 (防止编译内核时空间不足)
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6 # v2.0.0
         with:
@@ -35,17 +76,14 @@ jobs:
           preinstalled-runtimes: true
           swap-storage: false
 
-      # 3. 设置 QEMU (为 Armbian 跨平台编译构建环境)
       - name: Set up QEMU
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
 
-      # 4. 安装基础依赖
       - name: Install Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y git curl sudo qemu-user-static jq gh
 
-      # 5. 赋予脚本执行权限
       - name: Make script executable
         run: chmod +x build.sh overwrite/build_with_diy.sh tests/test_kernel_injection.sh
 
@@ -53,6 +91,18 @@ jobs:
         run: |
           bash tests/test_kernel_injection.sh
           python3 tests/test_live_log_server.py
+          python3 tests/test_hk1box.py
+          python3 tests/test_redact_log_stream.py
+
+      - name: Verify current Armbian extension integration
+        run: |
+          set -Eeuo pipefail
+          manager_source="$(mktemp)"
+          trap 'rm -f -- "$manager_source"' EXIT
+          curl --fail --location --silent --show-error --retry 4 --retry-all-errors \
+            https://raw.githubusercontent.com/armbian/build/main/lib/functions/general/extensions.sh \
+            --output "$manager_source"
+          bash tests/test_armbian_extensions.sh "$manager_source"
 
       - name: Start authenticated ngrok live log
         continue-on-error: true
@@ -60,6 +110,9 @@ jobs:
           NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
           LIVE_LOG_AUTH: ${{ secrets.NGROK_LOG_AUTH }}
           CONFIGURED_NGROK_URL: ${{ secrets.NGROK_URL }}
+          LIVE_LOG_BOARD: ${{ needs.prepare.outputs.board }}
+          LIVE_LOG_FAMILY: ${{ needs.prepare.outputs.family }}
+          LIVE_LOG_ARCH: ${{ needs.prepare.outputs.arch }}
         run: |
           set -Eeuo pipefail
 
@@ -97,9 +150,9 @@ jobs:
           sudo apt-get install -y ngrok
 
           nohup env LIVE_LOG_AUTH="${LIVE_LOG_AUTH}" \
-            LIVE_LOG_BOARD="nanopi-r5s" \
-            LIVE_LOG_ARCH="arm64" \
-            LIVE_LOG_FAMILY="rockchip64" \
+            LIVE_LOG_BOARD="${LIVE_LOG_BOARD}" \
+            LIVE_LOG_ARCH="${LIVE_LOG_ARCH}" \
+            LIVE_LOG_FAMILY="${LIVE_LOG_FAMILY}" \
             LIVE_LOG_RELEASE="trixie" \
             python3 scripts/live_log_server.py \
               --directory "${live_dir}" \
@@ -154,12 +207,13 @@ jobs:
             echo "It exists only while the build job is running."
           } >> "${GITHUB_STEP_SUMMARY}"
 
-      # 6. 执行核心构建脚本 (自带版本比对和 Release 上传逻辑)
       - name: Run build script
-        # Armbian 明确要求不要以 root/sudo 运行 compile.sh。build.sh 只在
-        # 安装宿主依赖时自行 sudo；GH_TOKEN 直接传给 runner 用户。
         env:
           GH_TOKEN: ${{ github.token }}
+          BUILD_TARGET: ${{ inputs.target || 'rockchip64' }}
+          BUILD_BRANCH: ${{ inputs.branch || 'auto' }}
+          BUILD_FORCE: ${{ inputs.force && 'yes' || 'no' }}
+          BUILD_PUBLISH: ${{ (github.event_name != 'workflow_dispatch' || inputs.publish) && 'yes' || 'no' }}
         run: |
           set -Eeuo pipefail
           live_dir="${RUNNER_TEMP}/kernel-live-log"
@@ -167,27 +221,51 @@ jobs:
           printf '{"state":"running"}\n' > "${live_dir}/status.json"
 
           set +e
-          ./build.sh 2>&1 | tee "${live_dir}/build.log"
-          build_exit_code=${PIPESTATUS[0]}
+          ./build.sh 2>&1 \
+            | python3 -u scripts/redact_log_stream.py \
+            | tee "${live_dir}/build.log"
+          pipeline_status=("${PIPESTATUS[@]}")
+          build_exit_code=${pipeline_status[0]}
+          redact_exit_code=${pipeline_status[1]}
+          tee_exit_code=${pipeline_status[2]}
           set -e
 
-          if (( build_exit_code == 0 )); then
+          if (( build_exit_code == 0 && redact_exit_code == 0 && tee_exit_code == 0 )); then
             build_state=success
           else
             build_state=failure
           fi
+          effective_exit_code=${build_exit_code}
+          if (( effective_exit_code == 0 && redact_exit_code != 0 )); then
+            effective_exit_code=${redact_exit_code}
+          fi
+          if (( effective_exit_code == 0 && tee_exit_code != 0 )); then
+            effective_exit_code=${tee_exit_code}
+          fi
           printf '{"state":"%s","exit_code":%d}\n' \
-            "${build_state}" "${build_exit_code}" > "${live_dir}/status.json"
-          exit "${build_exit_code}"
+            "${build_state}" "${effective_exit_code}" > "${live_dir}/status.json"
+          exit "${effective_exit_code}"
 
-      # 7. (可选) 上传 Artifacts 备份
-      # 即使 build.sh 已经把 debs 上传到了 Release，在 Actions 本地留存一份 Artifact 也是个好习惯
       - name: Upload Artifacts Backup
-        if: success()
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: built-images
-          path: build/output/debs/*
+          path: |
+            build/output/debs/*
+            build/output/hk1box/*
+            build/output/release-metadata/**
+          if-no-files-found: ignore
+          retention-days: 5
+
+      - name: Upload sanitized build diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: build-diagnostics
+          path: |
+            ${{ runner.temp }}/kernel-live-log/build.log
+            ${{ runner.temp }}/kernel-live-log/status.json
           if-no-files-found: ignore
           retention-days: 5
 

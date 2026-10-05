@@ -14,14 +14,21 @@ from typing import Any
 
 
 ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-_])")
-STAGE_END_RE = re.compile(r"────\s*(.+?)\s+完成\s*\(耗时\s*(\d+)s\)\s*────")
-STAGE_BEGIN_RE = re.compile(r"────\s*(.+?)\s*────")
+BUILD_LOG_PREFIX = r"^\[INFO\]\s+\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\s+"
+STAGE_END_RE = re.compile(
+    BUILD_LOG_PREFIX
+    + r"────\s*(\d+\.\s+.+?)\s+completed\s*\(elapsed\s*(\d+)s\)\s*────$"
+)
+STAGE_BEGIN_RE = re.compile(
+    BUILD_LOG_PREFIX + r"────\s*(\d+\.\s+.+?)\s*────$"
+)
 ERROR_RE = re.compile(
-    r"(?:\[ERROR\]|\[💥\]|\[kernel-inject\]\[(?:err|error)\]|\berror(?:\s+\d+|\s*:)|\bfailed\b)",
+    r"(?:\[ERROR\]|\[💥\]|\[kernel-inject\]\[(?:err|error)\]|"
+    r"\bfatal\s*:|\berror(?:\s+\d+|\s*:)|(?:^|\s)FAILED(?:\s*:|\s*$))",
     re.IGNORECASE,
 )
 WARNING_RE = re.compile(
-    r"(?:\[WARN(?:ING)?\]|\[kernel-inject\]\[warn\]|\bwarning:)",
+    r"(?:\[WARN(?:ING)?\]|\[kernel-inject\]\[warn\]|\bwarning(?:\s*\([^)]*\))?\s*:)",
     re.IGNORECASE,
 )
 MAX_ANALYSIS_READ = 8 * 1024 * 1024
@@ -174,7 +181,7 @@ class DashboardAnalyzer:
         if not line:
             return
 
-        end_match = STAGE_END_RE.search(line)
+        end_match = STAGE_END_RE.match(line)
         if end_match:
             label = end_match.group(1).strip()
             for stage in reversed(self._stages):
@@ -187,7 +194,7 @@ class DashboardAnalyzer:
                     stage["duration_seconds"] = int(end_match.group(2))
                     break
         else:
-            begin_match = STAGE_BEGIN_RE.search(line)
+            begin_match = STAGE_BEGIN_RE.match(line)
             if begin_match:
                 label = begin_match.group(1).strip()
                 self._stages.append(
@@ -208,8 +215,46 @@ class DashboardAnalyzer:
                 "line": self._line_number,
                 "message": line[:800],
             }
-            if not self._diagnostics or self._diagnostics[-1] != diagnostic:
-                self._diagnostics.append(diagnostic)
+            self._append_diagnostic(diagnostic)
+
+    def _append_diagnostic(self, diagnostic: dict[str, Any]) -> None:
+        if self._diagnostics:
+            previous = self._diagnostics[-1]
+            if (
+                previous["severity"] == diagnostic["severity"]
+                and previous["message"] == diagnostic["message"]
+            ):
+                previous["line"] = diagnostic["line"]
+                previous["count"] = int(previous.get("count", 1)) + 1
+                return
+
+        if len(self._diagnostics) >= MAX_DIAGNOSTICS:
+            if diagnostic["severity"] == "warning":
+                oldest_warning = next(
+                    (
+                        item
+                        for item in self._diagnostics
+                        if item["severity"] == "warning"
+                    ),
+                    None,
+                )
+                if oldest_warning is None:
+                    return
+                self._diagnostics.remove(oldest_warning)
+            else:
+                oldest_warning = next(
+                    (
+                        item
+                        for item in self._diagnostics
+                        if item["severity"] == "warning"
+                    ),
+                    None,
+                )
+                if oldest_warning is not None:
+                    self._diagnostics.remove(oldest_warning)
+                else:
+                    self._diagnostics.popleft()
+        self._diagnostics.append(diagnostic)
 
     def _consume_log(self) -> None:
         try:
@@ -233,7 +278,7 @@ class DashboardAnalyzer:
             self._process_line(line.rstrip(b"\r"))
 
     def _configured_sources(self) -> list[dict[str, Any]]:
-        config_path = self.repository_root / "userpatches" / "lib.config"
+        config_path = self.repository_root / "userpatches" / "extensions" / "kernel-inject.sh"
         try:
             source = config_path.read_text(encoding="utf-8", errors="replace")
         except OSError:

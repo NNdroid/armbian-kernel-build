@@ -21,25 +21,66 @@ _kernel_inject_log() {
 	elif [[ "${level}" == info ]]; then
 		printf '[kernel-inject][%s] %s: %s\n' "${level}" "${title}" "${message}"
 	else
-		# debug/warn/err 一律走 stderr：这些函数常在 $( ) 里调用，写 stdout
-		# 会被命令替换吞掉，甚至污染被捕获的返回值。
 		printf '[kernel-inject][%s] %s: %s\n' "${level}" "${title}" "${message}" >&2
 	fi
 }
 
-_kernel_inject_add_mode() {
-	local symbol="$1"
-	local mode="$2"
+_kernel_inject_array_remove() {
+    local array_name="$1"
+    local symbol="$2"
+    local -n array_ref="${array_name}"
+    local -a filtered=()
+    local item
 
-	case "${mode}" in
-		y) opts_y+=("${symbol}") ;;
-		m) opts_m+=("${symbol}") ;;
-		n) opts_n+=("${symbol}") ;;
-		*)
-			_kernel_inject_log err "Invalid configuration" "${symbol} must be y, m or n, got '${mode}'"
-			return 1
-			;;
-	esac
+    for item in "${array_ref[@]}"; do
+        case "${item}" in
+            "${symbol}"|"CONFIG_${symbol}")
+                ;;
+            *)
+                filtered+=("${item}")
+                ;;
+        esac
+    done
+
+    array_ref=("${filtered[@]}")
+}
+
+_kernel_inject_force_mode() {
+    local symbol="$1"
+    local mode="$2"
+
+    #
+    # Armbian applies opts_n -> opts_y -> opts_m.
+    # A symbol must therefore exist in exactly one mode array.
+    #
+    _kernel_inject_array_remove opts_n "${symbol}"
+    _kernel_inject_array_remove opts_y "${symbol}"
+    _kernel_inject_array_remove opts_m "${symbol}"
+
+    case "${mode}" in
+        y)
+            opts_y+=("${symbol}")
+            ;;
+        m)
+            opts_m+=("${symbol}")
+            ;;
+        n)
+            opts_n+=("${symbol}")
+            ;;
+        *)
+            _kernel_inject_log err \
+                "Invalid configuration" \
+                "CONFIG_${symbol}: invalid mode '${mode}'"
+            return 1
+            ;;
+    esac
+}
+
+_kernel_inject_add_mode() {
+    local symbol="$1"
+    local mode="$2"
+
+    _kernel_inject_force_mode "${symbol}" "${mode}"
 }
 
 _kernel_inject_full_ebpf_y_options() {
@@ -142,7 +183,6 @@ NF_TABLES_NETDEV
 NF_TABLES_IPV4
 NF_TABLES_ARP
 NF_TABLES_IPV6
-NFT_EXTHDR_DCCP
 NF_FLOW_TABLE_PROCFS
 NETFILTER_FAMILY_BRIDGE
 BRIDGE
@@ -192,16 +232,25 @@ USB_FUNCTIONFS_GENERIC
 USB_G_MULTI_RNDIS
 USB_G_MULTI_CDC
 EOF
+	# Linux 6.12 does not define this newer DCCP nftables expression. All
+	# core nftables/tproxy/synproxy/NPT capabilities stay mandatory there.
+	if [[ "${KERNEL_MAJOR_MINOR:-}" != 6.12 ]]; then
+		printf 'NFT_EXTHDR_DCCP\n'
+	fi
 }
 
 # Tristate foundations that must be built in as well. A built-in child cannot
 # depend on a modular parent, so accepting these as m would let olddefconfig
-# silently downgrade conntrack, VLAN, AmneziaWG crypto libraries, nftables and
-# related leaf capabilities.
+# silently downgrade conntrack, Open vSwitch, ALSA/USB Audio, VLAN,
+# AmneziaWG crypto libraries, nftables and related leaf capabilities.
 _kernel_inject_full_network_foundation_options() {
 	cat <<'EOF'
 NF_CONNTRACK
+NF_DEFRAG_IPV6
+NETFILTER_CONNCOUNT
+PSAMPLE
 VLAN_8021Q
+SOUND
 CRYPTO_LIB_CURVE25519
 CRYPTO_LIB_CHACHA20POLY1305
 EOF
@@ -427,43 +476,71 @@ _kernel_inject_enable_bpf_lsm_order() {
 }
 
 _kernel_inject_enable_full_ebpf() {
-	local -a ebpf_y=()
-	local -a ebpf_m=()
+    local -a ebpf_y=()
+    local -a ebpf_m=()
+    local symbol
 
-	mapfile -t ebpf_y < <(_kernel_inject_full_ebpf_y_options)
-	mapfile -t ebpf_m < <(_kernel_inject_full_ebpf_m_options)
-	opts_n+=(DEBUG_INFO_NONE DEBUG_INFO_REDUCED)
-	opts_y+=("${ebpf_y[@]}")
-	opts_m+=("${ebpf_m[@]}")
-	kernel_config_modifying_hashes+=("full-ebpf-btf-core-v1" "bpf-lsm-runtime-order-v1")
+    mapfile -t ebpf_y < <(_kernel_inject_full_ebpf_y_options)
+    mapfile -t ebpf_m < <(_kernel_inject_full_ebpf_m_options)
 
-	# CONFIG_BPF_LSM only compiles the LSM. It also has to appear in the
-	# ordered CONFIG_LSM string to be initialized at boot.
-	[[ -f .config ]] || return 0
-	_kernel_inject_enable_bpf_lsm_order .config
+    _kernel_inject_force_mode DEBUG_INFO_NONE n
+    _kernel_inject_force_mode DEBUG_INFO_REDUCED n
+
+    for symbol in "${ebpf_y[@]}"; do
+        _kernel_inject_force_mode "${symbol}" y || return 1
+    done
+
+    for symbol in "${ebpf_m[@]}"; do
+        _kernel_inject_force_mode "${symbol}" m || return 1
+    done
+
+    kernel_config_modifying_hashes+=(
+        "full-ebpf-btf-core-v2-mode-conflict-safe"
+        "bpf-lsm-runtime-order-v1"
+    )
+
+    [[ -f .config ]] || return 0
+    _kernel_inject_enable_bpf_lsm_order .config
 }
 
 _kernel_inject_enable_full_networking() {
-	local -a network_y=()
-	local -a network_foundations=()
-	local -a network_builtins=()
-	local -a radio_modules=()
+    local -a network_y=()
+    local -a network_foundations=()
+    local -a network_builtins=()
+    local -a radio_modules=()
+    local symbol
 
-	mapfile -t network_y < <(_kernel_inject_full_network_y_options)
-	mapfile -t network_foundations < <(_kernel_inject_full_network_foundation_options)
-	mapfile -t network_builtins < <(_kernel_inject_full_network_builtin_options)
-	mapfile -t radio_modules < <(_kernel_inject_radio_module_options)
-	opts_y+=("${network_y[@]}" "${network_foundations[@]}" "${network_builtins[@]}")
-	opts_m+=("${radio_modules[@]}")
-	kernel_config_modifying_hashes+=("full-networking-v4-builtin-with-radio-modules")
+    mapfile -t network_y < <(_kernel_inject_full_network_y_options)
+    mapfile -t network_foundations < <(_kernel_inject_full_network_foundation_options)
+    mapfile -t network_builtins < <(_kernel_inject_full_network_builtin_options)
+    mapfile -t radio_modules < <(_kernel_inject_radio_module_options)
+
+    #
+    # custom_kernel_config runs after Armbian's core hook, but Armbian keeps
+    # all requested modes in shared arrays and applies opts_m last.
+    #
+    # Therefore simply appending to opts_y is NOT sufficient to override an
+    # earlier opts_m request. Remove conflicting announcements first.
+    #
+    for symbol in \
+        "${network_y[@]}" \
+        "${network_foundations[@]}" \
+        "${network_builtins[@]}"
+    do
+        _kernel_inject_force_mode "${symbol}" y || return 1
+    done
+
+    for symbol in "${radio_modules[@]}"; do
+        _kernel_inject_force_mode "${symbol}" m || return 1
+    done
+
+    kernel_config_modifying_hashes+=(
+        "full-networking-v6-force-tristate-foundations"
+    )
 }
 
 # ============================================================================
-# 内核树已定义符号扫描
 #
-# 强制校验清单是硬编码的，而符号会随内核版本增删改名。用 Kconfig 实际定义的
-# 扫描目标内核树的实际 Kconfig 符号。完整功能清单中的正向能力必须严格存在并
-# 通过最终 .config 校验；只有明确属于“关闭旧调试模式”的兼容检查允许按版本跳过。
 # ============================================================================
 _KERNEL_INJECT_DEFINED_SYMBOLS_FILE=""
 _KERNEL_INJECT_DEFINED_SYMBOLS_ROOT=""
@@ -517,13 +594,13 @@ _kernel_inject_load_defined_symbols() {
 	_KERNEL_INJECT_DEFINED_SYMBOLS_ROOT="${kernel_root}"
 	_KERNEL_INJECT_DEFINED_SYMBOLS_FILE="$(mktemp "${TMPDIR:-/tmp}/kernel-inject-defined-symbols.XXXXXX")"
 	if ! _kernel_inject_scan_defined_symbols "${kernel_root}" > "${_KERNEL_INJECT_DEFINED_SYMBOLS_FILE}"; then
-		_kernel_inject_log warn "Kconfig 扫描失败" "无法在 ${kernel_root} 收集已定义符号"
+		_kernel_inject_log warn "Kconfig scan failed" "Unable to collect defined symbols from ${kernel_root}"
 		_kernel_inject_cleanup_symbol_cache
 		return 1
 	fi
 	count="$(wc -l < "${_KERNEL_INJECT_DEFINED_SYMBOLS_FILE}" | tr -d ' ')"
-	_kernel_inject_log debug "Kconfig 符号扫描" \
-		"${kernel_root}: ${count} 个已定义符号"
+	_kernel_inject_log debug "Kconfig symbol scan" \
+		"${kernel_root}: ${count} defined symbols"
 	return 0
 }
 
@@ -535,15 +612,11 @@ _kernel_inject_symbol_is_defined() {
 	grep -qx "${symbol}" "${_KERNEL_INJECT_DEFINED_SYMBOLS_FILE}"
 }
 
-# 符号表是否可用（扫描成功且非空）。不可用时应退回严格校验。
 _kernel_inject_symbol_scan_available() {
 	[[ -n "${_KERNEL_INJECT_DEFINED_SYMBOLS_FILE}" && \
 		-s "${_KERNEL_INJECT_DEFINED_SYMBOLS_FILE}" ]]
 }
 
-# 内部工具: 按清单严格校验符号。清单中的能力如果在目标内核树中未定义，说明
-# 该内核无法提供承诺的完整功能，必须失败，不能静默生成一个功能缩水的 Release。
-# $1 = config 文件, $2 = 期望值的正则片段 ("y", "[ym]" 或 "n"), $3 = 符号数组名
 _kernel_inject_verify_symbol_list() {
 	local config_file="$1"
 	local wanted_pattern="$2"
@@ -558,8 +631,8 @@ _kernel_inject_verify_symbol_list() {
 		symbols_available=no
 	fi
 	if [[ "${symbols_available}" == yes && ! -s "${_KERNEL_INJECT_DEFINED_SYMBOLS_FILE}" ]]; then
-		_kernel_inject_log warn "Kconfig 扫描为空" \
-			"$(dirname "${config_file}") 下没有 Kconfig 文件；按严格模式校验全部符号"
+		_kernel_inject_log warn "Kconfig scan is empty" \
+			"No Kconfig files exist under $(dirname "${config_file}"); validating all symbols in strict mode"
 		symbols_available=no
 	fi
 
@@ -585,8 +658,8 @@ _kernel_inject_verify_symbol_list() {
 		KERNEL_INJECT_MISSING_SYMBOLS=("${missing[@]}")
 		return 1
 	fi
-	_kernel_inject_log debug "符号校验" \
-		"清单 ${array_name}: ${#required_symbols[@]} 个符号 (= ${wanted_pattern}) 校验通过"
+	_kernel_inject_log debug "Symbol validation" \
+		"List ${array_name}: ${#required_symbols[@]} symbols (= ${wanted_pattern}) validated"
 	return 0
 }
 
@@ -602,7 +675,6 @@ _kernel_inject_verify_full_ebpf_config() {
 		return 1
 	fi
 
-	# 先就绪符号表（verify_symbol_list 也会加载，这里是缓存命中）。
 	_kernel_inject_load_defined_symbols "$(dirname "${config_file}")" || true
 
 	mapfile -t required_y < <(_kernel_inject_full_ebpf_y_options)
@@ -623,8 +695,8 @@ _kernel_inject_verify_full_ebpf_config() {
 	for symbol in DEBUG_INFO_NONE DEBUG_INFO_REDUCED; do
 		if _kernel_inject_symbol_scan_available && \
 			! _kernel_inject_symbol_is_defined "${symbol}"; then
-			_kernel_inject_log warn "兼容性检查" \
-				"当前内核树未定义 CONFIG_${symbol}，无需检查该旧调试模式是否关闭"
+			_kernel_inject_log warn "Compatibility check" \
+				"CONFIG_${symbol} is not defined by the current kernel tree; no legacy debug-mode disabled-state check is required"
 			_kernel_inject_skipped_symbols+=("${symbol}")
 			continue
 		fi
@@ -834,7 +906,7 @@ _kernel_inject_remove_legacy_tcp_patch() {
 	local temporary="${tcp_c}.inject.$$"
 
 	awk '
-		index($0, "--- 新增: TCP Brutal 专属") { skipping = 1; next }
+		$0 ~ /--- .*TCP Brutal/ { skipping = 1; next }
 		skipping && index($0, "-------------------------------------------") { skipping = 0; next }
 		!skipping { print }
 		END { if (skipping) exit 42 }
@@ -892,7 +964,7 @@ _kernel_inject_tcp_brutal() {
 	local staging
 
 	actual_commit="$(_kernel_inject_fetch "${repository}" "${ref}" "${expected_commit}" "${checkout}")"
-	_kernel_inject_log debug "TCP-Brutal v2" "来源 ${repository}@${ref} -> ${actual_commit:0:12}"
+	_kernel_inject_log debug "TCP-Brutal v2" "source ${repository}@${ref} -> ${actual_commit:0:12}"
 	_kernel_inject_require_files "${checkout}" \
 		brutal.h brutal_cc.c brutal_sockopt.c brutal_rules.c Makefile LICENSE
 
@@ -957,7 +1029,7 @@ _kernel_inject_amneziawg() {
 	local staging
 
 	actual_commit="$(_kernel_inject_fetch "${repository}" "${ref}" "${expected_commit}" "${checkout}")"
-	_kernel_inject_log debug "AmneziaWG" "来源 ${repository}@${ref} -> ${actual_commit:0:12}"
+	_kernel_inject_log debug "AmneziaWG" "source ${repository}@${ref} -> ${actual_commit:0:12}"
 	_kernel_inject_require_files "${checkout}/src" Kbuild Kconfig main.c compat/Kbuild.include
 
 	staging="$(mktemp -d "${kernel_root}/drivers/net/.amneziawg.new.XXXXXX")"
@@ -993,7 +1065,7 @@ _kernel_inject_nf_deaf() {
 	local staging
 
 	actual_commit="$(_kernel_inject_fetch "${repository}" "${ref}" "${expected_commit}" "${checkout}")"
-	_kernel_inject_log debug "nf_deaf" "来源 ${repository}@${ref} -> ${actual_commit:0:12}"
+	_kernel_inject_log debug "nf_deaf" "source ${repository}@${ref} -> ${actual_commit:0:12}"
 	_kernel_inject_require_files "${checkout}" nf_deaf.c LICENSE
 
 	staging="$(mktemp -d "${kernel_root}/net/netfilter/.nf_deaf.new.XXXXXX")"
@@ -1060,7 +1132,7 @@ _kernel_inject_sources() (
 		"${nf_repository}" "${nf_ref}" "${nf_commit}"
 )
 
-custom_kernel_config() {
+custom_kernel_config__kernel_inject() {
 	local tcp_repository="${TCP_BRUTAL_REPOSITORY:-https://github.com/HyNetworks/tcp-brutal.git}"
 	# A COMMIT-only override is sufficient and becomes the default fetch ref.
 	# REF remains available for servers that need a branch/tag fetch hint.
@@ -1121,7 +1193,7 @@ custom_kernel_config() {
 		_kernel_inject_enable_full_networking || return 1
 	fi
 	kernel_config_modifying_hashes+=(
-		"kernel-injector-v7-modular-radio-stack"
+		"kernel-injector-v8-extension-entrypoint"
 		"tcp-brutal=${tcp_commit:-${tcp_ref}}"
 		"amneziawg=${awg_commit:-${awg_ref}}"
 		"nf-deaf=${nf_commit:-${nf_ref}}"

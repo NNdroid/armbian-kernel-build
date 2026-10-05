@@ -1,0 +1,28 @@
+From: NNdroid <99177648+NNdroid@users.noreply.github.com>
+Subject: [PATCH] arm64: dts: amlogic: retain Ophub HK1 Box MMC numbering
+
+The mainline G12 include numbers SD, eMMC and SDIO as mmc0, mmc1 and mmc2.
+Existing Ophub installations use SDIO, SD and eMMC in that order. Preserve
+the board's numbering so device-path root arguments and existing storage
+scripts do not silently select another controller after a kernel update.
+Override aliases on HK1 Box only; keep the shared Meson include unchanged.
+---
+ arch/arm64/boot/dts/amlogic/meson-sm1-hk1box-vontar-x3.dts | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/amlogic/meson-sm1-hk1box-vontar-x3.dts b/arch/arm64/boot/dts/amlogic/meson-sm1-hk1box-vontar-x3.dts
+--- a/arch/arm64/boot/dts/amlogic/meson-sm1-hk1box-vontar-x3.dts
++++ b/arch/arm64/boot/dts/amlogic/meson-sm1-hk1box-vontar-x3.dts
+@@ -15,6 +15,12 @@
+ 	compatible = "amlogic,sm1";
+ 	model = "HK1 Box/Vontar X3";
+ 
++	aliases {
++		mmc0 = &sd_emmc_a; /* SDIO */
++		mmc1 = &sd_emmc_b; /* SD card */
++		mmc2 = &sd_emmc_c; /* eMMC */
++	};
++
+ 	memory@0 {
+ 		device_type = "memory";
+ 		reg = <0x0 0x0 0x0 0xFFFFFFFF>;

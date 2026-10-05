@@ -250,8 +250,12 @@ def main() -> int:
             assert status == 401, status
             assert headers.get("WWW-Authenticate") == 'Basic realm="Armbian build log"'
 
-            status, body, _ = request(f"{base_url}/", authenticated=True)
+            status, body, root_headers = request(f"{base_url}/", authenticated=True)
             assert status == 200, status
+            assert root_headers.get("X-Frame-Options") == "DENY", root_headers
+            assert "frame-ancestors 'none'" in root_headers.get("Content-Security-Policy", ""), root_headers
+            assert "object-src 'none'" in root_headers.get("Content-Security-Policy", ""), root_headers
+            assert root_headers.get("Permissions-Policy"), root_headers
             assert b"Armbian Kernel Build" in body
             assert b"(?:\\[[0-?]*[ -/]*[@-~]|[@-_])" in body
             assert b"new EventSource(`/api/events?offset=${state.offset}`" in body
@@ -269,6 +273,18 @@ def main() -> int:
             assert b'value="ja"' in body
             assert b'value="fr"' in body
             assert b'value="de"' in body
+            assert b'value="zh-CN"' not in body
+            assert b"::group::" in body
+            assert b"::endgroup::" in body
+            assert b"log-group-row" in body
+            assert b"collapsedGroups" in body
+            assert b"expandGroupsForRow" in body
+            assert b"tail_bytes=" in body
+            assert b"const maxLines = 15000" in body
+            assert b"--scrollbar-thumb:" in body
+            assert b"::-webkit-scrollbar-thumb:hover" in body
+            assert b"scrollbar-color:" in body
+            assert b"scrollbar-gutter: stable" in body
             for translation_key in (
                 b"dashboardTab:",
                 b"timelineTitle:",
@@ -279,7 +295,7 @@ def main() -> int:
                 b"packagesTitle:",
                 b"enableNotifications:",
             ):
-                assert body.count(translation_key) == 5, translation_key
+                assert body.count(translation_key) == 4, translation_key
 
             status, _, _ = request(f"{base_url}/api/files")
             assert status == 401, status
@@ -399,6 +415,34 @@ def main() -> int:
             assert metrics["host"]["cpu_count"] >= 1, metrics
             assert metrics["log_bytes"] == len(b"first line\n"), metrics
 
+            with (log_root / "build.log").open("ab") as log_file:
+                log_file.write(
+                    b"[INFO] Build wrapper Arguments: target=kernel BRANCH=current BOARD=test\n"
+                )
+            status, body, _ = request(f"{base_url}/api/metrics", authenticated=True)
+            assert status == 200, status
+            metrics = json.loads(body)
+            assert metrics["target"]["branch"] == "current", metrics
+
+            with (log_root / "build.log").open("ab") as log_file:
+                log_file.write(b"x" * (300 * 1024))
+            status, body, _ = request(f"{base_url}/api/metrics", authenticated=True)
+            assert status == 200, status
+            metrics = json.loads(body)
+            assert metrics["target"]["branch"] == "current", metrics
+
+            with (log_root / "build.log").open("ab") as log_file:
+                log_file.write(
+                    b"\n[INFO] Build wrapper Arguments: target=kernel BRANCH=edge BOARD=test\n"
+                )
+            status, body, _ = request(f"{base_url}/api/metrics", authenticated=True)
+            assert status == 200, status
+            metrics = json.loads(body)
+            assert metrics["target"]["branch"] == "edge", metrics
+            assert metrics["target"]["kernel"] == "", metrics
+
+            (log_root / "build.log").write_bytes(b"first line\n")
+
             status, _, _ = request(f"{base_url}/api/events")
             assert status == 401, status
 
@@ -460,6 +504,8 @@ def main() -> int:
             payload = json.loads(body)
             assert payload == {
                 "offset": final_offset,
+                "start_offset": 0,
+                "start_line": 1,
                 "reset": False,
                 "state": "success",
                 "text": "first line\nsecond line\n",
@@ -473,6 +519,21 @@ def main() -> int:
             assert payload["text"] == "second line\n", payload
             assert payload["state"] == "success", payload
 
+            large_log = b"".join(
+                f"line-{index:05d}\n".encode("ascii") for index in range(5000)
+            )
+            (log_root / "build.log").write_bytes(large_log)
+            status, body, _ = request(
+                f"{base_url}/api/log?tail_bytes=4096", authenticated=True
+            )
+            assert status == 200, status
+            tail_payload = json.loads(body)
+            assert tail_payload["start_offset"] > 0, tail_payload
+            assert tail_payload["start_line"] > 1, tail_payload
+            assert tail_payload["text"].startswith("line-"), tail_payload
+            assert "line-00000" not in tail_payload["text"], tail_payload
+            (log_root / "build.log").write_bytes(b"first line\nsecond line\n")
+
             status, body, headers = request(f"{base_url}/download", authenticated=True)
             assert status == 200, status
             assert body == b"first line\nsecond line\n", body
@@ -482,10 +543,14 @@ def main() -> int:
             assert status == 401, status
             with (log_root / "build.log").open("ab") as log_file:
                 log_file.write(
-                    "\x1b[32m[INFO]\x1b[0m ──── 1. 环境初始化 ────\n"
+                    "\x1b[32m[INFO]\x1b[0m \x1b[2m2026-09-24T03:30:00Z\x1b[0m ──── 1. Environment initialization ────\n"
+                    "[INFO] ──── Armbian internal banner ────\n"
+                    "──── another internal separator ────\n"
                     "[WARN] synthetic warning\n"
+                    "[🐳|🔨] test.dtb: Warning (spi_bus_reg): Failed prerequisite 'reg_format'\n"
+                    "[🐳|🔨] patch title: keep reset deasserted on failed resume\n"
                     "[ERROR] synthetic failure evidence\n"
-                    "[INFO] ──── 1. 环境初始化 完成 (耗时 3s) ────\n".encode(
+                    "\x1b[32m[INFO]\x1b[0m \x1b[2m2026-09-24T03:30:03Z\x1b[0m ──── 1. Environment initialization completed (elapsed 3s) ────\n".encode(
                         "utf-8"
                     )
                 )
@@ -494,13 +559,23 @@ def main() -> int:
             )
             assert status == 200, status
             dashboard = json.loads(body)
-            assert dashboard["timeline"][0]["label"] == "1. 环境初始化", dashboard
+            assert dashboard["timeline"][0]["label"] == "1. Environment initialization", dashboard
             assert dashboard["timeline"][0]["status"] == "success", dashboard
             assert dashboard["timeline"][0]["duration_seconds"] == 3, dashboard
-            assert {item["severity"] for item in dashboard["diagnostics"]} == {
+            assert len(dashboard["timeline"]) == 1, dashboard
+            diagnostics = dashboard["diagnostics"]
+            assert {item["severity"] for item in diagnostics} == {
                 "warning",
                 "error",
             }, dashboard
+            assert len(diagnostics) == 3, diagnostics
+            dtc_warning = next(
+                item for item in diagnostics if "Failed prerequisite" in item["message"]
+            )
+            assert dtc_warning["severity"] == "warning", dtc_warning
+            assert not any(
+                "failed resume" in item["message"] for item in diagnostics
+            ), diagnostics
             assert dashboard["features"][0]["branch"] == "current", dashboard
             custom_group = next(
                 group
@@ -523,6 +598,23 @@ def main() -> int:
                 ("modules", "verified"),
             }, dashboard
             assert dashboard["resources"], dashboard
+
+            with (log_root / "build.log").open("ab") as log_file:
+                for index in range(130):
+                    log_file.write(
+                        f"[WARN] warning flood {index}\n".encode("utf-8")
+                    )
+            status, body, _ = request(
+                f"{base_url}/api/dashboard", authenticated=True
+            )
+            assert status == 200, status
+            flooded_dashboard = json.loads(body)
+            assert any(
+                item["severity"] == "error"
+                and "synthetic failure evidence" in item["message"]
+                for item in flooded_dashboard["diagnostics"]
+            ), flooded_dashboard["diagnostics"]
+            assert len(flooded_dashboard["diagnostics"]) <= 120
 
             status, _, _ = request(f"{base_url}/api/packages")
             assert status == 401, status

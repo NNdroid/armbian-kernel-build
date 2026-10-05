@@ -2,13 +2,16 @@
 set -Eeuo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-# Reproduce Armbian's real load order: extensions are sourced before the late
-# legacy lib.config override. Loading only lib.config used to make the hook unit
-# test pass even though the real extension manager could never register it.
+# Load the actual extension entry points; no legacy lib.config is allowed.
 # shellcheck disable=SC1091
 source "${REPO_ROOT}/userpatches/extensions/kernel-inject-evidence.sh"
 # shellcheck disable=SC1091
-source "${REPO_ROOT}/userpatches/lib.config"
+source "${REPO_ROOT}/userpatches/extensions/kernel-inject.sh"
+[[ ! -e "${REPO_ROOT}/userpatches/lib.config" ]] || {
+	printf '[FAIL] unsupported lib.config is still shipped\n' >&2
+	exit 1
+}
+declare -F custom_kernel_config__kernel_inject >/dev/null
 
 declare -F pre_package_kernel_image__kernel_inject_evidence >/dev/null || {
 	printf '[FAIL] package evidence extension hook is not defined\n' >&2
@@ -92,12 +95,12 @@ printf 'CONFIG_LSM="lockdown,yama,integrity,apparmor"\n' > "${KERNEL_ROOT}/.conf
 
 cat > "${KERNEL_ROOT}/net/ipv4/tcp.c" <<'LEGACY_TCP_C'
 #include <net/tcp.h>
-// --- 新增: TCP Brutal 专属宏 ---
+// --- Added: TCP Brutal-specific macro ---
 #define TCP_BRUTAL_PARAMS 23301
 // -------------------------------------------
 static int tcp_setsockopt_test(void)
 {
-	case TCP_BRUTAL_PARAMS: { // --- 新增: TCP Brutal 专属处理分支 ---
+	case TCP_BRUTAL_PARAMS: { // --- Added: TCP Brutal-specific handling branch ---
 		return 0;
 	} // -------------------------------------------
 }
@@ -146,6 +149,20 @@ LEGACY_NF_MAKEFILE
 touch "${KERNEL_ROOT}/net/netfilter/nf_deaf.c"
 
 reset_hook_arrays
+
+# Reproduce representative Armbian core-hook requests that run before
+# custom_kernel_config. The custom hook must remove conflicting mode requests,
+# not merely append another value: Armbian applies opts_n -> opts_y -> opts_m.
+opts_m+=(
+	NF_CONNTRACK NF_DEFRAG_IPV6 NETFILTER_CONNCOUNT PSAMPLE VLAN_8021Q
+	NET_IPGRE_DEMUX NET_IPGRE IPV6_GRE VXLAN GENEVE NF_NAT
+	NF_TABLES NF_TABLES_BRIDGE NETFILTER_XTABLES BRIDGE_NF_EBTABLES
+	SOUND OPENVSWITCH OPENVSWITCH_GRE OPENVSWITCH_VXLAN OPENVSWITCH_GENEVE
+	SND SND_PCM SND_RAWMIDI USB_U_AUDIO USB_F_UAC1 USB_F_UAC2 USB_F_MIDI
+	USB_F_MIDI2 USB_AUDIO USB_MIDI_GADGET
+)
+opts_y+=(BT CFG80211 MAC80211)
+
 original_pwd="$(pwd -P)"
 cd "${KERNEL_ROOT}"
 # Reproduce Armbian's nounset-unsafe display_alert contract. The injector must
@@ -155,7 +172,7 @@ display_alert() {
 	: "${ANSI_COLOR}" "$1" "$2" "$3"
 }
 set +u
-custom_kernel_config
+custom_kernel_config__kernel_inject
 set -u
 unset -f display_alert
 cd "${original_pwd}"
@@ -213,9 +230,32 @@ assert_array_contains opts_y USB_GADGET
 assert_array_contains opts_y USB_CONFIGFS
 assert_array_contains opts_y USB_FUNCTIONFS
 assert_array_contains opts_y USB_CONFIGFS_F_MIDI2
+
+# The synthetic Armbian core requests above must be fully overridden.
+for overridden_builtin in NF_CONNTRACK NF_DEFRAG_IPV6 NETFILTER_CONNCOUNT \
+	PSAMPLE VLAN_8021Q SOUND NET_IPGRE_DEMUX NET_IPGRE IPV6_GRE VXLAN \
+	GENEVE OPENVSWITCH OPENVSWITCH_GRE OPENVSWITCH_VXLAN OPENVSWITCH_GENEVE \
+	NF_NAT NF_TABLES NF_TABLES_BRIDGE NETFILTER_XTABLES BRIDGE_NF_EBTABLES \
+	SND SND_PCM SND_RAWMIDI USB_U_AUDIO USB_F_UAC1 USB_F_UAC2 USB_F_MIDI \
+	USB_F_MIDI2 USB_AUDIO USB_MIDI_GADGET; do
+	assert_array_contains opts_y "${overridden_builtin}"
+	assert_array_not_contains opts_m "${overridden_builtin}"
+	assert_array_not_contains opts_n "${overridden_builtin}"
+done
+
+# Radio stacks deliberately remain modules even if an upstream hook requested y.
+for overridden_module in BT CFG80211 MAC80211; do
+	assert_array_contains opts_m "${overridden_module}"
+	assert_array_not_contains opts_y "${overridden_module}"
+	assert_array_not_contains opts_n "${overridden_module}"
+done
+
 for builtin_symbol in MPLS_ROUTING VXLAN GENEVE NET_IPGRE IPV6_GRE NET_FOU \
+	OPENVSWITCH OPENVSWITCH_GRE OPENVSWITCH_VXLAN OPENVSWITCH_GENEVE \
 	NF_TABLES NFT_TPROXY NFT_SYNPROXY IP6_NF_TARGET_NPT TCP_CONG_BBR \
-	USB_CONFIGFS USB_FUNCTIONFS; do
+	SOUND SND SND_PCM SND_RAWMIDI USB_U_AUDIO USB_F_UAC1 USB_F_UAC2 \
+	USB_F_MIDI USB_F_MIDI2 USB_AUDIO USB_MIDI_GADGET USB_CONFIGFS \
+	USB_FUNCTIONFS; do
 	assert_array_not_contains opts_m "${builtin_symbol}"
 done
 assert_contains "${KERNEL_ROOT}/.config" \
@@ -227,9 +267,12 @@ assert_contains "${CURRENT_KERNEL_CONFIG}" 'CONFIG_AMNEZIAWG=y'
 assert_contains "${CURRENT_KERNEL_CONFIG}" 'CONFIG_NETFILTER_DEAF=y'
 assert_contains "${CURRENT_KERNEL_CONFIG}" '# CONFIG_WIREGUARD is not set'
 for builtin_config in MPLS_ROUTING VXLAN GENEVE NET_IPGRE IPV6_GRE NET_FOU \
-	NF_TABLES NFT_TPROXY NFT_SYNPROXY IP6_NF_TARGET_NPT TCP_CONG_BBR BRIDGE \
-	USB_GADGET USB_CONFIGFS USB_FUNCTIONFS PCI FW_LOADER WIRELESS WLAN \
-	WLAN_VENDOR_MEDIATEK; do
+	OPENVSWITCH OPENVSWITCH_GRE OPENVSWITCH_VXLAN OPENVSWITCH_GENEVE \
+	NF_CONNTRACK NF_DEFRAG_IPV6 NETFILTER_CONNCOUNT PSAMPLE NF_TABLES \
+	NFT_TPROXY NFT_SYNPROXY IP6_NF_TARGET_NPT TCP_CONG_BBR BRIDGE SOUND SND \
+	SND_PCM SND_RAWMIDI USB_U_AUDIO USB_F_UAC1 USB_F_UAC2 USB_F_MIDI \
+	USB_AUDIO USB_MIDI_GADGET USB_GADGET USB_CONFIGFS USB_FUNCTIONFS PCI \
+	FW_LOADER WIRELESS WLAN WLAN_VENDOR_MEDIATEK; do
 	assert_contains "${CURRENT_KERNEL_CONFIG}" "CONFIG_${builtin_config}=y"
 done
 for module_config in 6LOWPAN BT BT_RFCOMM BT_BNEP BT_HIDP BT_6LOWPAN RFKILL \
@@ -278,7 +321,6 @@ assert_contains "${PACKAGED_EVIDENCE}/source-manifest.env" 'evidence_format=1'
 assert_contains "${PACKAGED_EVIDENCE}/source-manifest.env" \
 	'tcp_brutal_commit=fd3e540223c8d22adbed6d1f4fc54caa623d49c0'
 
-# 内核树已定义符号扫描：完整功能清单必须在目标内核树中真实存在。
 KCONFIG_SCAN_ROOT="${TEST_ROOT}/kconfig-scan"
 mkdir -p "${KCONFIG_SCAN_ROOT}"
 printf 'config DEBUG_INFO_BTF\n\tbool "btf"\nmenuconfig WIREGUARD\nconfig MT792x_LIB\n\ttristate "mt792x"\n' > "${KCONFIG_SCAN_ROOT}/Kconfig"
@@ -293,8 +335,6 @@ if _kernel_inject_symbol_is_defined NOT_IN_THIS_TREE; then
 	fail "symbol scanner invented a symbol that no Kconfig defines"
 fi
 
-# 验证器会扫描"内核树"里 Kconfig 实际定义的符号，所以给最终配置准备一棵
-# 合成内核树：Kconfig 覆盖两份清单的全部符号，负向用例才仍然有效。
 VERIFY_TREE="${TEST_ROOT}/verify-tree"
 mkdir -p "${VERIFY_TREE}"
 : > "${VERIFY_TREE}/Kconfig"
@@ -357,7 +397,6 @@ printf '%s\n' "${KERNEL_INJECT_MISSING_SYMBOLS[@]}" | \
 	fail "strict-y verifier did not report the actual module value"
 sed -i 's/^CONFIG_NF_CONNTRACK=m$/CONFIG_NF_CONNTRACK=y/' "${EFFECTIVE_CONFIG}"
 
-# 清单里当前内核树并未定义的正向能力必须失败，不能发布功能缩水的内核。
 # Consumed through a nameref in _kernel_inject_verify_symbol_list.
 # shellcheck disable=SC2034
 custom_required=(VXLAN A_SYMBOL_NO_KCONFIG_DEFINES)
@@ -368,8 +407,6 @@ printf '%s\n' "${KERNEL_INJECT_MISSING_SYMBOLS[@]}" | \
 	grep -q 'A_SYMBOL_NO_KCONFIG_DEFINES.*undefined' || \
 	fail "undefined required symbol was not reported precisely"
 
-# 由 select/def_bool 决定且没有 prompt 的符号同样是最终能力契约：不存在或取值
-# 不正确都必须失败，不能因为 scripts/config 无法直接设置就静默放过。
 SELECT_ONLY_TREE="${TEST_ROOT}/select-only-tree"
 mkdir -p "${SELECT_ONLY_TREE}"
 printf 'config SELECT_ONLY_SYMBOL\n\ttristate\n' > "${SELECT_ONLY_TREE}/Kconfig"
@@ -384,7 +421,6 @@ printf 'CONFIG_SELECT_ONLY_SYMBOL=y\n' >> "${SELECT_ONLY_TREE}/.config"
 _kernel_inject_verify_symbol_list "${SELECT_ONLY_TREE}/.config" y select_required || \
 	fail "verifier rejected a satisfied prompt-less symbol"
 
-# 扫描不到任何 Kconfig 时必须退回严格模式（宁可失败也不能静默放过）。
 NO_KCONFIG_TREE="${TEST_ROOT}/no-kconfig-tree"
 mkdir -p "${NO_KCONFIG_TREE}"
 cp "${EFFECTIVE_CONFIG}" "${NO_KCONFIG_TREE}/.config"
@@ -409,7 +445,7 @@ RELEASE_TEST_ROOT="${TEST_ROOT}/release-notes"
 RELEASE_METADATA="${RELEASE_TEST_ROOT}/build/output/release-metadata/edge"
 RELEASE_DEBS="${RELEASE_TEST_ROOT}/build/output/debs"
 mkdir -p "${RELEASE_METADATA}" "${RELEASE_DEBS}"
-printf '# 动态构建摘要\n\neBPF 已校验。\n' > "${RELEASE_METADATA}/build-summary.md"
+printf '# Dynamic build summary\n\neBPF validated.\n' > "${RELEASE_METADATA}/build-summary.md"
 printf 'CONFIG_BPF=y\n' > "${RELEASE_METADATA}/edge-kernel.config"
 printf 'evidence_format=1\nbranch=edge\n' > \
 	"${RELEASE_METADATA}/edge-source-manifest.env"
@@ -467,7 +503,6 @@ printf 'must not upload\n' > \
 	upload_to_github_release edge-7.2.1 edge 7.2.1 7.2.0 \
 		'./build/output/debs/*-edge-rockchip64_*__7.2.1-*.deb'
 
-	# 版本必须从构建产物反解；日志不得混进捕获的返回值。
 	built_version="$(resolve_built_version edge)"
 	[[ "${built_version}" == '7.2.1' ]] || \
 		fail "resolve_built_version returned '${built_version}' instead of 7.2.1"
@@ -495,12 +530,12 @@ CWD_WRAPPER
 	[[ "$(cat "${CWD_TEST_ROOT}/wrapper-cwd.txt")" == "$(cd "${CWD_TEST_ROOT}/build" && pwd -P)" ]] || \
 		fail "run_armbian_build did not execute the wrapper from the Armbian root"
 )
-assert_contains "${RELEASE_TEST_ROOT}/captured-notes.md" '# 动态构建摘要'
+assert_contains "${RELEASE_TEST_ROOT}/captured-notes.md" '# Dynamic build summary'
 assert_contains "${RELEASE_TEST_ROOT}/captured-notes.md" 'linux-image-edge-rockchip64'
 assert_contains "${RELEASE_TEST_ROOT}/captured-notes.md" \
 	'0123456789abcdef0123456789abcdef01234567'
-assert_contains "${RELEASE_TEST_ROOT}/captured-notes.md" '内核版本（构建产物）：`7.2.1`'
-assert_contains "${RELEASE_TEST_ROOT}/captured-notes.md" 'kernel.org 上游版本：`7.2.0`'
+assert_contains "${RELEASE_TEST_ROOT}/captured-notes.md" 'Kernel version (artifact): `7.2.1`'
+assert_contains "${RELEASE_TEST_ROOT}/captured-notes.md" 'kernel.org upstream version: `7.2.0`'
 assert_not_contains "${RELEASE_TEST_ROOT}/captured-gh-args.txt" 'bleedingedge'
 assert_contains "${RELEASE_TEST_ROOT}/captured-gh-args.txt" 'edge-kernel.config'
 assert_contains "${RELEASE_TEST_ROOT}/captured-gh-args.txt" 'edge-source-manifest.env'
@@ -512,9 +547,10 @@ assert_contains "${RELEASE_TEST_ROOT}/captured-gh-args.txt" \
 	'edge-loadable-modules-SHA256SUMS'
 
 WRAPPER_ROOT="${TEST_ROOT}/wrapper-root"
-mkdir -p "${WRAPPER_ROOT}/userpatches"
+mkdir -p "${WRAPPER_ROOT}/userpatches/extensions"
 cp "${REPO_ROOT}/overwrite/build_with_diy.sh" "${WRAPPER_ROOT}/build_with_diy.sh"
-cp "${REPO_ROOT}/userpatches/lib.config" "${WRAPPER_ROOT}/userpatches/lib.config"
+cp -R "${REPO_ROOT}/overwrite/lib" "${WRAPPER_ROOT}/lib"
+cp "${REPO_ROOT}/userpatches/extensions/kernel-inject.sh" "${WRAPPER_ROOT}/userpatches/extensions/kernel-inject.sh"
 
 # Git Bash on Windows has no dpkg-deb. Use an uncompressed tar as the fake deb
 # payload so package listing, field lookup and extraction exercise the same
@@ -641,9 +677,21 @@ build_fake_image_deb
 		ENABLE_EXTENSIONS=sample-one,kernel-inject-evidence,sample-two
 )
 assert_contains "${WRAPPER_ROOT}/enabled-extensions.txt" \
-	'sample-one,kernel-inject-evidence,sample-two'
+	'sample-one,kernel-inject-evidence,sample-two,kernel-inject'
 assert_contains "${WRAPPER_ROOT}/compile-arguments.txt" \
-	'ENABLE_EXTENSIONS=sample-one,kernel-inject-evidence,sample-two'
+	'ENABLE_EXTENSIONS=sample-one,kernel-inject-evidence,sample-two,kernel-inject'
+
+# Reused checkouts may retain ignored legacy configuration. Do not execute or
+# remove it; fail before compile.sh, with an actionable migration diagnostic.
+printf '# local customization\n' > "${WRAPPER_ROOT}/userpatches/lib.config"
+cp "${WRAPPER_ROOT}/compile-arguments.txt" "${WRAPPER_ROOT}/before-legacy.txt"
+if (cd "${WRAPPER_ROOT}"; ./build_with_diy.sh kernel BOARD=fake) >"${WRAPPER_ROOT}/legacy.log" 2>&1; then
+	fail "wrapper accepted an unsupported legacy lib.config"
+fi
+assert_contains "${WRAPPER_ROOT}/legacy.log" 'Obsolete userpatches/lib.config detected'
+assert_contains "${WRAPPER_ROOT}/userpatches/lib.config" '# local customization'
+cmp "${WRAPPER_ROOT}/compile-arguments.txt" "${WRAPPER_ROOT}/before-legacy.txt" || fail "legacy check ran compile.sh"
+rm -- "${WRAPPER_ROOT}/userpatches/lib.config"
 assert_file "${WRAPPER_ROOT}/output/release-metadata/fake/fake-kernel.config"
 assert_file "${WRAPPER_ROOT}/output/release-metadata/fake/fake-source-manifest.env"
 assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/fake-source-manifest.env" \
@@ -652,13 +700,13 @@ assert_file "${WRAPPER_ROOT}/output/release-metadata/fake/fake-config-vs-arm64-d
 assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
 	'eBPF / BTF / CO-RE'
 assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
-	'完整网络功能集'
+	'Full networking feature set'
 assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
 	'MPLS / SRv6'
 assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
-	'Armbian/build 基线提交'
+	'Armbian/build baseline commit'
 assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
-	'内核源码基线提交'
+	'Kernel source baseline commit'
 assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
 	'| TCP-Brutal v2 | `y` |'
 assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
@@ -666,7 +714,7 @@ assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" 
 assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
 	'| nf_deaf | `y` |'
 assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
-	'| 原生 WireGuard（默认由 AmneziaWG 取代） | `n` |'
+	'| Native WireGuard (replaced by AmneziaWG by default) | `n` |'
 assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
 	'`MT7921E=m`'
 assert_file \
@@ -710,7 +758,7 @@ assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/fake-loadable-modu
 assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/fake-loadable-modules.md" \
 	'sudo install -m 0644 ./fake-6.18.53-fake-arm64-brutal.ko "/lib/modules/${KERNEL_RELEASE}/extra/brutal.ko"'
 assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/build-summary.md" \
-	'只安装独立模块附件'
+	'Install standalone module attachments only'
 assert_contains "${WRAPPER_ROOT}/output/release-metadata/fake/fake-loadable-modules-SHA256SUMS" \
 	'fake-6.18.53-fake-arm64-brutal.ko'
 (
@@ -768,9 +816,10 @@ build_fake_image_deb
 # The source-pin proof must come from the package produced by this build. A
 # mismatched manifest must fail even though no kernel worktree exists anymore.
 MISMATCH_ROOT="${TEST_ROOT}/wrapper-mismatch"
-mkdir -p "${MISMATCH_ROOT}/userpatches"
+mkdir -p "${MISMATCH_ROOT}/userpatches/extensions"
 cp "${REPO_ROOT}/overwrite/build_with_diy.sh" "${MISMATCH_ROOT}/build_with_diy.sh"
-cp "${REPO_ROOT}/userpatches/lib.config" "${MISMATCH_ROOT}/userpatches/lib.config"
+cp -R "${REPO_ROOT}/overwrite/lib" "${MISMATCH_ROOT}/lib"
+cp "${REPO_ROOT}/userpatches/extensions/kernel-inject.sh" "${MISMATCH_ROOT}/userpatches/extensions/kernel-inject.sh"
 BAD_PIN_DEB="${MISMATCH_ROOT}/bad-pin-linux-image.deb"
 build_fake_image_deb 0000000000000000000000000000000000000000
 cp "${FAKE_DEB_TEMPLATE}" "${BAD_PIN_DEB}"
@@ -783,6 +832,7 @@ cp "${BAD_PIN_DEB_SOURCE}" \
 	output/debs/linux-image-fake-rockchip64_1.0_arm64__6.18.53-S0.deb
 FAKE_COMPILE
 chmod +x "${MISMATCH_ROOT}/compile.sh" "${MISMATCH_ROOT}/build_with_diy.sh"
+BAD_PIN_LOG="${MISMATCH_ROOT}/bad-pin.log"
 if (
 	cd "${MISMATCH_ROOT}"
 	BAD_PIN_DEB_SOURCE="${BAD_PIN_DEB}" \
@@ -790,16 +840,19 @@ if (
 	AMNEZIAWG_COMMIT="${AMNEZIAWG_COMMIT}" \
 	NF_DEAF_COMMIT="${NF_DEAF_COMMIT}" \
 	./build_with_diy.sh kernel BOARD=fake
-); then
+) >"${BAD_PIN_LOG}" 2>&1; then
 	fail "build wrapper accepted a package whose TCP-Brutal commit is not the pinned one"
 fi
+assert_contains "${BAD_PIN_LOG}" \
+	'Pin validation failed: tcp_brutal_commit: expected fd3e540223c8, got 0000000000000000000000000000000000000000'
 
 # A deb produced for another branch (e.g. a stale artifact from a previous
 # build in the same output/debs) must never satisfy this build's BRANCH.
 BRANCH_MISMATCH_ROOT="${TEST_ROOT}/wrapper-branch-mismatch"
-mkdir -p "${BRANCH_MISMATCH_ROOT}/userpatches"
+mkdir -p "${BRANCH_MISMATCH_ROOT}/userpatches/extensions"
 cp "${REPO_ROOT}/overwrite/build_with_diy.sh" "${BRANCH_MISMATCH_ROOT}/build_with_diy.sh"
-cp "${REPO_ROOT}/userpatches/lib.config" "${BRANCH_MISMATCH_ROOT}/userpatches/lib.config"
+cp -R "${REPO_ROOT}/overwrite/lib" "${BRANCH_MISMATCH_ROOT}/lib"
+cp "${REPO_ROOT}/userpatches/extensions/kernel-inject.sh" "${BRANCH_MISMATCH_ROOT}/userpatches/extensions/kernel-inject.sh"
 cat > "${BRANCH_MISMATCH_ROOT}/compile.sh" <<'FAKE_COMPILE'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -864,7 +917,7 @@ before="$(sha256sum \
 
 reset_hook_arrays
 cd "${KERNEL_ROOT}"
-custom_kernel_config
+custom_kernel_config__kernel_inject
 cd "${original_pwd}"
 
 after="$(sha256sum \
@@ -876,19 +929,30 @@ after="$(sha256sum \
 	"${KERNEL_ROOT}/net/netfilter/Makefile")"
 [[ "${before}" == "${after}" ]] || fail "second injection changed parent Kconfig/Makefiles"
 
+NEGATIVE_CASE_LOG="${TEST_ROOT}/negative-config-cases.log"
+: > "${NEGATIVE_CASE_LOG}"
+
 reset_hook_arrays
-if AMNEZIAWG_MODE=y WIREGUARD_MODE=y custom_kernel_config; then
+if AMNEZIAWG_MODE=y WIREGUARD_MODE=y custom_kernel_config__kernel_inject >>"${NEGATIVE_CASE_LOG}" 2>&1; then
 	fail "unsafe built-in AmneziaWG/WireGuard combination was accepted"
 fi
+assert_contains "${NEGATIVE_CASE_LOG}" \
+	"Invalid built-in combination: AMNEZIAWG_MODE=y and WIREGUARD_MODE=y can collide; disable native WireGuard or keep one implementation modular"
 
+: > "${NEGATIVE_CASE_LOG}"
 reset_hook_arrays
-if WIREGUARD_MODE=invalid custom_kernel_config; then
+if WIREGUARD_MODE=invalid custom_kernel_config__kernel_inject >>"${NEGATIVE_CASE_LOG}" 2>&1; then
 	fail "invalid WIREGUARD_MODE value was accepted"
 fi
+assert_contains "${NEGATIVE_CASE_LOG}" \
+	"Invalid configuration: CONFIG_WIREGUARD: invalid mode 'invalid'"
 
+: > "${NEGATIVE_CASE_LOG}"
 reset_hook_arrays
-if ENABLE_FULL_NETWORKING=invalid custom_kernel_config; then
+if ENABLE_FULL_NETWORKING=invalid custom_kernel_config__kernel_inject >>"${NEGATIVE_CASE_LOG}" 2>&1; then
 	fail "invalid ENABLE_FULL_NETWORKING value was accepted"
 fi
+assert_contains "${NEGATIVE_CASE_LOG}" \
+	"Invalid configuration: ENABLE_FULL_NETWORKING must be yes or no, got 'invalid'"
 
 printf '[PASS] kernel injection is pinned/idempotent; full eBPF and networking are enforced\n'

@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 
-# This hook must live in userpatches/extensions rather than lib.config.
-# Armbian initializes its extension manager before it sources lib.config, so a
-# hook implementation declared there is invisible to the real packaging path.
+# Registered alongside kernel-inject before Armbian initializes its extension
+# manager. Persist evidence in the package, not the disposable kernel worktree.
 function pre_package_kernel_image__kernel_inject_evidence() {
 	local kernel_root="${kernel_work_dir:-}"
 	local package_root="${package_directory:-}"
@@ -99,6 +98,16 @@ function pre_package_kernel_image__kernel_inject_evidence() {
 	armbian_build_commit="$(git -C "${SRC:-.}" rev-parse HEAD 2>/dev/null || printf 'unknown')"
 	kernel_source_commit="$(git -C "${kernel_root}" rev-parse HEAD 2>/dev/null || printf 'unknown')"
 	config_sha256="$(sha256sum "${staging}/kernel.config" | awk '{print $1}')"
+	local board_dts=""
+	if [[ -n "${BOOT_FDT_FILE:-}" ]]; then
+		board_dts="${kernel_root}/arch/${kbuild_arch}/boot/dts/${BOOT_FDT_FILE%.dtb}.dts"
+		# Some upstream boards use generated DTs or do not declare a boot FDT.
+		# A target requiring DTS provenance will reject missing evidence later.
+		if [[ ! -s "${board_dts}" ]]; then board_dts=""; fi
+	fi
+	if [[ -n "${board_dts}" ]]; then
+		cp -- "${board_dts}" "${staging}/board.dts"
+	fi
 	{
 		printf 'evidence_format=1\n'
 		printf 'branch=%s\n' "${BRANCH:-unknown}"
@@ -115,6 +124,10 @@ function pre_package_kernel_image__kernel_inject_evidence() {
 		printf 'amneziawg_commit=%s\n' "${awg_commit}"
 		printf 'nf_deaf_commit=%s\n' "${nf_commit}"
 		printf 'config_sha256=%s\n' "${config_sha256}"
+		if [[ -n "${board_dts}" ]]; then
+			printf 'board_dtb=%s\n' "${BOOT_FDT_FILE}"
+			printf 'board_dts_sha256=%s\n' "$(sha256sum "${board_dts}" | awk '{print $1}')"
+		fi
 		printf 'baseline_status=%s\n' "${baseline_status}"
 		printf 'diff_count=%s\n' "${diff_count}"
 	} > "${staging}/source-manifest.env"
