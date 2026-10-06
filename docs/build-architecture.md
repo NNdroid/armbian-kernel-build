@@ -1,8 +1,9 @@
 # Build script architecture and extension guide
 
 Every board goes through the same Armbian compilation entry point; the build scripts are
-not duplicated per CPU architecture. The default target is still Rockchip64; HK1 Box stays
-on edge / 7.2 with its existing TAR installation format.
+not duplicated per CPU architecture. The default target is still Rockchip64; HK1 Box uses
+the Armbian meson64 kernel family with its existing TAR installation format. Both follow
+whatever series Armbian currently configures, and either can opt into a series lock.
 
 ```text
 build.sh                         Public entry point, read-only target queries
@@ -76,6 +77,20 @@ Then, if the board needs kernel patches, add them under
 requirements. Finally add a regression test and run the read-only queries, the build, and
 real-device verification.
 
+Armbian finds those patches on its own: it derives the patch directory from the kernel
+family and the branch's major.minor version, then reads both its own copy and the
+`userpatches` copy, with the latter overriding the former by file name. Nothing in a
+profile has to name that directory for the patches to be applied.
+
+That is worth stating precisely, because it is also why a patch that stops applying is
+otherwise invisible. Armbian prints the patch directory it used, applies what it finds,
+and continues — a patch that no longer applies does not fail the build. Declare the
+directory in `TARGET_BOARD_PATCHES` to make the build require positive evidence that each
+patch was applied: after the compile, `assert_board_patches_applied` reads the build log
+and fails naming any patch the log does not mention. It also fails when the built kernel's
+version no longer matches the directory name, since that means the patches fell out of
+scope rather than broke. The check is a no-op for a target that declares no patches.
+
 Target names may only contain lowercase letters, digits, and hyphens; paths, newlines, and
 shell expressions are not allowed. The template below is not an adapted or verified RISC-V
 board:
@@ -93,15 +108,28 @@ TARGET_BRANCHES=(current edge)
 ```
 
 Only the required fields need to be set; everything else falls back to the schema
-default. `TARGET_SERIES=()` and `TARGET_REQUIRED_Y=()` do not need to be written at all,
-and when a series lock *is* needed it must be assigned into a declared map —
-a bare `TARGET_SERIES=([edge]=7.2)` literal makes bash parse `[edge]` as an arithmetic
+default. `TARGET_SERIES=()` and `TARGET_REQUIRED_Y=()` do not need to be written at all.
+A target with no series lock tracks whatever Armbian has configured for each of its
+branches.
+
+A lock is optional rather than required, and it is a gate rather than a default: when a
+profile declares one, the build stops as soon as Armbian moves that branch off the
+declared series, so re-verifying the board is a deliberate act instead of a silent
+consequence of an upstream bump. Neither target in this repository locks, because the
+check that actually protects an `ophub-tar` board is the boot contract read from the
+built artifacts — the ARM64 Image `text_offset`, the DTB `mmc` aliases and
+`/memory@0` — which fails on a branch that moves in a way the board cannot boot whether
+or not a series is pinned. When a lock *is* wanted, assign it into a declared map; a
+bare `TARGET_SERIES=([edge]=7.2)` literal makes bash parse `[edge]` as an arithmetic
 subscript and fail under `set -u`:
 
 ```bash
 declare -gA TARGET_SERIES=()
 TARGET_SERIES["edge"]=7.2
 ```
+
+The schema rejects a value that is not a bare `major.minor` while loading, because the
+packaging embeds it in a regular expression.
 
 ### The target schema
 

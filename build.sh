@@ -37,7 +37,24 @@ if [[ "${BUILD_SCRIPT_LIB_ONLY:-no}" == yes ]]; then
 fi
 
 case "${1:-}" in
-    --list-targets) list_build_targets ;;
+    --list-targets)
+        shift
+        case "${1:-}" in
+            # The scheduled workflow builds every target and needs each one's
+            # runner to pick a machine, so the id list is not enough on its own.
+            --json) list_build_targets_json ;;
+            '') list_build_targets ;;
+            *) cat >&2 <<'JSON_USAGE'
+Usage: build.sh --list-targets [--json]
+
+  (no flag)  print every declared target id, one per line
+  --json     print a GitHub Actions matrix object including runner, board and
+             family, resolved from each profile
+JSON_USAGE
+                exit 1
+                ;;
+        esac
+        ;;
     --check-targets)
         [[ $# -le 1 ]] || { echo 'Usage: build.sh --check-targets' >&2; exit 1; }
         check_all_targets
@@ -54,13 +71,14 @@ case "${1:-}" in
         ;;
     '') build_main ;;
     *) cat >&2 <<'USAGE'
-Usage: build.sh [--list-targets | --check-targets | --new-target <id> | --describe-target [target]]
+Usage: build.sh [--list-targets [--json] | --check-targets | --new-target <id> | --describe-target [target]]
 
-  (no arguments)     build the configured target
-  --list-targets     print every declared target id
-  --check-targets    load and validate every target profile
-  --new-target <id>  scaffold a new target profile and its Armbian board shim
-  --describe-target  print the fully resolved profile for a target
+  (no arguments)       build the configured target
+  --list-targets       print every declared target id
+  --list-targets --json  print the same list as an Actions matrix with runners
+  --check-targets      load and validate every target profile
+  --new-target <id>    scaffold a new target profile and its Armbian board shim
+  --describe-target    print the fully resolved profile for a target
 
 Environment:
   BUILD_TARGET       target id to build (default: rockchip64)

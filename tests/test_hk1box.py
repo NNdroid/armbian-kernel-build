@@ -1,6 +1,7 @@
 """Contracts for shared Armbian target profiles and the HK1 Box adaptation."""
 import gzip
 import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -88,6 +89,85 @@ class TargetTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertNotIn('Environment initialization', result.stdout)
 
+    def test_scheduled_matrix_is_valid_json_carrying_each_targets_runner(self):
+        """The scheduled workflow builds its matrix from this output.
+
+        Two things have to hold or the workflow breaks in a way that is hard to
+        read from a failed run: the document must be parseable JSON, and each
+        entry must carry the runner its own profile declares. A hand-written
+        target list in the workflow would drift from the profiles, so the
+        resolved values are asserted here against the profiles themselves.
+        """
+        result = self.run_bash('bash build.sh --list-targets --json')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        try:
+            document = json.loads(result.stdout)
+        except ValueError as error:
+            self.fail(f'--list-targets --json is not valid JSON: {error}\n{result.stdout!r}')
+        self.assertIn('include', document)
+        entries = {entry['target']: entry for entry in document['include']}
+        self.assertEqual(set(entries), {'hk1box', 'rockchip64'})
+        for target, entry in entries.items():
+            described = self.run_bash(f'bash build.sh --describe-target {target}')
+            self.assertEqual(described.returncode, 0, described.stderr)
+            resolved = dict(
+                line.split('=', 1) for line in described.stdout.splitlines() if '=' in line)
+            for key in ('runner', 'board', 'family'):
+                self.assertEqual(entry[key], resolved[key], f'{target}.{key}')
+
+        # The two targets run on different machine types, which is the whole
+        # reason the runner travels in the matrix instead of being hardcoded.
+        self.assertEqual(entries['hk1box']['runner'], 'ubuntu-24.04-arm')
+        self.assertEqual(entries['rockchip64']['runner'], 'ubuntu-24.04')
+
+    # A profile that fails to load for a reason the schema actually checks. An
+    # earlier draft of this fixture used values that merely look wrong -- an
+    # unknown family, a version config that does not exist upstream -- and the
+    # profile loaded cleanly, because those fields are format-checked only. A
+    # missing required field is the real failure mode: someone adds a target and
+    # forgets one line.
+    BROKEN_PROFILE = (
+        'TARGET_BOARD=broken\nTARGET_FAMILY=meson64\n'
+        'TARGET_ARCH=arm64\nTARGET_KBUILD_ARCH=arm64\n'
+        'TARGET_RUNNER=ubuntu-24.04\n'
+        'TARGET_ADAPTER=deb\nTARGET_BRANCHES=(edge)\n')
+
+    def test_scheduled_matrix_reports_a_broken_profile_instead_of_dropping_it(self):
+        """A profile that cannot load must not silently vanish from the schedule.
+
+        The scheduled workflow runs `build.sh --check-targets` first, which stops
+        the run outright on a broken profile -- that is the primary guard. This
+        covers the layer underneath it: if that check is ever removed, skipping
+        the entry would leave the matrix short one target and the run would look
+        healthy while quietly not building that board. So the entry is emitted
+        with empty fields, leaving the matrix job to fail on the unresolvable
+        runner and name the target.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / 'broken.conf').write_text(self.BROKEN_PROFILE)
+            result = self.run_bash('bash build.sh --list-targets --json',
+                                   BUILD_TARGETS_DIR=directory)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        document = json.loads(result.stdout)
+        entries = {entry['target']: entry for entry in document['include']}
+        self.assertIn('broken', entries)
+        # The point of the entry is that the matrix job names the target, so
+        # every field a job interpolates has to be present-but-empty rather than
+        # absent -- `fromJson(matrix)` needs the keys to exist.
+        self.assertEqual(set(entries['broken']), {'target', 'runner', 'board', 'family'})
+        self.assertEqual(entries['broken']['runner'], '')
+
+    def test_check_targets_rejects_a_broken_profile_before_the_matrix_is_built(self):
+        """The guard the scheduled workflow relies on to stop on a bad profile."""
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / 'broken.conf').write_text(self.BROKEN_PROFILE)
+            result = self.run_bash('bash build.sh --check-targets',
+                                   BUILD_TARGETS_DIR=directory)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('[FAIL] broken', result.stdout)
+        self.assertIn('TARGET_VERSION_CONFIG is required but missing or empty',
+                      result.stdout)
+
     def test_library_loading_does_not_build(self):
         result = self.run_bash('BUILD_SCRIPT_LIB_ONLY=yes source build.sh; echo loaded',
                                BUILD_TARGET='hk1box')
@@ -131,14 +211,42 @@ class TargetTests(unittest.TestCase):
             self.assertNotEqual(self.run_bash('bash build.sh --describe-target "$NAME"', NAME=target).returncode, 0)
 
     def test_kernel_series_guard_is_profile_driven(self):
-        result = self.run_bash('source scripts/build_targets.sh; load_build_target; validate_target_series edge 7.3',
-                               BUILD_TARGET='hk1box')
+        """The guard fires when a profile pins a series, and stays quiet when it does not.
+
+        hk1box deliberately declares no lock so it tracks Armbian, which means
+        this guard has no opinion about it. The lock is still meaningful for a
+        profile that wants one, so the second half pins a temporary target to
+        check the diagnostic still names both series and hands back a concrete
+        way out -- otherwise a version bump would leave the maintainer with no
+        next step.
+        """
+        unlocked = self.run_bash(
+            'source scripts/build_targets.sh; load_build_target; validate_target_series edge 7.3; echo PASSED',
+            BUILD_TARGET='hk1box')
+        self.assertEqual(unlocked.returncode, 0, unlocked.stderr)
+        self.assertIn('PASSED', unlocked.stdout)
+
+        with tempfile.TemporaryDirectory() as directory:
+            locked = Path(directory) / 'pinned.conf'
+            locked.write_text(
+                'TARGET_BOARD=pinned\nTARGET_FAMILY=meson64\nTARGET_ARCH=arm64\n'
+                'TARGET_KBUILD_ARCH=arm64\nTARGET_RUNNER=ubuntu-24.04-arm\n'
+                'TARGET_VERSION_CONFIG=include/meson64_common.inc\n'
+                'TARGET_RELEASE_PREFIX=pinned-\nTARGET_ADAPTER=deb\n'
+                'TARGET_BRANCHES=(edge)\n'
+                'declare -gA TARGET_SERIES=()\nTARGET_SERIES["edge"]=7.2\n')
+            result = self.run_bash(
+                'source scripts/lib/targets.sh; BUILD_TARGET=pinned; load_build_target; '
+                'validate_target_series edge 7.3', BUILD_TARGETS_DIR=directory)
         self.assertNotEqual(result.returncode, 0)
         # The diagnostic must name both series and hand back a concrete way out,
         # otherwise a version bump leaves the maintainer with no next step.
         self.assertIn('pinned to kernel series 7.2', result.stderr)
         self.assertIn('Armbian now configures 7.3', result.stderr)
-        self.assertIn('userpatches/config/build-targets/hk1box.conf', result.stderr)
+        # It must point at the profile to edit. Only the file name is compared:
+        # with a temporary BUILD_TARGETS_DIR the full path is that directory, and
+        # asserting on it would pin the test to where it happens to run.
+        self.assertIn('pinned.conf', result.stderr)
 
     def test_hk1box_board_is_registered_in_armbian_search_path(self):
         result = self.run_bash('BUILD_SCRIPT_LIB_ONLY=yes source build.sh; '
@@ -160,6 +268,98 @@ class TargetTests(unittest.TestCase):
             correct_path.parent.mkdir(parents=True)
             wrong_path.rename(correct_path)
             self.assertEqual(self.run_bash(script, CASE_DIR=tree.as_posix()).returncode, 0)
+
+    def test_board_patch_application_is_asserted_against_the_build_log(self):
+        # The assertion reads the log Armbian's own patching step wrote, so the
+        # fixture has to contain the two things that step prints: the patch
+        # directory it used, and one line per applied patch.
+        def log_with(patches, patch_dir='archive/meson64-7.2'):
+            return '\n'.join([
+                'Using kernel patch dir: ' + patch_dir,
+                *patches,
+            ])
+
+        all_patches = ['0001-hk1box-mainline-dtb.patch',
+                       '0002-hk1box-memory-map.patch',
+                       '0003-amlogic-legacy-text-offset.patch',
+                       '0004-hk1box-mmc-aliases.patch']
+        prelude = (
+            'BUILD_SCRIPT_LIB_ONLY=yes source build.sh\n'
+            'USERPATCHES_PATH="$PWD/userpatches"\n'
+            'source userpatches/config/boards/hk1box.conf\n'
+            'BUILD_FAMILY=meson64\n'
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            log_file = Path(directory) / 'build.log'
+            log_file.write_text(log_with(all_patches), encoding='utf-8')
+
+            # The happy path: every patch named in the log.
+            result = self.run_bash(
+                prelude + 'BUILD_LOG_FILE="$CASE_LOG" '
+                'assert_board_patches_applied 7.2.8',
+                CASE_LOG=log_file.as_posix())
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('Verified 4/4 board patches applied', result.stderr)
+
+            # A patch the log never mentions must fail, and by name. This is the
+            # case that motivated the check: Armbian applies what it finds and
+            # carries on, so an unapplied patch is otherwise invisible until the
+            # board refuses to boot.
+            log_file.write_text(log_with(all_patches[:2]), encoding='utf-8')
+            result = self.run_bash(
+                prelude + 'BUILD_LOG_FILE="$CASE_LOG" '
+                'assert_board_patches_applied 7.2.8 || exit 1',
+                CASE_LOG=log_file.as_posix())
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('0003-amlogic-legacy-text-offset.patch', result.stderr)
+            self.assertIn('0004-hk1box-mmc-aliases.patch', result.stderr)
+            self.assertNotIn('0001-hk1box-mainline-dtb.patch', result.stderr)
+
+            # Patches silently out of scope because Armbian moved the branch.
+            # Reported as a version mismatch, not as four missing patches: the
+            # remedy is to rebase or re-pin, not to fix a patch.
+            log_file.write_text(log_with(all_patches), encoding='utf-8')
+            result = self.run_bash(
+                prelude + 'BUILD_LOG_FILE="$CASE_LOG" '
+                'assert_board_patches_applied 7.3.1 || exit 1',
+                CASE_LOG=log_file.as_posix())
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('out of scope', result.stderr)
+            self.assertIn('TARGET_SERIES', result.stderr)
+
+            # A patch directory Armbian did not use at all.
+            log_file.write_text(
+                log_with(all_patches, patch_dir='archive/rockchip64-7.2'),
+                encoding='utf-8')
+            result = self.run_bash(
+                prelude + 'BUILD_LOG_FILE="$CASE_LOG" '
+                'assert_board_patches_applied 7.2.8 || exit 1',
+                CASE_LOG=log_file.as_posix())
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('never in scope', result.stderr)
+
+            # No log to check against. Refusing here is deliberate: silently
+            # passing would make the guarantee depend on an env var the caller
+            # may not have set, which is the same invisible failure the check
+            # exists to prevent.
+            result = self.run_bash(
+                prelude + 'BUILD_LOG_FILE= '
+                'assert_board_patches_applied 7.2.8 || exit 1',
+                CASE_LOG=log_file.as_posix())
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('no readable build log', result.stderr)
+
+    def test_target_without_board_patches_skips_the_assertion(self):
+        # rockchip64 declares no board patches, so the assertion must be a
+        # no-op for it rather than a new failure mode on the one target that
+        # has been building successfully.
+        result = self.run_bash(
+            'BUILD_SCRIPT_LIB_ONLY=yes source build.sh; '
+            'TARGET_BOARD_PATCHES=; BUILD_FAMILY=rockchip64; '
+            'assert_board_patches_applied 6.18.55')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, '')
 
     def test_hk1box_boot_modes_override_module_requests(self):
         result = self.run_bash('''
@@ -632,18 +832,57 @@ printf 'board=%s family=%s serial=%s\\n' "$TARGET_BOARD" "$TARGET_FAMILY" "$SERI
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('declares no TARGET_BOARD_DTB', result.stderr)
 
-        # With a DTB declared, the missing series lock is the next hard stop:
-        # the container validates the built release against it.
-        (self.root / 'userpatches' / 'config' / 'build-targets' / 'tar-nodtb.conf').write_text(
-            'TARGET_BOARD=tar-nodtb\nTARGET_FAMILY=meson64\nTARGET_ARCH=arm64\n'
+    def test_a_target_without_a_series_lock_is_accepted_and_tracks_armbian(self):
+        """Removing the lock must relax the profile, not break the packaging.
+
+        The lock used to be mandatory for ophub-tar, which pinned every such board
+        to one Armbian series forever. The contract that actually protects the
+        board is the byte-level boot check, so an unlocked target is legitimate:
+        it loads cleanly and the packaging derives the series from what it built.
+        """
+        (self.root / 'userpatches' / 'config' / 'build-targets' / 'tar-nolock.conf').write_text(
+            'TARGET_BOARD=tar-nolock\nTARGET_FAMILY=meson64\nTARGET_ARCH=arm64\n'
             'TARGET_KBUILD_ARCH=arm64\nTARGET_RUNNER=ubuntu-24.04-arm\n'
             'TARGET_VERSION_CONFIG=include/meson64_common.inc\n'
-            'TARGET_ADAPTER=ophub-tar\nTARGET_BRANCHES=(edge)\n'
+            'TARGET_RELEASE_PREFIX=tar-nolock-\nTARGET_ADAPTER=ophub-tar\n'
+            'TARGET_BRANCHES=(edge)\n'
             'TARGET_BOARD_DTB=amlogic/meson-sm1-other.dtb\n')
         result = self.run_bash(
-            'source scripts/lib/targets.sh; BUILD_TARGET=tar-nodtb; load_build_target')
+            'source scripts/lib/targets.sh; BUILD_TARGET=tar-nolock; load_build_target; '
+            'target_adapter_validate; echo ADAPTER_OK')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('ADAPTER_OK', result.stdout)
+
+        # The series helper now reports "no opinion" instead of failing, and the
+        # packaging falls back to the version it built. Assert the empty result
+        # explicitly: a helper that printed nothing but returned non-zero would
+        # abort the subshell the packaging calls it in.
+        series = self.run_bash(
+            'BUILD_TARGET=tar-nolock; source scripts/lib/targets.sh; load_build_target; '
+            'source scripts/package_ophub_tar.sh; ophub_tar_series edge; echo "rc=$?"')
+        self.assertEqual(series.returncode, 0, series.stderr)
+        self.assertIn('rc=0', series.stdout)
+
+    def test_a_malformed_series_lock_is_rejected_by_the_schema(self):
+        """The lock feeds a regex, so its shape is validated while loading.
+
+        Once a lock is optional, a typo in one would otherwise reach the
+        packaging container and fail on a pattern it cannot compile, an hour
+        into a build. The schema catches it at load time instead.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / 'badlock.conf').write_text(
+                'TARGET_BOARD=badlock\nTARGET_FAMILY=meson64\nTARGET_ARCH=arm64\n'
+                'TARGET_KBUILD_ARCH=arm64\nTARGET_RUNNER=ubuntu-24.04-arm\n'
+                'TARGET_VERSION_CONFIG=include/meson64_common.inc\n'
+                'TARGET_ADAPTER=ophub-tar\nTARGET_BRANCHES=(edge)\n'
+                'TARGET_BOARD_DTB=amlogic/meson-sm1-other.dtb\n'
+                'declare -gA TARGET_SERIES=()\nTARGET_SERIES["edge"]=7.2.x\n')
+            result = self.run_bash(
+                'source scripts/lib/targets.sh; BUILD_TARGET=badlock; load_build_target',
+                BUILD_TARGETS_DIR=directory)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('TARGET_SERIES lock', result.stderr)
+        self.assertIn('must be a major.minor series', result.stderr)
 
     def test_series_lock_for_an_unbuilt_branch_is_rejected(self):
         """A lock on a branch the target never builds is a silent no-op otherwise."""

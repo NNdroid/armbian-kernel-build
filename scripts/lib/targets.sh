@@ -46,6 +46,12 @@ TARGET_SCHEMA=(
     'TARGET_RELEASE_PREFIX|scalar|no|deb-prefix|'
     'TARGET_ADAPTER|scalar|yes|ident|'
     'TARGET_BOARD_DTB|scalar|no|dtb|'
+    # Board-level kernel source patches, as a path relative to
+    # USERPATCHES_PATH. Armbian applies these itself, from the directory
+    # userpatches/kernel/archive/<family>-<major.minor>/; declaring them here
+    # only lets the build assert that each one was actually applied, since a
+    # patch that silently does not apply does not fail the Armbian build.
+    'TARGET_BOARD_PATCHES|scalar|no|relative-patches|'
     # Board boot-contract knobs, checked after the kernel is built. They are
     # data rather than code so a similar board needs no new script: the ophub-tar
     # packaging reads whatever is declared and skips the rest.
@@ -108,6 +114,60 @@ list_build_targets() {
         path="${path##*/}"
         printf '%s\n' "${path%.conf}"
     done
+}
+
+# Emit the target list as a GitHub Actions matrix object.
+#
+# The scheduled workflow builds every target, so it needs each target's runner as
+# well as its id -- hk1box needs an arm64 runner and rockchip64 an x86_64 one.
+# Resolving the runner here rather than in the workflow is the point: a new
+# target declares its own runner in its profile, and the schedule picks it up
+# with no edit to any workflow. Emitting a hand-written "target: [a, b]" list in
+# YAML would guarantee the two drift apart.
+#
+# One describe per target, not one per field: the loader is cheap but the whole
+# point of running it is to fail here rather than in a matrix leg.
+list_build_targets_json() {
+    local target described runner board family first=1
+    printf '{"include":['
+    while read -r target; do
+        [[ -n "${target}" ]] || continue
+        # describe_build_target reports the already-loaded profile; it does not
+        # load one. Assign BUILD_TARGET first rather than as a command prefix:
+        # a prefix assignment applies to the command it precedes, so the
+        # function body would still see the previous value and report an empty
+        # target. Reset too, so each target starts from the schema defaults
+        # instead of inheriting the previous one's fields.
+        _target_reset_schema
+        BUILD_TARGET="${target}"
+        described=''
+        if load_build_target >/dev/null 2>&1; then
+            described="$(describe_build_target 2>/dev/null || true)"
+        fi
+        runner="$(sed -n 's/^runner=//p' <<< "${described}")"
+        board="$(sed -n 's/^board=//p' <<< "${described}")"
+        family="$(sed -n 's/^family=//p' <<< "${described}")"
+        ((first)) || printf ','
+        first=0
+        # Quote by hand rather than with %q: %q only adds quotes when the value
+        # contains something that needs them, so a plain id would come out as a
+        # bare token and the whole document would stop being valid JSON. These
+        # values are target ids, runner labels, board names and family names --
+        # none may contain a quote or a backslash, and the loader rejects a
+        # target id that does, so escaping those two characters is sufficient.
+        _target_json_escape() {
+            local value="$1"
+            value="${value//\\/\\\\}"
+            value="${value//\"/\\\"}"
+            printf '"%s"' "${value}"
+        }
+        printf '{"target":%s,"runner":%s,"board":%s,"family":%s}' \
+            "$(_target_json_escape "${target}")" \
+            "$(_target_json_escape "${runner}")" \
+            "$(_target_json_escape "${board}")" \
+            "$(_target_json_escape "${family}")"
+    done < <(list_build_targets)
+    printf ']}\n'
 }
 
 target_profile_path() {
@@ -237,6 +297,18 @@ _target_validate_field() {
         relative-config)
             [[ "${value}" =~ ^([A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+\.(inc|conf)$ ]] || {
                 log_error '%s must be a family-relative include: %s' "${name}" "${value}"
+                return 1
+            }
+            ;;
+        relative-patches)
+            # A directory of .patch files, relative to USERPATCHES_PATH. No
+            # traversal: the value is concatenated onto USERPATCHES_PATH and
+            # then read, so a leading ../ would read outside the tree the user
+            # is supposed to be declaring patches for. Dots are allowed because
+            # the directory Armbian reads is named after the kernel series
+            # (archive/meson64-7.2), so a versioned name is the normal case.
+            [[ "${value}" =~ ^([A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+$ ]] || {
+                log_error '%s must be a directory path relative to USERPATCHES_PATH: %s' "${name}" "${value}"
                 return 1
             }
             ;;

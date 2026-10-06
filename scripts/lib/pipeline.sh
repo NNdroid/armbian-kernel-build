@@ -146,6 +146,14 @@ build_main() {
             return 1
         }
         log_info "${branch}: derived kernel version from artifact = ${BUILT_KERNEL_VER}"
+        # Before packaging, not after: packaging validates the boot contract
+        # against the built bytes and would report a text_offset mismatch, which
+        # says nothing about the patch that should have set it. Runs while the
+        # log that proves patch application is still on disk.
+        if ! assert_board_patches_applied "${BUILT_KERNEL_VER}"; then
+            rm -f -- "${BUILD_MARKER}"
+            return 1
+        fi
         end_step "Build ${branch} kernel"
 
         target_package_artifacts "${branch}" "${BUILD_MARKER}" "${BUILT_KERNEL_VER}"

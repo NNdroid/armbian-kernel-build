@@ -11,17 +11,20 @@ target_adapter_validate() {
             "${BUILD_TARGET}"
         return 1
     }
-    # The container validates the built release against the pinned series, so a
-    # target that declares no lock could never be packaged. Fail here instead of
-    # after a full kernel build.
-    local branch
-    for branch in "${TARGET_BRANCHES[@]}"; do
-        [[ -n "${TARGET_SERIES[${branch}]:-}" ]] || {
-            log_error 'Target %s / %s needs a TARGET_SERIES lock for ophub-tar packaging' \
-                "${BUILD_TARGET}" "${branch}"
-            return 1
-        }
-    done
+    # No series requirement here, and that is a deliberate reversal. A lock used
+    # to be mandatory for this adapter, which pinned every such board to one
+    # Armbian series until a human re-verified the boot chain. It is now
+    # optional: when a profile declares one, validate_target_series aborts the
+    # build if Armbian moves the branch off it, so a declared lock stays a real
+    # gate; when it declares none, the target tracks Armbian and the packaging
+    # derives the series from the version it built.
+    #
+    # Dropping the lock does not weaken the board checks, which are what actually
+    # protect it: the packaging verifies the ARM64 Image text_offset, the DTB mmc
+    # aliases and /memory@0 against the bytes it just built, so a branch that
+    # moves in a way this board cannot boot fails on evidence rather than on a
+    # version comparison made before the compile. A malformed lock needs no check
+    # here either -- the schema's series validator rejects it while loading.
 }
 target_package_artifacts() {
     bash "${BUILD_PROJECT_ROOT}/scripts/package_ophub_tar.sh" "$@"

@@ -359,7 +359,7 @@ assert_file "${PACKAGED_EVIDENCE}/config-vs-arm64-defconfig.txt"
 assert_file "${PACKAGED_EVIDENCE}/arm64-defconfig-build.log"
 assert_contains "${PACKAGED_EVIDENCE}/source-manifest.env" 'evidence_format=1'
 assert_contains "${PACKAGED_EVIDENCE}/source-manifest.env" \
-	'tcp_brutal_commit=fd3e540223c8d22adbed6d1f4fc54caa623d49c0'
+	'tcp_brutal_commit=d2397ff8bca04a29fd2de01cf7d2d4b825224de8'
 
 KCONFIG_SCAN_ROOT="${TEST_ROOT}/kconfig-scan"
 mkdir -p "${KCONFIG_SCAN_ROOT}"
@@ -995,7 +995,7 @@ if (
 	fail "build wrapper accepted a package whose TCP-Brutal commit is not the pinned one"
 fi
 assert_contains "${BAD_PIN_LOG}" \
-	'Pin validation failed: tcp_brutal_commit: expected fd3e540223c8, got 0000000000000000000000000000000000000000'
+	'Pin validation failed: tcp_brutal_commit: expected d2397ff8bca0, got 0000000000000000000000000000000000000000'
 
 # A deb produced for another branch (e.g. a stale artifact from a previous
 # build in the same output/debs) must never satisfy this build's BRANCH.
@@ -1025,9 +1025,9 @@ assert_file "${KERNEL_ROOT}/net/ipv4/tcp_brutal/brutal_rules.c"
 assert_file "${KERNEL_ROOT}/net/ipv4/tcp_brutal/brutal.h"
 assert_contains "${KERNEL_ROOT}/net/ipv4/tcp_brutal/Makefile" 'BRUTAL_HAVE_TSO_SEGS'
 assert_contains "${KERNEL_ROOT}/net/ipv4/tcp_brutal/.source-revision" \
-	'commit=fd3e540223c8d22adbed6d1f4fc54caa623d49c0'
+	'commit=d2397ff8bca04a29fd2de01cf7d2d4b825224de8'
 assert_contains "${KERNEL_ROOT}/net/ipv4/tcp_brutal/.source-revision" \
-	'ref=fd3e540223c8d22adbed6d1f4fc54caa623d49c0'
+	'ref=d2397ff8bca04a29fd2de01cf7d2d4b825224de8'
 assert_absent "${KERNEL_ROOT}/net/ipv4/tcp_brutal.c"
 assert_not_contains "${KERNEL_ROOT}/net/ipv4/tcp.c" 'TCP_BRUTAL_PARAMS'
 assert_contains "${KERNEL_ROOT}/net/ipv4/Kconfig" 'config TCP_AFTER_LEGACY'
@@ -1049,7 +1049,7 @@ assert_file "${KERNEL_ROOT}/net/netfilter/nf_deaf/Kconfig"
 assert_absent "${KERNEL_ROOT}/net/netfilter/nf_deaf.c"
 assert_contains "${KERNEL_ROOT}/net/netfilter/Kconfig" 'config NF_AFTER_LEGACY'
 assert_contains "${KERNEL_ROOT}/net/netfilter/nf_deaf/.source-revision" \
-	'commit=d600e9c7f2784137348b3bbe2c94e781177e878d'
+	'commit=f62b5e6bda120ae4d7c614e9028185eb47418f7c'
 
 assert_count "${KERNEL_ROOT}/net/ipv4/Kconfig" 'BEGIN ARMBIAN-KERNEL-INJECT: TCP_BRUTAL_V2' 1
 assert_count "${KERNEL_ROOT}/net/ipv4/Makefile" 'BEGIN ARMBIAN-KERNEL-INJECT: TCP_BRUTAL_V2' 1
@@ -1105,5 +1105,107 @@ if ENABLE_FULL_NETWORKING=invalid custom_kernel_config__kernel_inject >>"${NEGAT
 fi
 assert_contains "${NEGATIVE_CASE_LOG}" \
 	"Invalid configuration: ENABLE_FULL_NETWORKING must be yes or no, got 'invalid'"
+
+# Each injector used to call _kernel_inject_require_files without acting on its
+# return value, so a source tree missing a file was reported as an injection
+# success. The defect was the missing check at the call site; the helper has
+# always returned non-zero correctly. So these cases must get past the fetch --
+# which is what fails first and would mask the layout check entirely -- and fail
+# at the layout check instead.
+#
+# The upstream repos are real local git repositories rather than stubs: fetch
+# clones into its destination, so a pre-populated plain directory would be
+# destroyed by 'git init' before any layout check ran.
+LAYOUT_LOG="${TEST_ROOT}/layout-check-cases.log"
+: > "${LAYOUT_LOG}"
+
+# Build an upstream whose pinned commit resolves, then delete one required file
+# from the checkout so the layout check is what rejects it.
+# $1 module tag. $2... files that should exist (a sentinel file is added).
+make_upstream() {
+	local tag="$1"
+	shift
+	local repo="${TEST_ROOT}/upstream-${tag}"
+	local seed="${TEST_ROOT}/seed-${tag}"
+	local name
+
+	rm -rf -- "${repo}" "${seed}"
+	mkdir -p "${seed}"
+	for name in "$@"; do
+		mkdir -p "${seed}/$(dirname "${name}")"
+		printf 'placeholder for %s\n' "${name}" > "${seed}/${name}"
+	done
+	git -C "${seed}" init --quiet
+	git -C "${seed}" -c commit.gpgsign=false -c user.name=test -c user.email=test@example.com \
+		add -A
+	git -C "${seed}" -c commit.gpgsign=false -c user.name=test -c user.email=test@example.com \
+		commit --quiet -m "layout fixture"
+	git clone --quiet "${seed}" "${repo}"
+	printf '%s' "${repo}"
+}
+
+# Remove one file, leaving the rest of the layout intact.
+drop_from_checkout() {
+	local checkout="$1"
+	shift
+	local name
+	for name in "$@"; do
+		rm -f -- "${checkout:?}/${name}"
+	done
+}
+
+run_injector_case() {
+	local label="$1"
+	local injector="$2"
+	local repository="$3"
+	local missing="$4"
+	# Captured before the shift below.
+	local marker="$5"
+
+	shift 4
+	local checkout="${TEST_ROOT}/checkout-${label}"
+	local commit
+	# A per-case kernel root, not the shared one. The positive cases above have
+	# already injected real modules into KERNEL_ROOT, so asserting that
+	# .source-revision is absent there would fail on their output rather than on
+	# anything this case did. Each case needs somewhere the injector has never
+	# run, otherwise "nothing was injected" cannot be observed.
+	local kernel_root="${TEST_ROOT}/kernel-${label}"
+	mkdir -p "${kernel_root}/net/ipv4" "${kernel_root}/drivers/net" \
+		"${kernel_root}/net/netfilter"
+	commit="$(git -C "${repository}" rev-parse HEAD)"
+	# Fetch into a copy so each case starts from a pristine tree.
+	rm -rf -- "${checkout}"
+	git clone --quiet "${repository}" "${checkout}"
+	drop_from_checkout "${checkout}" ${missing}
+
+	if "${injector}" "${kernel_root}" "${checkout}" \
+		"${repository}" "branch/x" "${commit}" >>"${LAYOUT_LOG}" 2>&1; then
+		fail "${label} injection succeeded despite a missing ${missing}"
+	fi
+	assert_contains "${LAYOUT_LOG}" "Invalid upstream layout"
+	# Checked here rather than by the caller so the path cannot drift from the
+	# kernel root this case actually used.
+	assert_absent "${kernel_root}/${marker}"
+}
+
+upstream="$(make_upstream tcp-brutal brutal.h brutal_cc.c brutal_sockopt.c brutal_rules.c Makefile LICENSE)"
+run_injector_case tcp-brutal _kernel_inject_tcp_brutal "${upstream}" brutal.h \
+	'net/ipv4/tcp_brutal/.source-revision'
+
+# COPYING is copied into the module directory but used to sit outside the
+# required-file check, so its absence passed unnoticed.
+upstream="$(make_upstream amneziawg src/Kbuild src/Kconfig src/main.c src/compat/Kbuild.include COPYING)"
+run_injector_case amneziawg _kernel_inject_amneziawg "${upstream}" COPYING \
+	'drivers/net/amneziawg/.source-revision'
+
+upstream="$(make_upstream nf-deaf nf_deaf.c LICENSE)"
+run_injector_case nf-deaf _kernel_inject_nf_deaf "${upstream}" LICENSE \
+	'net/netfilter/nf_deaf/.source-revision'
+
+# The directory each injector logs on success must never appear for a rejected
+# layout. "Injected <sha>" is the line release notes are built from, so a failed
+# injection must not be able to print it.
+assert_not_contains "${LAYOUT_LOG}" "Injected"
 
 printf '[PASS] kernel injection is pinned/idempotent; full eBPF and networking are enforced\n'

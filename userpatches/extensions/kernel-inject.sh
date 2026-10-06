@@ -3,9 +3,17 @@
 
 # Pinned upstream commits. Overriding these also overrides the matching *_REF,
 # and the build wrapper reads them for its post-build verification.
-: "${TCP_BRUTAL_COMMIT:=fd3e540223c8d22adbed6d1f4fc54caa623d49c0}"
+#
+# The commit is the pin, not the branch name: it is fetched by SHA and then
+# verified against itself, so an upstream force-push or a deleted branch cannot
+# silently change what a build contains. Two of these pins were force-pushed out
+# of existence upstream and had to be re-pinned:
+#   TCP_BRUTAL_COMMIT  fd3e540 -> d2397ff (master, also tagged v2.0.1)
+#   NF_DEAF_COMMIT     d600e9c -> f62b5e6 (main)
+# Note tcp-brutal's default branch is `master`, not `main`.
+: "${TCP_BRUTAL_COMMIT:=d2397ff8bca04a29fd2de01cf7d2d4b825224de8}"
 : "${AMNEZIAWG_COMMIT:=1a735221a62c75ad788f8229623dd4d2098bbaa8}"
-: "${NF_DEAF_COMMIT:=d600e9c7f2784137348b3bbe2c94e781177e878d}"
+: "${NF_DEAF_COMMIT:=f62b5e6bda120ae4d7c614e9028185eb47418f7c}"
 : "${TCP_BRUTAL_MODE:=y}"
 : "${AMNEZIAWG_MODE:=y}"
 : "${NF_DEAF_MODE:=y}"
@@ -979,7 +987,7 @@ _kernel_inject_tcp_brutal() {
 	actual_commit="$(_kernel_inject_fetch "${repository}" "${ref}" "${expected_commit}" "${checkout}")"
 	_kernel_inject_log debug "TCP-Brutal v2" "source ${repository}@${ref} -> ${actual_commit:0:12}"
 	_kernel_inject_require_files "${checkout}" \
-		brutal.h brutal_cc.c brutal_sockopt.c brutal_rules.c Makefile LICENSE
+		brutal.h brutal_cc.c brutal_sockopt.c brutal_rules.c Makefile LICENSE || return 1
 
 	staging="$(mktemp -d "${kernel_root}/net/ipv4/.tcp_brutal.new.XXXXXX")"
 	cp -a -- "${checkout}/brutal.h" "${checkout}/brutal_cc.c" \
@@ -1043,7 +1051,12 @@ _kernel_inject_amneziawg() {
 
 	actual_commit="$(_kernel_inject_fetch "${repository}" "${ref}" "${expected_commit}" "${checkout}")"
 	_kernel_inject_log debug "AmneziaWG" "source ${repository}@${ref} -> ${actual_commit:0:12}"
-	_kernel_inject_require_files "${checkout}/src" Kbuild Kconfig main.c compat/Kbuild.include
+	# COPYING is checked alongside the src/ files, not after: it is copied into
+	# the module directory below and nothing else would notice its absence, so
+	# listing it only in the cp would let a layout change drop the license
+	# silently.
+	_kernel_inject_require_files "${checkout}" COPYING || return 1
+	_kernel_inject_require_files "${checkout}/src" Kbuild Kconfig main.c compat/Kbuild.include || return 1
 
 	staging="$(mktemp -d "${kernel_root}/drivers/net/.amneziawg.new.XXXXXX")"
 	cp -a -- "${checkout}/src/." "${staging}/"
@@ -1079,7 +1092,7 @@ _kernel_inject_nf_deaf() {
 
 	actual_commit="$(_kernel_inject_fetch "${repository}" "${ref}" "${expected_commit}" "${checkout}")"
 	_kernel_inject_log debug "nf_deaf" "source ${repository}@${ref} -> ${actual_commit:0:12}"
-	_kernel_inject_require_files "${checkout}" nf_deaf.c LICENSE
+	_kernel_inject_require_files "${checkout}" nf_deaf.c LICENSE || return 1
 
 	staging="$(mktemp -d "${kernel_root}/net/netfilter/.nf_deaf.new.XXXXXX")"
 	cp -a -- "${checkout}/nf_deaf.c" "${checkout}/LICENSE" "${staging}/"
@@ -1149,13 +1162,13 @@ custom_kernel_config__kernel_inject() {
 	local tcp_repository="${TCP_BRUTAL_REPOSITORY:-https://github.com/HyNetworks/tcp-brutal.git}"
 	# A COMMIT-only override is sufficient and becomes the default fetch ref.
 	# REF remains available for servers that need a branch/tag fetch hint.
-	local tcp_commit="${TCP_BRUTAL_COMMIT:-fd3e540223c8d22adbed6d1f4fc54caa623d49c0}"
+	local tcp_commit="${TCP_BRUTAL_COMMIT:-d2397ff8bca04a29fd2de01cf7d2d4b825224de8}"
 	local tcp_ref="${TCP_BRUTAL_REF:-${tcp_commit}}"
 	local awg_repository="${AMNEZIAWG_REPOSITORY:-https://github.com/NNdroid/amneziawg-linux-kernel-module.git}"
 	local awg_commit="${AMNEZIAWG_COMMIT:-1a735221a62c75ad788f8229623dd4d2098bbaa8}"
 	local awg_ref="${AMNEZIAWG_REF:-${awg_commit}}"
 	local nf_repository="${NF_DEAF_REPOSITORY:-https://github.com/NNdroid/nf_deaf.git}"
-	local nf_commit="${NF_DEAF_COMMIT:-d600e9c7f2784137348b3bbe2c94e781177e878d}"
+	local nf_commit="${NF_DEAF_COMMIT:-f62b5e6bda120ae4d7c614e9028185eb47418f7c}"
 	local nf_ref="${NF_DEAF_REF:-${nf_commit}}"
 	local tcp_mode="${TCP_BRUTAL_MODE:-y}"
 	local awg_mode="${AMNEZIAWG_MODE:-y}"
@@ -1236,8 +1249,18 @@ custom_kernel_config__kernel_inject() {
 	fi
 
 	_kernel_inject_log info "Kernel source injection" "Preparing pinned third-party modules"
-	_kernel_inject_sources "${kernel_root}" \
+	# Checked explicitly rather than left to errexit. _kernel_inject_sources is a
+	# subshell, so its non-zero status does propagate, and this hook normally runs
+	# under 'set -e' -- but that is a property of the caller, not of this file. A
+	# hook that returns 0 after the injection failed would be indistinguishable
+	# from success, and the three injectors print "Injected <sha>" only after they
+	# finish, so the failure has to stop here.
+	if ! _kernel_inject_sources "${kernel_root}" \
 		"${tcp_repository}" "${tcp_ref}" "${tcp_commit}" \
 		"${awg_repository}" "${awg_ref}" "${awg_commit}" \
-		"${nf_repository}" "${nf_ref}" "${nf_commit}"
+		"${nf_repository}" "${nf_ref}" "${nf_commit}"; then
+		_kernel_inject_log err "Kernel source injection failed" \
+			"One or more pinned modules could not be injected; refusing to continue with a partial kernel tree"
+		return 1
+	fi
 }

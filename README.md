@@ -48,24 +48,34 @@ The field list lives in `TARGET_SCHEMA` in `scripts/lib/targets.sh`; resetting,
 validation and `--describe-target` all derive from it, so a new profile field is declared
 in exactly one place.
 
-## HK1 Box / S905X3: unified Armbian 7.2 build
+## HK1 Box / S905X3: Armbian meson64 kernel, ophub install format
 
 `hk1box` reuses the same Armbian build chain, source injection, final configuration
 validation, DEB evidence validation, live log, and release metadata generation as
-Rockchip64. It defaults to `edge / 7.2.y`; the source tree and baseline configuration are
-managed by Armbian meson64, so **nothing is compiled from the ophub kernel repository
-anymore**.
+Rockchip64. It builds the `edge` branch of Armbian `meson64`; the source tree and
+baseline configuration are managed by Armbian meson64, so **nothing is compiled
+from the ophub kernel repository anymore**. The target tracks whatever series
+Armbian has configured for that branch rather than pinning one, so a routine
+upstream bump does not require re-verifying the board by hand — see the boot
+contract note below.
 
 Board-specific differences are isolated in `userpatches/config/build-targets/hk1box.conf`
 and `userpatches/kernel/archive/meson64-7.2/000*-hk1box-*.patch`. The boot offset comes
 from `0003-amlogic-legacy-text-offset.patch` in the same directory. The HK1 Box device
-tree is based on the SM1/AC2xx implementation shipped with Linux 7.2 and keeps the
+tree is based on the SM1/AC2xx implementation and keeps the
 existing FDT file name. It adapts the gigabit PHY, SD/eMMC, USB, SDIO, and Bluetooth
 wiring, and disables the 2.016/2.1 GHz OPPs added by the Armbian SM1 patches so the
 mainline frequency table is preserved. Board wiring references ophub/linux-6.12.y commit
 `4c0b3046f608fad852b55de1b234d43b8e178034`; the original GPL/MIT licenses are retained and
 only the board device tree and boot compatibility are selectively ported. The Armbian
 kernel source and the full configuration set are never replaced.
+
+Armbian applies those patches itself, from the directory it derives for the kernel family
+and version. Because a patch that stops applying does not fail an Armbian build, the target
+declares its patch directory in `TARGET_BOARD_PATCHES`, and the build then requires the log
+to show each patch being applied — failing by name if one is missing, and failing as a
+version mismatch if Armbian has moved the branch far enough that the patches no longer
+apply at all.
 
 The HK1 Box target currently declares memory for the **4 GB model** (`0xFFFFFFFF`); the
 2 GB model cannot reuse it as-is. Board aliases keep the ophub numbering
@@ -76,14 +86,32 @@ and early boot drivers for storage and USB are all forced built-in, and the buil
 when the final package configuration lacks any of them. Real capacity, PHY model, and Wi-Fi
 chip still require on-device verification.
 
-In Actions, choose **Build and Upload Debs → Run workflow**:
+Two workflows drive the build:
 
-- `target=hk1box`, `branch=auto` (or `edge`).
-- `force=true` rebuilds even when the same version is already released.
-- For a first run, prefer `publish=false`; verify the Actions artifacts before publishing.
-- The scheduled job still covers Rockchip64. Its existing release tags are unchanged,
-  while HK1 Box uses `hk1box-edge-<version>` so platforms cannot mistake each other's
-  builds as already done.
+- **Build all targets (scheduled)** runs every day at 13:10 UTC and builds **all**
+  declared targets in parallel, each on the runner its own profile asks for. The
+  target list comes from `bash build.sh --list-targets --json`, so a new target
+  joins the schedule as soon as its profile exists; no workflow edit is needed.
+- **Build (manual)** is manual-only. Choose **Build (manual) → Run workflow**:
+
+  - `target=hk1box` or `target=rockchip64`; `bash build.sh --list-targets` shows
+    the valid ids and an unknown one fails before a runner is started.
+  - `branch=auto` builds every branch the target declares.
+  - `force=true` rebuilds even when the same version is already released.
+  - For a first run, prefer `publish=false`; verify the Actions artifacts before
+    publishing.
+
+Release tags are prefixed per target — `hk1box-edge-<version>` for HK1 Box, bare
+`current-<version>` / `edge-<version>` for Rockchip64 — so the parallel scheduled
+legs write to different tags and cannot mistake each other's builds as done.
+
+HK1 Box follows Armbian's `meson64` edge branch rather than a pinned kernel
+series. Its boot contract is still enforced against the built artifacts: the
+ARM64 Image `text_offset`, the DTB `mmc` aliases, and `/memory@0` are read from
+the packages and rejected on mismatch, so a branch that moves in a way this board
+cannot boot fails on evidence rather than shipping. To pin a target to one series
+on purpose, declare `TARGET_SERIES` in its profile; the build then stops and asks
+for a re-verification when Armbian moves the branch off that series.
 
 On a Linux Docker host:
 

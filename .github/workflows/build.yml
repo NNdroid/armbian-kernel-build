@@ -1,5 +1,9 @@
-name: Build and Upload Debs
+name: Build (manual)
 
+# Manual builds only. The unattended run lives in build-all-targets.yml, which
+# builds every declared target on a schedule. Keeping them apart means a
+# maintainer can rebuild one target at an arbitrary time without queuing behind
+# -- or being cancelled by -- the scheduled matrix.
 on:
   workflow_dispatch:
     inputs:
@@ -7,11 +11,11 @@ on:
         # A free-form string on purpose: adding a target must not require editing
         # this workflow. `bash build.sh --list-targets` shows the valid ids, and
         # an unknown one fails in the prepare step before any runner is started.
-        description: 'Build platform; run `bash build.sh --list-targets` for valid ids (scheduled builds remain Rockchip64)'
+        description: 'Build platform; run `bash build.sh --list-targets` for valid ids'
         type: string
         default: rockchip64
       branch:
-        description: Branch (HK1 Box auto selects edge / 7.2)
+        description: Branch to build (auto builds every branch the target declares)
         type: choice
         default: auto
         options:
@@ -27,11 +31,9 @@ on:
         description: Publish validated packages and metadata to Release
         type: boolean
         default: true
-  schedule:
-    - cron: '10 13 * * *'
 
 concurrency:
-  group: build-and-upload
+  group: build-manual-${{ inputs.target || 'rockchip64' }}
   cancel-in-progress: false
 
 permissions:
@@ -56,8 +58,8 @@ jobs:
       - name: Validate target and select runner
         id: target
         env:
-          BUILD_TARGET: ${{ inputs.target || 'rockchip64' }}
-          BUILD_BRANCH: ${{ inputs.branch || 'auto' }}
+          BUILD_TARGET: ${{ inputs.target }}
+          BUILD_BRANCH: ${{ inputs.branch }}
         run: bash build.sh --describe-target >> "$GITHUB_OUTPUT"
 
   build:
@@ -231,10 +233,13 @@ jobs:
       - name: Run build script
         env:
           GH_TOKEN: ${{ github.token }}
-          BUILD_TARGET: ${{ inputs.target || 'rockchip64' }}
-          BUILD_BRANCH: ${{ inputs.branch || 'auto' }}
+          BUILD_TARGET: ${{ inputs.target }}
+          BUILD_BRANCH: ${{ inputs.branch }}
           BUILD_FORCE: ${{ inputs.force && 'yes' || 'no' }}
-          BUILD_PUBLISH: ${{ (github.event_name != 'workflow_dispatch' || inputs.publish) && 'yes' || 'no' }}
+          # This workflow only ever runs on workflow_dispatch, so the input is
+          # the whole decision. The scheduled workflow has no such input and
+          # always publishes.
+          BUILD_PUBLISH: ${{ inputs.publish && 'yes' || 'no' }}
         run: |
           set -Eeuo pipefail
           live_dir="${RUNNER_TEMP}/kernel-live-log"
@@ -271,10 +276,15 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: built-images
+          name: built-images-${{ inputs.target }}
           path: |
             build/output/debs/*
-            build/output/hk1box/*
+            # Every adapter writes its bundle under build/output/<target>/.
+            # Naming hk1box literally used to mean a rockchip64 run silently
+            # uploaded no bundle at all; the exclusion keeps the metadata
+            # directory below from being collected twice under two patterns.
+            build/output/*/
+            !build/output/release-metadata/
             build/output/release-metadata/**
           if-no-files-found: ignore
           retention-days: 5

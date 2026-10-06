@@ -22,14 +22,15 @@ fi
 # shellcheck disable=SC1090
 source "${target_profile}"
 
-# The series lock is optional in the profile schema; packaging cannot proceed
-# without it because the kernel release format is validated against it.
+# The series lock is optional. When the profile declares one it is authoritative
+# and an unlocked branch is impossible; when it does not, the series is derived
+# from the version that was actually built, so an unlocked target tracks Armbian
+# instead of failing for want of a lock. Either way the boot contract below is
+# checked against real artifact bytes, which is the check that actually protects
+# the board -- the series only decides which kernel release string is acceptable.
 ophub_tar_series() {
     local series="${TARGET_SERIES[${1}]:-}"
-    [[ -n "${series}" ]] || {
-        printf '[ERROR] Target profile declares no TARGET_SERIES for branch %s\n' "${1}" >&2
-        return 1
-    }
+    [[ -n "${series}" ]] || return 0
     printf '%s\n' "${series}"
 }
 
@@ -130,12 +131,30 @@ validate_board_dtb() {
 package_ophub_tar() (
     local branch="$1" marker="$2" version="$3"
     local series
-    series="$(ophub_tar_series "${branch}")" || return 1
-    # The built version must match the series this target is pinned to; a bump of
-    # the Armbian branch series has to be declared in the profile first.
-    [[ "${version}" == "${series}."* && -f "${marker}" ]] || {
-        printf '[ERROR] %s expects branch %s at series %s.x, got %s\n' \
-            "${BUILD_TARGET}" "${branch}" "${series}" "${version:-missing}" >&2
+    series="$(ophub_tar_series "${branch}")"
+    # A declared series is a promise the profile makes about this board, so a
+    # version outside it means the branch moved and the promise is stale. With no
+    # declaration, take the series from the version just built: the build already
+    # resolved it from the artifact, so re-deriving it here keeps the release
+    # string and the series regex in agreement without inventing a constraint the
+    # profile never asked for.
+    if [[ -n "${series}" ]]; then
+        [[ "${version}" == "${series}."* ]] || {
+            printf '[ERROR] %s expects branch %s at series %s.x, got %s\n' \
+                "${BUILD_TARGET}" "${branch}" "${series}" "${version:-missing}" >&2
+            return 1
+        }
+    else
+        series="${version%%.*}"
+        [[ "${series}" =~ ^[0-9]+\.[0-9]+$ ]] || {
+            printf '[ERROR] Cannot derive a major.minor series from built version %s for %s / %s\n' \
+                "${version:-missing}" "${BUILD_TARGET}" "${branch}" >&2
+            return 1
+        }
+    fi
+    [[ -f "${marker}" ]] || {
+        printf '[ERROR] Build marker %s is missing for %s / %s\n' \
+            "${marker}" "${BUILD_TARGET}" "${branch}" >&2
         return 1
     }
     local debs="${repo}/build/output/debs" work package kind
@@ -258,11 +277,14 @@ package_worker() {
     mapfile -t releases < <(find "${root}/lib/modules" -mindepth 1 -maxdepth 1 -type d -printf '%f\n')
     ((${#releases[@]} == 1)) || return 1
     release="${releases[0]}"
-    # Validate against the series the host resolved from the target profile. The
-    # bare `return 1` this replaces gave no diagnostic at all.
+    # Validate against the series the host resolved. With a declared lock that
+    # series is the profile's promise; without one the host derived it from the
+    # version it built, which makes this a consistency check between the release
+    # directory and the DEBs it came from rather than a second policy. The bare
+    # `return 1` this replaces gave no diagnostic at all.
     local series="${PACKAGE_SERIES:?PACKAGE_SERIES must be provided by the host}"
     [[ "${release}" =~ ^${series//./\.}\.[0-9]+-[-A-Za-z0-9._+]+$ ]] || {
-        printf '[ERROR] %s kernel release %s does not match pinned series %s\n' \
+        printf '[ERROR] %s kernel release %s does not match series %s\n' \
             "${PACKAGE_TARGET}" "${release}" "${series}" >&2
         return 1
     }
