@@ -3,6 +3,7 @@ import gzip
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import shlex
@@ -927,6 +928,69 @@ printf '%s\\n' "${seen[@]}"
         # Every declared array field must be a real array, never the string "()".
         for entry in result.stdout.splitlines():
             self.assertTrue(entry.startswith('array:'), f'{entry} was not re-typed as an array')
+
+
+class WorkflowContractTests(unittest.TestCase):
+    """The scheduled workflow drives every target, so its own shape is a
+    contract: a job that references the matrix context without declaring a
+    strategy is not failed by Actions, it is never created at all."""
+
+    WORKFLOWS = ('build-all-targets.yml', 'build.yml')
+
+    def load(self, name):
+        import yaml
+        text = (ROOT / '.github' / 'workflows' / name).read_text(encoding='utf-8')
+        return yaml.safe_load(text)
+
+    def test_every_job_referencing_the_matrix_declares_a_strategy(self):
+        for name in self.WORKFLOWS:
+            jobs = self.load(name).get('jobs', {})
+            for job_name, job in jobs.items():
+                runs_on = str(job.get('runs-on', ''))
+                uses_matrix = 'matrix.' in runs_on
+                self.assertEqual(
+                    uses_matrix, job.get('strategy') is not None,
+                    f'{name}: job {job_name} has runs-on={runs_on!r} but '
+                    f'{"no" if uses_matrix else "an unused"} strategy')
+                # And the matrix must come from somewhere. A hardcoded list here
+                # would silently exclude any target added as a profile later.
+                # YAML loads an unquoted ${{ ... }} as a plain string, so the
+                # expression is checked textually rather than as a mapping.
+                if uses_matrix:
+                    matrix = job['strategy']['matrix']
+                    self.assertNotIsInstance(matrix, dict,
+                                            'a literal matrix here would exclude '
+                                            'targets that exist only as profiles')
+                    self.assertIn('fromJSON', str(matrix))
+
+    def test_scheduled_build_consumes_the_discovered_matrix(self):
+        workflow = self.load('build-all-targets.yml')
+        discover_outputs = workflow['jobs']['discover'].get('outputs', {})
+        self.assertIn('matrix', discover_outputs,
+                      'discover must publish the matrix for build to consume')
+        matrix_expression = str(workflow['jobs']['build']['strategy']['matrix'])
+        # The consumer has to name the producer, otherwise the expression is
+        # valid-looking and resolves to nothing.
+        self.assertIn('discover', matrix_expression)
+        self.assertIn('fromJSON', matrix_expression)
+
+    def test_scheduled_workflow_has_no_hardcoded_target_list(self):
+        # A target list written into the workflow is the exact thing the profile
+        # mechanism exists to avoid: a new target would build nowhere.
+        text = (ROOT / '.github' / 'workflows' / 'build-all-targets.yml') \
+            .read_text(encoding='utf-8')
+        # Strip whole-line comments and trailing action pins: a board named in a
+        # comment is documentation. The matrix comes from build.sh, so the only
+        # legitimate mentions left are incidental -- a test file name, for
+        # instance -- which are checked as whole words and excluding those.
+        code = '\n'.join(line.split('#', 1)[0]
+                         for line in text.splitlines())
+        # A test suite named after the board it covers is not a target list.
+        code = code.replace('tests/test_hk1box.py', '')
+        for match in re.finditer(r'\b(?:hk1box|rockchip64|nanopi)\b', code):
+            context = code[max(0, match.start() - 40):match.end() + 40]
+            self.fail(f'the workflow names a target in code, so a profile-only '
+                      f'target would never build: ...{context.strip()}...')
 
 
 if __name__ == '__main__':

@@ -116,6 +116,13 @@ jobs:
     name: Build ${{ matrix.target }}
     needs: [discover, verify]
     runs-on: ${{ matrix.runner }}
+    # Required, not decorative: with only runs-on referencing the matrix context
+    # and no strategy below, Actions has nothing to expand. The job is then not
+    # failed -- it is simply never created, and the run ends with a bare
+    # "failure" that names no step and no cause.
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
     # A full Armbian kernel build is long. Declare the ceiling explicitly so a
     # hung compile fails with this reason instead of the silent 360-minute
     # platform default, and leave headroom for packaging and upload.
