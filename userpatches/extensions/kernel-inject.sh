@@ -264,6 +264,10 @@ CRYPTO_LIB_CHACHA20POLY1305
 EOF
 }
 
+# Upstream dropped the per-protocol Open vSwitch tunnel switches in 7.3: GRE,
+# VXLAN and Geneve share one generic tunnel datapath now, so CONFIG_OPENVSWITCH
+# is the only knob to assert. The symbol list below has to stay free of deleted
+# names -- an unknown symbol reads as a verification failure, not a no-op.
 _kernel_inject_full_network_builtin_options() {
 	cat <<'EOF'
 NET_IPGRE_DEMUX
@@ -275,9 +279,6 @@ IPV6_FOU_TUNNEL
 VXLAN
 GENEVE
 OPENVSWITCH
-OPENVSWITCH_GRE
-OPENVSWITCH_VXLAN
-OPENVSWITCH_GENEVE
 NET_VRF
 NET_MPLS_GSO
 MPLS_ROUTING
