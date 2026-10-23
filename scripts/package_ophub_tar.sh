@@ -35,6 +35,11 @@ ophub_tar_series() {
 }
 
 ARM64_IMAGE_MAGIC_HEX="41524d64"
+# A -T script image is a legacy uImage, so its header starts with IH_MAGIC
+# 0x27051956. image_header_t is network byte order, which is why the bytes on
+# disk read 27 05 19 56 -- U-Boot's image_source_script() rejects anything
+# else with "Bad magic number" before it ever runs a single line.
+UBOOT_SCRIPT_MAGIC_HEX="27051956"
 
 binary_hex() {
     local file="$1" offset="$2" size="$3"
@@ -100,6 +105,127 @@ build_arm64_uinitrd() {
         -d "${initrd}" "${uinitrd}"
 }
 
+# Validate the generated boot configuration against the same profile values the
+# rest of this script already checks. A wrong value here fails on first boot, so
+# it is checked against evidence rather than trusted.
+validate_boot_config() {
+    local uenv="$1" cmd="$2" scr="$3" release="$4" fdt="$5" serial="$6"
+    local magic
+    grep -qx "LINUX=/vmlinuz-${release}" "${uenv}" || {
+        printf '[ERROR] %s uEnv.txt does not name the shipped kernel %s\n' "${BUILD_TARGET}" "${release}" >&2
+        return 1
+    }
+    grep -qx "INITRD=/uInitrd-${release}" "${uenv}" || {
+        printf '[ERROR] %s uEnv.txt does not name the shipped uInitrd %s\n' "${BUILD_TARGET}" "${release}" >&2
+        return 1
+    }
+    grep -qx "FDT=${fdt}" "${uenv}" || {
+        printf '[ERROR] %s uEnv.txt FDT path does not match the validated DTB\n' "${BUILD_TARGET}" >&2
+        return 1
+    }
+    # console= is an argument in the middle of APPEND, not the end of it, so the
+    # pattern must run on to the end of the line.
+    grep -qx "APPEND=.*console=${serial},.*" "${uenv}" || {
+        printf '[ERROR] %s APPEND does not name console=%s; the kernel would boot without a serial log\n' "${BUILD_TARGET}" "${serial}" >&2
+        return 1
+    }
+    if [[ -s "${cmd}" ]]; then
+        grep -q 'env import' "${cmd}" && grep -q 'booti' "${cmd}" || {
+            printf '[ERROR] %s boot script neither imports uEnv.txt nor calls booti\n' "${BUILD_TARGET}" >&2
+            return 1
+        }
+    fi
+    if [[ -s "${scr}" ]]; then
+        magic="$(binary_hex "${scr}" 0 4)" || return 1
+        [[ "${magic}" == "${UBOOT_SCRIPT_MAGIC_HEX}" ]] || {
+            printf '[ERROR] %s boot.scr is not a compiled U-Boot script: magic=%s\n' "${BUILD_TARGET}" "${magic:-missing}" >&2
+            return 1
+        }
+    fi
+}
+
+# Emit the boot configuration the vendor U-Boot already reads, so the values do
+# not have to be retyped by hand after every kernel update. Nothing is flashed:
+# uEnv.txt and boot.scr replace two files on the boot filesystem.
+build_boot_config_bundle() {
+    local stage="$1" release="$2" dest="$3"
+    local serial="${PACKAGE_SERIALCON:?PACKAGE_SERIALCON must be provided by the host}"
+    local append="${PACKAGE_BOOT_APPEND:?PACKAGE_BOOT_APPEND must be provided by the host}"
+    local fdt="/dtb/${PACKAGE_DTB:?PACKAGE_DTB must be provided by the host}"
+    local cmd_src="${PACKAGE_BOOT_CMD_SRC:-}"
+    local config_dir="${stage}/boot-config"
+    local uenv="${config_dir}/uEnv.txt"
+    local cmd_out="${config_dir}/boot.cmd"
+    local scr_out="${config_dir}/boot.scr"
+
+    mkdir -p "${config_dir}"
+    {
+        printf 'LINUX=/vmlinuz-%s\n' "${release}"
+        printf 'INITRD=/uInitrd-%s\n' "${release}"
+        printf 'FDT=%s\n' "${fdt}"
+        printf 'APPEND=%s\n' "${append}"
+    } > "${uenv}"
+    if [[ -n "${cmd_src}" ]]; then
+        [[ -s "${cmd_src}" ]] || {
+            printf '[ERROR] %s boot script source is missing or empty: %s\n' "${BUILD_TARGET}" "${cmd_src}" >&2
+            return 1
+        }
+        cp "${cmd_src}" "${cmd_out}"
+        mkimage -C none -A arm -T script -d "${cmd_out}" "${scr_out}" || return 1
+    fi
+    cat > "${config_dir}/README.md" <<- README
+	Boot configuration for ${PACKAGE_BOARD_NAME:-${BOARD_NAME:-${BUILD_TARGET}}} kernel ${release}
+	=============================================================
+
+	What this is
+	------------
+	The bundle only replaces two files that the device's existing U-Boot already
+	reads from the boot filesystem:
+
+	  uEnv.txt   values that change with every kernel release
+	  boot.scr   compiled boot script (boot.cmd is the same script as text)
+
+	Nothing is built, written or flashed to internal flash, and no bootloader is
+	produced. The existing bootloader keeps running.
+
+	Install
+	-------
+	First, take a backup:
+
+	  cp /boot/uEnv.txt /boot/uEnv.txt.bak
+	  cp /boot/boot.scr /boot/boot.scr.bak 2>/dev/null || true
+
+	Then copy the files onto the boot filesystem (the partition mounted at
+	/boot) next to the kernel this bundle installed:
+
+	  cp uEnv.txt boot.cmd boot.scr /boot/
+
+	uEnv.txt references /vmlinuz-${release} and /uInitrd-${release}, which
+	armbian-update installs at the same names, so this copy is the boot
+	configuration for kernel ${release} specifically.
+
+	Check APPEND before copying. It boots from root=LABEL=ROOTFS, which is the
+	ophub default. If your root filesystem is not labelled ROOTFS, replace that
+	argument with the root=PARTUUID= value from the backup of your current
+	uEnv.txt; leaving it pointing at a partition that does not exist boots
+	further into the kernel with no root and no recovery.
+
+	Rollback
+	--------
+	  cp /boot/uEnv.txt.bak /boot/uEnv.txt
+	  cp /boot/boot.scr.bak /boot/boot.scr
+
+	Have bootable recovery media ready before touching /boot.
+
+	boot.cmd assumes the vendor U-Boot defines kernel_addr_r, ramdisk_addr_r and
+	fdt_addr_r. Confirm before replacing an existing boot.scr:
+
+	  printenv kernel_addr_r ramdisk_addr_r fdt_addr_r
+	README
+    validate_boot_config "${uenv}" "${cmd_out}" "${scr_out}" "${release}" "${fdt}" "${serial}" || return 1
+    tar -czf "${dest}" -C "${stage}" boot-config
+}
+
 # Validate the compiled DTB against whatever the profile declares. Properties
 # are read from the flattened tree (including inherited ones) rather than
 # assuming a successfully applied board patch produced the right aliases.
@@ -157,7 +283,7 @@ package_ophub_tar() (
             "${marker}" "${BUILD_TARGET}" "${branch}" >&2
         return 1
     }
-    local debs="${repo}/build/output/debs" work package kind
+    local debs="${repo}/build/output/debs" work package kind boot_script
     work="$(mktemp -d "${repo}/build/ophub-tar-package.XXXXXX")"
     trap 'rm -rf -- "${work}"' EXIT
     mkdir -p "${work}/root" "${work}/bundle" "${repo}/build/output/${BUILD_TARGET}"
@@ -187,15 +313,39 @@ package_ophub_tar() (
         printf '[ERROR] Target profile must declare TARGET_BOARD_DTB for ophub-tar packaging\n' >&2
         return 1
     }
+    # The boot configuration is opt in: TARGET_BOOT_APPEND declares that this
+    # target ships one, and TARGET_BOOT_SCRIPT supplies the script body. Resolving
+    # it on the host so a mistyped path fails before the container starts rather
+    # than inside it, where the error would only surface as a missing file.
+    local boot_script_args=()
+    if [[ -n "${TARGET_BOOT_APPEND:-}" ]]; then
+        [[ -n "${SERIALCON:-}" ]] || {
+            printf '[ERROR] %s declares TARGET_BOOT_APPEND but no SERIALCON; the APPEND console cannot be verified\n' "${BUILD_TARGET}" >&2
+            return 1
+        }
+        if [[ -n "${TARGET_BOOT_SCRIPT:-}" ]]; then
+            boot_script="${repo}/${USERPATCHES_PATH:-userpatches}/${TARGET_BOOT_SCRIPT}"
+            [[ -s "${boot_script}" ]] || {
+                printf '[ERROR] %s boot script does not exist: %s\n' "${BUILD_TARGET}" "${boot_script}" >&2
+                return 1
+            }
+            boot_script_args+=(--mount "type=bind,src=${boot_script},dst=/package-worker-boot.cmd,readonly"
+                --env "PACKAGE_BOOT_CMD_SRC=/package-worker-boot.cmd")
+        fi
+    fi
     docker run --rm --platform "linux/${TARGET_ARCH}" \
         --env "PACKAGE_OWNER=$(id -u):$(id -g)" \
         --env "PACKAGE_TARGET=${BUILD_TARGET}" \
         --env "PACKAGE_ARCH=${TARGET_ARCH}" \
+        --env "PACKAGE_BOARD_NAME=${BOARD_NAME:-${BUILD_TARGET}}" \
         --env "PACKAGE_SERIES=${series}" \
         --env "PACKAGE_DTB=${TARGET_BOARD_DTB}" \
         --env "PACKAGE_BOOT_TEXT_OFFSET=${TARGET_BOOT_TEXT_OFFSET:-}" \
         --env "PACKAGE_DTB_MMC_ALIASES=${TARGET_DTB_MMC_ALIASES[*]:-}" \
         --env "PACKAGE_DTB_MEMORY_REG=${TARGET_DTB_MEMORY_REG:-}" \
+        --env "PACKAGE_SERIALCON=${SERIALCON:-}" \
+        --env "PACKAGE_BOOT_APPEND=${TARGET_BOOT_APPEND:-}" \
+        "${boot_script_args[@]}" \
         --mount "type=bind,src=${work},dst=/package" \
         --mount "type=bind,src=${repo}/scripts/package_ophub_tar.sh,dst=/package-worker.sh,readonly" \
         ubuntu:24.04 bash /package-worker.sh --worker
@@ -206,6 +356,20 @@ package_ophub_tar() (
     tar -czf "${work}/complete.tar.gz" -C "${work}/bundle" .
     mv -- "${work}/complete.tar.gz" "${output}"
     (cd "${repo}/build/output/${BUILD_TARGET}"; sha256sum "${release}.tar.gz" > "${release}.tar.gz.sha256")
+    local config_output
+    if [[ -n "${TARGET_BOOT_APPEND:-}" ]]; then
+        config_output="${repo}/build/output/${BUILD_TARGET}/${release}-boot-config.tar.gz"
+        [[ -s "${work}/boot-config-${release}.tar.gz" ]] || {
+            printf '[ERROR] %s boot configuration bundle was not produced for %s\n' "${BUILD_TARGET}" "${release}" >&2
+            return 1
+        }
+        # Same release string as the installation bundle, so the adapter's
+        # existing ${version}-*.tar.gz* glob picks this up without a second
+        # discovery path.
+        mv -- "${work}/boot-config-${release}.tar.gz" "${config_output}"
+        (cd "${repo}/build/output/${BUILD_TARGET}"; sha256sum "${release}-boot-config.tar.gz" > "${release}-boot-config.tar.gz.sha256")
+        printf '[INFO] %s boot configuration bundle generated: %s\n' "${BUILD_TARGET}" "${config_output}"
+    fi
     # Extend the existing, package-derived Release notes rather than inventing
     # a second metadata generator.
     {
@@ -213,7 +377,10 @@ package_ophub_tar() (
         printf 'Bundle: `%s.tar.gz`. Extract into an empty directory, verify `sha256sum -c sha256sums`, then run `sudo armbian-update -k %s -d tar`. ' "${release}" "${release}"
         [[ -n "${TARGET_BOOT_TEXT_OFFSET:-}" ]] && \
             printf 'The bundle is validated for the required ARM64 Image TEXT_OFFSET 0x%s. ' "${TARGET_BOOT_TEXT_OFFSET}"
-        printf 'It contains an ARM64/gzip uInitrd. Keep the existing root UUID, FDT and bootloader. Back up the old kernel and prepare bootable recovery media. Hardware boot validation is still required.\n'
+        printf 'It contains an ARM64/gzip uInitrd. '
+        [[ -n "${TARGET_BOOT_APPEND:-}" ]] && \
+            printf 'Boot configuration for this kernel is packaged separately as `%s-boot-config.tar.gz` (uEnv.txt, boot.cmd, boot.scr). It replaces files on the boot filesystem and does not touch the bootloader; read its README.md before copying. ' "${release}"
+        printf 'Keep the existing root UUID, FDT and bootloader. Back up the old kernel and prepare bootable recovery media. Hardware boot validation is still required.\n'
     } >> "${repo}/build/output/release-metadata/${branch}/build-summary.md"
     printf '[INFO] %s TAR bundle generated from verified Armbian DEBs: %s\n' "${BUILD_TARGET}" "${output}"
 )
@@ -294,6 +461,9 @@ package_worker() {
     cp "${root}/boot/config-${release}" /boot/
     depmod -a "${release}"
     build_arm64_uinitrd "${stage}" "${release}"
+    if [[ -n "${PACKAGE_BOOT_APPEND:-}" ]]; then
+        build_boot_config_bundle "${stage}" "${release}" "/package/boot-config-${release}.tar.gz"
+    fi
     local kind name vendor="${TARGET_BOARD_DTB%%/*}"
     for kind in boot dtb modules header; do
         name="${kind}-${release}.tar.gz"

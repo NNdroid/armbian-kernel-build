@@ -146,11 +146,32 @@ sha256sum -c sha256sums
 sudo armbian-update -k <full version matching the bundle> -d tar
 ```
 
-Keep the root UUID from the current `/boot/uEnv.txt` together with
-`FDT=/dtb/amlogic/meson-sm1-hk1box-vontar-x3.dtb`. This target supports kernel builds
-only: it neither generates nor flashes U-Boot, and it does not modify the device boot
-configuration. Back up the old kernel and prepare bootable SD/USB recovery media first; a
-successful compilation is not the same as a successful HK1 Box boot.
+Alongside it the build publishes a companion boot configuration bundle,
+`<full uname-r>-boot-config.tar.gz`, holding `uEnv.txt`, `boot.cmd` and the compiled
+`boot.scr` for that exact kernel release. Its `LINUX`, `INITRD` and `FDT` are generated
+from the release string and the target profile, and `APPEND` comes from the profile, so
+no value has to be retyped by hand after an upgrade; packaging refuses to ship one whose
+`FDT` does not match the validated DTB or whose `APPEND` does not name the profile's
+serial console.
+
+The device's existing U-Boot already sources `/boot/boot.scr` and imports
+`/boot/uEnv.txt`, so the boot configuration is two files it already reads. Back them up
+first, then copy the new ones next to the kernel this bundle installed:
+
+```bash
+cp /boot/uEnv.txt /boot/uEnv.txt.bak
+cp /boot/boot.scr /boot/boot.scr.bak 2>/dev/null || true
+cp uEnv.txt boot.cmd boot.scr /boot/
+```
+
+`APPEND` boots from `root=LABEL=ROOTFS`, the ophub default. If the root filesystem is not
+labelled `ROOTFS`, replace that argument with the `root=PARTUUID=` value from the backup
+of the current `uEnv.txt`; a root argument pointing at a partition that does not exist
+boots into the kernel with no root and no recovery.
+
+No U-Boot is built or flashed and nothing is written to internal flash; the existing
+bootloader keeps running. Back up the old kernel and prepare bootable SD/USB recovery
+media first — a successful compilation is not the same as a successful HK1 Box boot.
 
 ## Injected components
 

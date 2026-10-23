@@ -218,6 +218,10 @@ download or module injection flow inside an adapter.
   installation bundle conversion; incomplete artifacts are never published.
 - Full-system images and U-Boot flashing are not generated; local testing, CI builds, and
   real-device boots are reported separately.
+- The companion boot configuration bundle is data, not a build. Every value in uEnv.txt is
+  derived from the release string and the target profile rather than typed in the
+  packager, `TARGET_BOOT_APPEND` is the only switch that produces one, and the values are
+  re-validated against the profile before the bundle is written.
 
 ```bash
 python3 tests/test_hk1box.py

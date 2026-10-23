@@ -8,3 +8,7 @@ meson64_common.inc
 # Local scratch for pre-commit verification runs (trap-stripped test copies,
 # downloaded upstream sources). Never committed.
 .cicheck/
+
+# Python bytecode left behind by running the test suites locally.
+__pycache__/
+*.pyc

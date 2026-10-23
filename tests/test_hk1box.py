@@ -9,6 +9,7 @@ import shutil
 import shlex
 import struct
 import subprocess
+import tarfile
 import tempfile
 import unittest
 
@@ -53,6 +54,43 @@ class TargetTests(unittest.TestCase):
         match = re.search(r'^TARGET_BOARD_DTB="?([^"\s]+)"?', profile, re.M)
         self.assertIsNotNone(match, f"{target}.conf declares no TARGET_BOARD_DTB")
         return match.group(1)
+
+    def profile_boot_contract(self, target="hk1box"):
+        """Read the boot configuration contract the profile declares.
+
+        TARGET_BOOT_APPEND is what switches the companion bundle on, so the
+        values under test must be taken from the profile rather than restated
+        here: a profile that renames its DTB or changes its console must make
+        the packaging assertions fail, not keep passing against a stale copy.
+        Missing keys come back as the empty string, which is how a target opts
+        out.
+        """
+        result = self.run_bash(
+            f'BUILD_TARGET={target}; source scripts/build_targets.sh; '
+            f'load_build_target || exit 1; '
+            r'printf "%s\x1f%s\x1f%s\x1f%s\x1f%s\n" '
+            r'"$TARGET_BOARD_DTB" "$SERIALCON" "${TARGET_BOOT_APPEND:-}" '
+            r'"${TARGET_BOOT_SCRIPT:-}" "${BOARD_NAME:-$BUILD_TARGET}"',
+            BUILD_TARGET=target)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        fields = result.stdout.rstrip('\n').split('\x1f')
+        self.assertEqual(len(fields), 5, result.stdout)
+        return {'dtb': fields[0], 'serialcon': fields[1], 'append': fields[2],
+                'script': fields[3], 'board': fields[4]}
+
+    @staticmethod
+    def msys_path(path):
+        """Express a path in MSYS form for tools that parse host:path.
+
+        GNU tar reads `C:/tmp/bundle.tar.gz` as a remote archive on host `C:`
+        and fails to resolve it, so anything handed to tar must be `/c/tmp/...`
+        on Windows. The packager only ever runs tar on Linux CI, where this is
+        a no-op.
+        """
+        match = re.fullmatch(r'([A-Za-z]):(/.*)', path.as_posix())
+        if not match:
+            return path.as_posix()
+        return '/' + match.group(1).lower() + match.group(2)
 
     @staticmethod
     def source_packaging(target="hk1box"):
@@ -597,6 +635,210 @@ validate_board_contract "$CASE_DIR/evidence" "$CASE_DIR/image" "$CASE_DIR/eviden
             self.assertEqual(type_id, 4, 'uImage type must be ramdisk (4)')
             self.assertEqual(blob[64:], initrd.read_bytes(),
                              'uImage payload must be the exact initramfs it wraps')
+
+    def test_hk1box_boot_config_bundle_matches_the_shipped_kernel_and_dtb(self):
+        """The companion bundle carries the values this bundle installed.
+
+        Every value in uEnv.txt is derived from the release string and the
+        profile, never typed by hand: a renamed release or DTB must leave
+        uEnv.txt pointing at files that exist, or the board stops booting and
+        only the SD recovery image brings it back.
+        """
+        release = '7.2.8-edge-meson64'
+        contract = self.profile_boot_contract()
+        with tempfile.TemporaryDirectory() as temporary:
+            tree = Path(temporary)
+            stage = tree / 'stage'
+            bindir = tree / 'bin'
+            call_log = tree / 'calls.log'
+            (stage / 'boot').mkdir(parents=True)
+            bindir.mkdir()
+            # mkimage must emit a real legacy image header, byte for byte.
+            # image_source_script() rejects a file whose magic is not IH_MAGIC
+            # 0x27051956 in network byte order, so the stub writes 27 05 19 56
+            # and type = IH_TYPE_SCRIPT (6), then appends the script verbatim at
+            # offset 64 -- the layout U-Boot reads, not a placeholder.
+            #
+            # bash printf takes \x followed by two literal hex digits, so the
+            # size field is formatted to hex first and its byte pairs spliced
+            # into the format string; \x%s would make printf read the %s as hex.
+            mkimage = bindir / 'mkimage'
+            mkimage.write_text(
+                '#!/usr/bin/env bash\n'
+                'set -eu\n'
+                'printf "mkimage %s\\n" "$*" >> "$CALL_LOG"\n'
+                'data=""; prev=""; out="${@: -1}"\n'
+                'for arg in "$@"; do\n'
+                '  if [[ "$prev" == -d ]]; then data="$arg"; fi\n'
+                '  prev="$arg"\n'
+                'done\n'
+                'len=$(wc -c < "$data")\n'
+                'hex=$(printf \'%08x\' "$len")\n'
+                '{ printf \'\\x27\\x05\\x19\\x56\'\n'
+                '  printf \'\\0%.0s\' {1..8}\n'
+                '  printf "\\x${hex:0:2}\\x${hex:2:2}\\x${hex:4:2}\\x${hex:6:2}"\n'
+                '  printf \'\\0%.0s\' {1..8}\n'
+                '  printf \'\\0\\0\\0\\0\\0\\0\\x06\\0\'\n'
+                '  printf \'\\0%.0s\' {1..32}\n'
+                '} > "$out"\n'
+                'cat "$data" >> "$out"\n')
+            mkimage.chmod(0o755)
+            script = ROOT / 'userpatches' / contract['script']
+            self.assertTrue(script.is_file(),
+                            f'{contract["script"]} does not exist relative to userpatches')
+            dest = tree / 'bundle.tar.gz'
+            command = (self.source_packaging()
+                       + '; build_boot_config_bundle "$STAGE" "$RELEASE" "$DEST"')
+            result = self.run_bash(
+                command, STAGE=self.msys_path(stage), RELEASE=release,
+                DEST=self.msys_path(dest),
+                PATH=f'{bindir}{os.pathsep}{os.environ.get("PATH", "")}',
+                CALL_LOG=call_log.as_posix(),
+                PACKAGE_DTB=contract['dtb'],
+                PACKAGE_SERIALCON=contract['serialcon'],
+                PACKAGE_BOOT_APPEND=contract['append'],
+                PACKAGE_BOARD_NAME=contract['board'],
+                PACKAGE_BOOT_CMD_SRC=self.msys_path(script))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('mkimage -C none -A arm -T script -d ', call_log.read_text())
+
+            members = sorted(member.name for member in tarfile.open(dest).getmembers()
+                             if member.isfile())
+            self.assertEqual(
+                members,
+                ['boot-config/README.md', 'boot-config/boot.cmd',
+                 'boot-config/boot.scr', 'boot-config/uEnv.txt'])
+
+            payload = tree / 'extracted'
+            payload.mkdir()
+            with tarfile.open(dest) as archive:
+                archive.extractall(payload)
+            unpacked = payload / 'boot-config'
+            uenv = (unpacked / 'uEnv.txt').read_text()
+            cmd = (unpacked / 'boot.cmd').read_bytes()
+            scr = (unpacked / 'boot.scr').read_bytes()
+            readme = (unpacked / 'README.md').read_text()
+
+            # Exactly the four keys the vendor U-Boot's script reads, in the
+            # order ophub ships them.
+            lines = uenv.splitlines()
+            self.assertEqual(len(lines), 4)
+            self.assertEqual([line.split('=', 1)[0] for line in lines],
+                             ['LINUX', 'INITRD', 'FDT', 'APPEND'])
+            self.assertEqual(lines[0], f'LINUX=/vmlinuz-{release}')
+            self.assertEqual(lines[1], f'INITRD=/uInitrd-{release}')
+            self.assertEqual(lines[2], f'FDT=/dtb/{contract["dtb"]}')
+            self.assertIn(f'console={contract["serialcon"]},', lines[3])
+
+            # boot.cmd is the profile's script untouched; boot.scr is that same
+            # script wrapped in the header U-Boot parses.
+            self.assertEqual(cmd, script.read_bytes())
+            self.assertGreaterEqual(len(scr), 64)
+            magic, _hcrc, _time, size, _load, _ep, _dcrc, _os, _arch, type_id, _comp = \
+                struct.unpack('>7I4B', scr[:32])
+            self.assertEqual(magic, 0x27051956)
+            self.assertEqual(type_id, 6, 'uImage type must be IH_TYPE_SCRIPT (6)')
+            self.assertEqual(size, len(scr) - 64, 'header size field must cover the script')
+            self.assertEqual(scr[64:], cmd, 'boot.scr payload must be boot.cmd')
+
+            self.assertIn('uEnv.txt', readme)
+            self.assertIn('boot.scr', readme)
+            self.assertIn(release, readme)
+            # The name the host resolved from the profile, not an empty fallback.
+            self.assertIn(contract['board'], readme)
+
+    def test_boot_config_validation_rejects_wrong_values(self):
+        """validate_boot_config fails on evidence, not on trust.
+
+        Each of these would start the board wrong in a way that is hard to
+        diagnose from the device, so the packager refuses to ship them.
+        """
+        release = '7.2.8-edge-meson64'
+        contract = self.profile_boot_contract()
+        fdt = f'/dtb/{contract["dtb"]}'
+        serial = contract['serialcon']
+        base = [
+            f'LINUX=/vmlinuz-{release}',
+            f'INITRD=/uInitrd-{release}',
+            f'FDT={fdt}',
+            f'APPEND=root=LABEL=ROOTFS console={serial},115200n8 console=tty0',
+        ]
+        good_cmd = 'load mmc 1 ${loadaddr} uEnv.txt\nenv import -t ${loadaddr} ${filesize}\nbooti\n'
+        good_scr = b'\x27\x05\x19\x56' + b'\x00' * 60 + b'script'
+        command = (self.source_packaging()
+                   + '; validate_boot_config "$UENV" "$CMD" "$SCR" "$RELEASE" "$FDT" "$SERIAL"')
+        with tempfile.TemporaryDirectory() as temporary:
+            tree = Path(temporary)
+            uenv = tree / 'uEnv.txt'
+            cmd = tree / 'boot.cmd'
+            scr = tree / 'boot.scr'
+
+            def validate(uenv_lines, cmd_text, scr_bytes, expect_fail=True,
+                         diagnostic=None):
+                uenv.write_text('\n'.join(uenv_lines) + '\n')
+                cmd.write_text(cmd_text)
+                scr.write_bytes(scr_bytes)
+                result = self.run_bash(
+                    command, UENV=uenv.as_posix(), CMD=cmd.as_posix(), SCR=scr.as_posix(),
+                    RELEASE=release, FDT=fdt, SERIAL=serial)
+                if expect_fail:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(diagnostic, result.stderr)
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+            # The all-correct case passes, so the rejections below are the
+            # mutation that fails rather than a harness that cannot pass.
+            validate(base, good_cmd, good_scr, expect_fail=False)
+
+            with self.subTest(field='kernel'):
+                validate([f'LINUX=/vmlinuz-7.2.7-edge-meson64'] + base[1:], good_cmd, good_scr,
+                         diagnostic='does not name the shipped kernel')
+            with self.subTest(field='initrd'):
+                validate(base[:1] + [f'INITRD=/uInitrd-7.2.7-edge-meson64'] + base[2:],
+                         good_cmd, good_scr, diagnostic='does not name the shipped uInitrd')
+            with self.subTest(field='fdt'):
+                validate(base[:2] + ['FDT=/dtb/amlogic/meson-g12b-gtking-pro.dtb'] + base[3:],
+                         good_cmd, good_scr,
+                         diagnostic='FDT path does not match the validated DTB')
+            with self.subTest(field='console'):
+                validate(base[:3] + ['APPEND=root=LABEL=ROOTFS console=ttyS0,115200n8'],
+                         good_cmd, good_scr,
+                         diagnostic='APPEND does not name console=')
+            with self.subTest(script='no env import'):
+                validate(base, 'load mmc 1 ${loadaddr} uEnv.txt\nbooti\n', good_scr,
+                         diagnostic='neither imports uEnv.txt nor calls booti')
+            with self.subTest(script='no booti'):
+                validate(base, 'load mmc 1 ${loadaddr} uEnv.txt\nenv import -t\n', good_scr,
+                         diagnostic='neither imports uEnv.txt nor calls booti')
+            with self.subTest(field='script magic'):
+                validate(base, good_cmd, b'BADM' + b'\x00' * 60 + b'script',
+                         diagnostic='is not a compiled U-Boot script')
+
+    def test_boot_config_is_opt_in_through_the_profile(self):
+        """TARGET_BOOT_APPEND is the switch; a profile without it ships none.
+
+        Declaring nothing is how a target without a vendor boot script opts
+        out, so the absence of the key must mean no bundle -- a default here
+        would quietly ship boot files to a board that does not read them.
+        """
+        for target in ('hk1box', 'rockchip64'):
+            with self.subTest(target=target):
+                contract = self.profile_boot_contract(target)
+                if contract['append']:
+                    # APPEND must name the profile's own console, because the
+                    # packager refuses a mismatch it cannot verify.
+                    self.assertIn(f'console={contract["serialcon"]},', contract['append'],
+                                  f'{target} APPEND does not name {contract["serialcon"]}')
+                    self.assertTrue(contract['script'],
+                                    f'{target} declares TARGET_BOOT_APPEND but no boot script')
+                    script = ROOT / 'userpatches' / contract['script']
+                    text = script.read_text()
+                    self.assertIn('env import', text)
+                    self.assertIn('booti', text)
+                else:
+                    self.assertFalse(contract['script'],
+                                     f'{target} declares a boot script but no APPEND')
 
     def test_compiled_dtb_contract_rejects_wrong_or_missing_properties(self):
         command = self.source_packaging() + '''
