@@ -60,7 +60,7 @@ upstream bump does not require re-verifying the board by hand — see the boot
 contract note below.
 
 Board-specific differences are isolated in `userpatches/config/build-targets/hk1box.conf`
-and `userpatches/kernel/archive/meson64-7.2/000*-hk1box-*.patch`. The boot offset comes
+and `userpatches/kernel/archive/meson64-7.3/000*-hk1box-*.patch`. The boot offset comes
 from `0003-amlogic-legacy-text-offset.patch` in the same directory. The HK1 Box device
 tree is based on the SM1/AC2xx implementation and keeps the
 existing FDT file name. It adapts the gigabit PHY, SD/eMMC, USB, SDIO, and Bluetooth

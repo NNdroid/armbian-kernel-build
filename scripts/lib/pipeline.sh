@@ -70,6 +70,11 @@ build_main() {
         fi
         log_info "${branch}: Armbian configured major version = ${CONFIG_KERNEL_VER}"
         validate_target_series "${branch}" "${CONFIG_KERNEL_VER}" || return 1
+        # Runs here, before the kernel exists, because this is the one moment the
+        # upstream series is already known and nothing has been compiled yet.
+        # After the build starts the same disagreement is only reachable by
+        # scanning the log, and the run has spent an hour proving it.
+        assert_board_patches_in_scope "${CONFIG_KERNEL_VER}" || return 1
 
         KERNEL_ORG_VER="$(load_kernel_org_version "${branch}" "${CONFIG_KERNEL_VER}")" || return 1
         if [[ -z "${KERNEL_ORG_VER}" ]]; then

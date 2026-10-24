@@ -312,7 +312,7 @@ class TargetTests(unittest.TestCase):
         # The assertion reads the log Armbian's own patching step wrote, so the
         # fixture has to contain the two things that step prints: the patch
         # directory it used, and one line per applied patch.
-        def log_with(patches, patch_dir='archive/meson64-7.2'):
+        def log_with(patches, patch_dir='archive/meson64-7.3'):
             return '\n'.join([
                 'Using kernel patch dir: ' + patch_dir,
                 *patches,
@@ -336,7 +336,7 @@ class TargetTests(unittest.TestCase):
             # The happy path: every patch named in the log.
             result = self.run_bash(
                 prelude + 'BUILD_LOG_FILE="$CASE_LOG" '
-                'assert_board_patches_applied 7.2.8',
+                'assert_board_patches_applied 7.3.0',
                 CASE_LOG=log_file.as_posix())
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('Verified 4/4 board patches applied', result.stderr)
@@ -348,7 +348,7 @@ class TargetTests(unittest.TestCase):
             log_file.write_text(log_with(all_patches[:2]), encoding='utf-8')
             result = self.run_bash(
                 prelude + 'BUILD_LOG_FILE="$CASE_LOG" '
-                'assert_board_patches_applied 7.2.8 || exit 1',
+                'assert_board_patches_applied 7.3.0 || exit 1',
                 CASE_LOG=log_file.as_posix())
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('0003-amlogic-legacy-text-offset.patch', result.stderr)
@@ -361,7 +361,7 @@ class TargetTests(unittest.TestCase):
             log_file.write_text(log_with(all_patches), encoding='utf-8')
             result = self.run_bash(
                 prelude + 'BUILD_LOG_FILE="$CASE_LOG" '
-                'assert_board_patches_applied 7.3.1 || exit 1',
+                'assert_board_patches_applied 7.2.8 || exit 1',
                 CASE_LOG=log_file.as_posix())
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('out of scope', result.stderr)
@@ -373,7 +373,7 @@ class TargetTests(unittest.TestCase):
                 encoding='utf-8')
             result = self.run_bash(
                 prelude + 'BUILD_LOG_FILE="$CASE_LOG" '
-                'assert_board_patches_applied 7.2.8 || exit 1',
+                'assert_board_patches_applied 7.3.0 || exit 1',
                 CASE_LOG=log_file.as_posix())
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('never in scope', result.stderr)
@@ -384,7 +384,7 @@ class TargetTests(unittest.TestCase):
             # exists to prevent.
             result = self.run_bash(
                 prelude + 'BUILD_LOG_FILE= '
-                'assert_board_patches_applied 7.2.8 || exit 1',
+                'assert_board_patches_applied 7.3.0 || exit 1',
                 CASE_LOG=log_file.as_posix())
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('no readable build log', result.stderr)
@@ -399,6 +399,56 @@ class TargetTests(unittest.TestCase):
             'assert_board_patches_applied 6.18.55')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, '')
+
+    def test_board_patch_scope_is_checked_before_the_kernel_is_compiled(self):
+        # This is the check the evidence assertion should have been, for the case
+        # where Armbian simply stopped reading the directory. The pipeline
+        # resolves the configured KERNEL_MAJOR_MINOR in "Version comparison",
+        # before the Armbian checkout and long before the compile, so a scope
+        # mismatch must be detectable with nothing but that value -- no build
+        # log, no artifacts. Without it the failure surfaces inside the Armbian
+        # build, after an hour of compiling a stock kernel that never had the
+        # patches.
+        prelude = (
+            'BUILD_SCRIPT_LIB_ONLY=yes source build.sh\n'
+            'USERPATCHES_PATH="$PWD/userpatches"\n'
+            'source userpatches/config/boards/hk1box.conf\n'
+            'BUILD_FAMILY=meson64\n'
+        )
+
+        # In scope: the directory name carries the configured series.
+        result = self.run_bash(prelude + 'assert_board_patches_in_scope 7.3')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Board patches in scope', result.stderr)
+        self.assertEqual(result.stdout, '')
+
+        # Out of scope: this is the failure that wasted the run.
+        result = self.run_bash(prelude + 'assert_board_patches_in_scope 7.2 || exit 1')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('they are out of scope', result.stderr)
+        self.assertIn('meson64-7.3', result.stderr)
+        self.assertIn('7.2', result.stderr)
+
+        # A declared patch directory that is not on disk must fail rather than
+        # count as an empty set: Armbian would apply nothing and finish green.
+        result = self.run_bash(
+            'BUILD_SCRIPT_LIB_ONLY=yes source build.sh; '
+            'USERPATCHES_PATH="$PWD/userpatches"; '
+            'BUILD_FAMILY=meson64; '
+            'TARGET_BOARD_PATCHES=kernel/archive/no-such-set; '
+            'assert_board_patches_in_scope 7.3 || exit 1')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('does not exist', result.stderr)
+
+        # Nor may the post-build check let that through.
+        result = self.run_bash(
+            'BUILD_SCRIPT_LIB_ONLY=yes source build.sh; '
+            'USERPATCHES_PATH="$PWD/userpatches"; '
+            'BUILD_FAMILY=meson64; '
+            'TARGET_BOARD_PATCHES=kernel/archive/no-such-set; '
+            'assert_board_patches_applied 7.3.0 || exit 1')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('does not exist', result.stderr)
 
     def test_hk1box_boot_modes_override_module_requests(self):
         result = self.run_bash('''
@@ -452,7 +502,13 @@ custom_kernel_config__999_hk1box_storage_and_network
             dtb.parent.mkdir(parents=True)
             dtb.write_bytes(b'fixture')
             script = '''source scripts/lib/board-contract.sh
-require_manifest_value() { sed -n "s/^$2=//p" "$1"; }
+# Faithful to the real reader: a missing key is a failure, not an empty value.
+require_manifest_value() {
+    local value
+    value="$(sed -n "s/^$2=//p" "$1")"
+    [[ -n "$value" ]] || return 1
+    printf '%s\\n' "$value"
+}
 _kernel_inject_log() { printf '%s\\n' "$*" >&2; }
 TARGET_BOARD=test-board
 TARGET_BOARD_DTB=vendor/test-board.dtb
@@ -469,6 +525,20 @@ validate_board_contract "$CASE_DIR/evidence" "$CASE_DIR/image" "$CASE_DIR/eviden
             dtb.unlink()
             self.assertNotEqual(self.run_bash(script, CASE_DIR=tree.as_posix()).returncode, 0)
 
+            # The manifest writer refuses to record provenance for a DTS that was
+            # never in the kernel tree, so board_dtb is legitimately absent. The
+            # contract must then say what that means, not report a missing key --
+            # a missing key reads as if the evidence collector were at fault,
+            # which is what made the last real failure hard to diagnose.
+            dtb.write_bytes(b'fixture')
+            (evidence / 'source-manifest.env').write_text(
+                'board=test-board\n'
+                f'board_dts_sha256={hashlib.sha256(b"fixture").hexdigest()}\n')
+            result = self.run_bash(script, CASE_DIR=tree.as_posix())
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('was not built', result.stderr)
+            self.assertIn('did not apply', result.stderr)
+
     def test_wrong_package_version_fails_without_docker(self):
         result = self.run_bash('bash scripts/package_ophub_tar.sh edge /does-not-exist 6.12.111')
         self.assertNotEqual(result.returncode, 0)
@@ -476,9 +546,9 @@ validate_board_contract "$CASE_DIR/evidence" "$CASE_DIR/image" "$CASE_DIR/eviden
 
     def test_device_tree_patches_match_hk1box_boot_contract(self):
         patches = [
-            ROOT / 'userpatches/kernel/archive/meson64-7.2/0001-hk1box-mainline-dtb.patch',
-            ROOT / 'userpatches/kernel/archive/meson64-7.2/0002-hk1box-memory-map.patch',
-            ROOT / 'userpatches/kernel/archive/meson64-7.2/0004-hk1box-mmc-aliases.patch',
+            ROOT / 'userpatches/kernel/archive/meson64-7.3/0001-hk1box-mainline-dtb.patch',
+            ROOT / 'userpatches/kernel/archive/meson64-7.3/0002-hk1box-memory-map.patch',
+            ROOT / 'userpatches/kernel/archive/meson64-7.3/0004-hk1box-mmc-aliases.patch',
         ]
         with tempfile.TemporaryDirectory() as temporary:
             tree = Path(temporary)
@@ -507,7 +577,7 @@ validate_board_contract "$CASE_DIR/evidence" "$CASE_DIR/image" "$CASE_DIR/eviden
             self.assertEqual(shared.read_bytes(), original_shared)
 
     def test_legacy_amlogic_text_offset_patch_applies_to_linux_7_2_layout(self):
-        patch = ROOT / 'userpatches/kernel/archive/meson64-7.2/0003-amlogic-legacy-text-offset.patch'
+        patch = ROOT / 'userpatches/kernel/archive/meson64-7.3/0003-amlogic-legacy-text-offset.patch'
         with tempfile.TemporaryDirectory() as temporary:
             tree = Path(temporary)
             kernel = tree / 'arch/arm64/kernel'

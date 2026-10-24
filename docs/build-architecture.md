@@ -85,11 +85,22 @@ profile has to name that directory for the patches to be applied.
 That is worth stating precisely, because it is also why a patch that stops applying is
 otherwise invisible. Armbian prints the patch directory it used, applies what it finds,
 and continues — a patch that no longer applies does not fail the build. Declare the
-directory in `TARGET_BOARD_PATCHES` to make the build require positive evidence that each
-patch was applied: after the compile, `assert_board_patches_applied` reads the build log
-and fails naming any patch the log does not mention. It also fails when the built kernel's
-version no longer matches the directory name, since that means the patches fell out of
-scope rather than broke. The check is a no-op for a target that declares no patches.
+directory in `TARGET_BOARD_PATCHES` to make the build require positive evidence instead.
+Two checks run, one per half of the problem, because they have different costs:
+
+- `assert_board_patches_in_scope` runs in *Version comparison*, before the Armbian
+  checkout and before anything is compiled. It needs only the `KERNEL_MAJOR_MINOR`
+  Armbian declared for the branch and compares it against the directory name. A branch
+  that moved upstream fails here in seconds instead of after an hour of compiling a
+  kernel that never had the patches.
+- `assert_board_patches_applied` runs after the compile. It reads the build log and
+  fails naming any patch the log does not mention, and it repeats the scope comparison
+  against the version the artifacts actually carry, so a disagreement between the
+  configured series and what was built is caught too.
+
+Both fail, rather than pass, when `TARGET_BOARD_PATCHES` names a directory that does not
+exist — Armbian would apply nothing and finish green. Both are no-ops for a target that
+declares no patches.
 
 Target names may only contain lowercase letters, digits, and hyphens; paths, newlines, and
 shell expressions are not allowed. The template below is not an adapted or verified RISC-V

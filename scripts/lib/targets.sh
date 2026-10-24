@@ -306,7 +306,7 @@ _target_validate_field() {
             # then read, so a leading ../ would read outside the tree the user
             # is supposed to be declaring patches for. Dots are allowed because
             # the directory Armbian reads is named after the kernel series
-            # (archive/meson64-7.2), so a versioned name is the normal case.
+            # (archive/meson64-7.3), so a versioned name is the normal case.
             [[ "${value}" =~ ^([A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+$ ]] || {
                 log_error '%s must be a directory path relative to USERPATCHES_PATH: %s' "${name}" "${value}"
                 return 1

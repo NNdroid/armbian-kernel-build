@@ -6,7 +6,18 @@ validate_board_contract() {
     local manifest="${evidence_dir}/source-manifest.env" board dtb source_sha symbol
     if [[ -n "${TARGET_BOARD_DTB:-}" ]]; then
         board="$(require_manifest_value "${manifest}" board)" || return 1
-        dtb="$(require_manifest_value "${manifest}" board_dtb)" || return 1
+        # board_dtb is written only when the DTS that BOOT_FDT_FILE names was
+        # present in the kernel tree. A missing key therefore means the source
+        # file was never there, which for this target means the board patch that
+        # adds it did not apply. Name that instead of the generic "missing key"
+        # the manifest reader reports, which pointed at the evidence collector.
+        if ! dtb="$(require_manifest_value "${manifest}" board_dtb)"; then
+            _kernel_inject_log err "Board evidence incomplete" \
+                "${TARGET_BOARD_DTB} was not built, so no DTS provenance was recorded"
+            _kernel_inject_log err "Board evidence incomplete" \
+                "The board patch that adds it did not apply; check the log for 'Using kernel patch dir:' and the patch set under ${USERPATCHES_PATH:-userpatches}/${TARGET_BOARD_PATCHES:-}"
+            return 1
+        fi
         source_sha="$(require_manifest_value "${manifest}" board_dts_sha256)" || return 1
         if [[ "${board}" != "${TARGET_BOARD}" || "${dtb}" != "${TARGET_BOARD_DTB}" || \
             ! -s "${evidence_dir}/board.dts" || \
