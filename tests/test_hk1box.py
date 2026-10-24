@@ -450,6 +450,151 @@ class TargetTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('does not exist', result.stderr)
 
+    def test_armbian_output_reaches_the_log_the_patch_check_reads(self):
+        # The patch check greps Armbian's own output for "Using kernel patch
+        # dir:" and one line per applied patch. If run_armbian_build does not
+        # copy that stream into BUILD_LOG_FILE, the check is unsatisfiable by
+        # construction: it can only ever report absence of evidence, whatever the
+        # kernel actually contains. Every earlier version of this suite
+        # hand-wrote the evidence and never put the real producer in front of the
+        # real consumer, so the path was never exercised.
+        #
+        # The fixture is shaped like Armbian's real output: patch names carry no
+        # .patch suffix, and colour codes sit inside the matched tokens rather
+        # than only around them. Both are things a naive grep gets wrong.
+        patches = ['0001-hk1box-mainline-dtb', '0002-hk1box-memory-map',
+                   '0003-amlogic-legacy-text-offset', '0004-hk1box-mmc-aliases']
+        script = '''
+set -euo pipefail
+BUILD_SCRIPT_LIB_ONLY=yes source build.sh
+USERPATCHES_PATH="$CASE_ROOT/userpatches"
+source "$CASE_ROOT/userpatches/config/boards/hk1box.conf"
+BUILD_FAMILY=meson64
+log_use_file "$CASE_LOG"
+run_armbian_build "$CASE_ARMBIAN"
+assert_board_patches_applied 7.3.0
+'''
+
+        def with_patches(names):
+            """Write a fixture build that reports the given patches as applied."""
+            lines = ['printf "\\033[1;32mUsing kernel patch dir: '
+                     'archive/meson64-7.3\\033[0m\\n"']
+            for index, name in enumerate(names, start=2):
+                colour = '\\033[1;33m' if index % 2 else ''
+                reset = '\\033[0m' if colour else ''
+                lines.append('printf "%s%d/100: %s(:1) (+256/-0)%s\\n"'
+                             % (colour, index, name, reset))
+            # An unrelated patch must not satisfy a declared one, and must not be
+            # mistaken for one by a matcher that is too loose.
+            lines.append('printf "099/100: 0099-amlogic-common-clock-gating(:1)\\n"')
+            (armbian / 'build_with_diy.sh').write_text('#!/usr/bin/env bash\n'
+                                                        + '\n'.join(lines) + '\n')
+            (armbian / 'build_with_diy.sh').chmod(0o755)
+
+        with tempfile.TemporaryDirectory() as directory:
+            tree = Path(directory)
+            armbian = tree / 'armbian'
+            armbian.mkdir()
+            log_file = tree / 'build.log'
+            with_patches(patches)
+
+            result = self.run_bash(script, CASE_ROOT=str(ROOT),
+                                   CASE_LOG=log_file.as_posix(),
+                                   CASE_ARMBIAN=armbian.as_posix())
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('Verified 4/4 board patches applied', result.stderr)
+
+            # The mirror must be grep-able: the targets survive the copy and the
+            # colour escapes go, so the greps do not depend on where a colour
+            # code happens to sit, or on which theme Armbian is using.
+            mirrored = log_file.read_bytes()
+            self.assertNotIn(b'\x1b', mirrored)
+            self.assertIn('Using kernel patch dir: archive/meson64-7.3',
+                          mirrored.decode('utf-8'))
+            self.assertIn('0001-hk1box-mainline-dtb', mirrored.decode('utf-8'))
+
+            # A genuinely absent patch must still be caught, by name. Both
+            # directions in one test is what pins the matcher: making everything
+            # match would fix the happy path and break this, and making
+            # everything fail would do the reverse.
+            log_file.unlink(missing_ok=True)
+            with_patches(patches[:2])
+            result = self.run_bash(script, CASE_ROOT=str(ROOT),
+                                   CASE_LOG=log_file.as_posix(),
+                                   CASE_ARMBIAN=armbian.as_posix())
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('2 of 4 board patches were not applied', result.stderr)
+            self.assertIn('0003-amlogic-legacy-text-offset.patch', result.stderr)
+            self.assertNotIn('0099-amlogic-common-clock-gating', result.stderr)
+
+    def test_patch_check_survives_a_log_long_enough_to_orphan_a_early_reader(self):
+        # build.sh sets pipefail, so a check that greps a pipeline with -q is
+        # wrong: grep -q closes its stdin the moment it matches, the sed that is
+        # stripping colour codes dies of SIGPIPE with status 141, and pipefail
+        # reports that as "not found". The evidence was there; the check said it
+        # was not. On a small log sed happens to finish first and the defect is
+        # invisible, which is how it shipped -- this suite passed while the CI
+        # check reported all four patches as unapplied against a log that proved
+        # all four were applied.
+        #
+        # The filler is what makes the failure deterministic rather than a race:
+        # once the reader closes, the writer only takes SIGPIPE if it still has
+        # more than a pipe buffer's worth to send.
+        patches = ['0001-hk1box-mainline-dtb', '0002-hk1box-memory-map',
+                   '0003-amlogic-legacy-text-offset', '0004-hk1box-mmc-aliases']
+        script = '''
+set -euo pipefail
+BUILD_SCRIPT_LIB_ONLY=yes source build.sh
+USERPATCHES_PATH="$CASE_ROOT/userpatches"
+source "$CASE_ROOT/userpatches/config/boards/hk1box.conf"
+BUILD_FAMILY=meson64
+log_use_file "$CASE_LOG"
+run_armbian_build "$CASE_ARMBIAN"
+assert_board_patches_applied 7.3.0
+'''
+
+        def with_patches(names, filler_lines=0):
+            """Write a fixture build that reports the given patches as applied."""
+            lines = ['printf "\\033[1;32mUsing kernel patch dir: '
+                     'archive/meson64-7.3\\033[0m\\n"']
+            for index, name in enumerate(names, start=2):
+                colour = '\\033[1;33m' if index % 2 else ''
+                reset = '\\033[0m' if colour else ''
+                lines.append('printf "%s%d/100: %s(:1) (+256/-0)%s\\n"'
+                             % (colour, index, name, reset))
+            if filler_lines:
+                lines.append('for i in $(seq 1 %d); do' % filler_lines)
+                lines.append('printf "filler %%06d padding to overflow a pipe buffer\\n" "$i"'
+                             '; done')
+            (armbian / 'build_with_diy.sh').write_text('#!/usr/bin/env bash\n'
+                                                        + '\n'.join(lines) + '\n')
+            (armbian / 'build_with_diy.sh').chmod(0o755)
+
+        with tempfile.TemporaryDirectory() as directory:
+            tree = Path(directory)
+            armbian = tree / 'armbian'
+            armbian.mkdir()
+            log_file = tree / 'build.log'
+
+            # All four applied, behind a large volume of trailing output.
+            with_patches(patches, filler_lines=4000)
+            result = self.run_bash(script, CASE_ROOT=str(ROOT),
+                                   CASE_LOG=log_file.as_posix(),
+                                   CASE_ARMBIAN=armbian.as_posix())
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('Verified 4/4 board patches applied', result.stderr)
+
+            # The absence direction must still bite at the same volume, so this
+            # test is not just proving that every grep matches everything.
+            log_file.unlink(missing_ok=True)
+            with_patches(patches[:2], filler_lines=4000)
+            result = self.run_bash(script, CASE_ROOT=str(ROOT),
+                                   CASE_LOG=log_file.as_posix(),
+                                   CASE_ARMBIAN=armbian.as_posix())
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('2 of 4 board patches were not applied', result.stderr)
+            self.assertIn('0003-amlogic-legacy-text-offset.patch', result.stderr)
+
     def test_hk1box_boot_modes_override_module_requests(self):
         result = self.run_bash('''
 set -e

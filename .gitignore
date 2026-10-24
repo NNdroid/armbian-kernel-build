@@ -3,6 +3,11 @@ build/
 rockchip64_common.inc
 meson64_common.inc
 
+# The raw log build_main mirrors into, so assert_board_patches_applied has
+# something to prove patch application from. Kept separate from the workflow's
+# build-<target>.log, which is redacted before upload; this one is not.
+logs/
+
 # Local workspace data (memory, test images, etc.)
 .workbuddy/
 # Local scratch for pre-commit verification runs (trap-stripped test copies,

@@ -427,6 +427,38 @@ class LogFileTests(unittest.TestCase):
             self.assertIn("first run", written)
             self.assertIn("second run", written)
 
+    def test_log_use_file_points_the_mirror_at_a_file_set_after_sourcing(self):
+        """build_main decides the log path, which is after logging.sh has already
+        been sourced and captured BUILD_LOG_FILE. log_use_file is what makes the
+        later decision take effect; without it only the environment variable is
+        set, _LOG_FILE keeps the empty value from source time, and every line
+        renders while the file stays absent -- which downstream reads as "no
+        readable build log".
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            log_file = Path(directory) / "run.log"
+            result = self.run_logging(
+                f'log_use_file "{log_file}"; log_info "hello mirrored"',
+                BUILD_LOG_FILE="")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(log_file.exists(),
+                            f"no log file was created:\n{result.stderr}")
+            self.assertIn("hello mirrored", log_file.read_text())
+
+    def test_setting_only_the_environment_variable_after_sourcing_mirrors_nothing(self):
+        """Negative control for the above: this is the failure the helper
+        prevents, and it is worth pinning because it is silent."""
+        with tempfile.TemporaryDirectory() as directory:
+            log_file = Path(directory) / "run.log"
+            result = self.run_logging(
+                f'export BUILD_LOG_FILE="{log_file}"; log_info "never mirrored"',
+                BUILD_LOG_FILE="")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("never mirrored", result.stderr)
+            self.assertFalse(log_file.exists(),
+                             "the file must not exist; the environment variable "
+                             "alone does not reach the already-sourced mirror")
+
 
 class DashboardContractTests(unittest.TestCase):
     """live_dashboard.py derives the stage timeline by regex, so the log format

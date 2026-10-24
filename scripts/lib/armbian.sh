@@ -2,11 +2,27 @@
 # Sourced library: definitions only; no build or external side effects.
 run_armbian_build() {
 	local build_root="$1"
+	local log_file="${BUILD_LOG_FILE:-}"
+	local ansi_esc=$'\033'
 	shift
 
+	# Armbian's own output is the only place the evidence lives. assert_board_
+	# patches_applied greps it for "Using kernel patch dir:" and for one line per
+	# applied patch, so if that stream is not copied into BUILD_LOG_FILE the check
+	# is unsatisfiable by construction: it can only ever report absence of
+	# evidence, whatever the kernel actually contains. The live stream is left
+	# untouched -- the caller still sees every line on stderr -- and the copy is
+	# ANSI-stripped, because the wrapper's own lines into the same file already
+	# are, and a file that is colorless in half its lines is unreadable.
 	(
 		cd "${build_root}"
-		./build_with_diy.sh "$@"
+		if [[ -n "${log_file}" ]]; then
+			./build_with_diy.sh "$@" 2>&1 |
+				sed "s/${ansi_esc}\[[0-9;]*[A-Za-z]//g" |
+				tee -a "${log_file}"
+		else
+			./build_with_diy.sh "$@"
+		fi
 	)
 }
 
@@ -54,6 +70,54 @@ board_patch_dir() {
     local patch_dir="${USERPATCHES_PATH:-userpatches}/${TARGET_BOARD_PATCHES}"
     [[ -d "${patch_dir}" ]] || return 1
     printf '%s' "${patch_dir}"
+}
+
+# Strip colour escapes from stdin. Armbian's stream is ANSI, and the escapes sit
+# inside the tokens being matched rather than only around them -- the patch
+# directory is printed as "[bold green] archive/meson64-7.3 [reset]" -- so a
+# literal grep over the raw stream depends on which side of a token the escape
+# happens to fall on, and on which theme Armbian happens to be using. Stripping
+# first makes the match depend on what a reader sees.
+strip_ansi_escapes() {
+    sed "s/$(printf '\033')\[[0-9;]*[A-Za-z]//g"
+}
+
+# True if the log contains a literal substring. Called as
+# log_contains <log-file> <needle>.
+#
+# Two choices here are regressions that were actually hit, not preferences:
+#
+#   - the needle is matched literally (-F). Patch names and directory paths hold
+#     dots and dashes, so a regex match turns them into wildcards.
+#
+#   - the output is discarded instead of using -q. build.sh sets pipefail, and
+#     grep -q closes its stdin the moment it matches. sed then dies of SIGPIPE
+#     with status 141, so pipefail fails the whole pipeline. On a small log sed
+#     happens to finish first and the defect stays invisible; on a real
+#     multi-megabyte CI log it fires on evidence that is present, so the caller
+#     reports the patch set as not applied when it was.
+log_contains() {
+    strip_ansi_escapes < "$1" | grep -F -- "$2" >/dev/null
+}
+
+# True if the log names this patch as applied. Called as
+# log_has_patch <base-name> <log-file>.
+#
+# Armbian reports a patch by its base name, not by its file name: a patch file
+# 0001-hk1box-mainline-dtb.patch shows up in the log as
+# "-> 002/100: 0001-hk1box-mainline-dtb(:1) (+256/-0) ...". Grepping for the
+# file name therefore never matches a real build, which turned this check into a
+# permanent failure once the evidence actually existed. Match the base name, with
+# the .patch suffix tolerated rather than required, so either spelling proves it.
+#
+# The match is bounded so a coincidence inside a longer token -- a path, a URL,
+# or another identifier that happens to contain the name -- cannot count as
+# application. That matters because absence of evidence is treated as failure, so
+# a false positive is a published kernel that is wrong in a way nothing else
+# reports.
+log_has_patch() {
+    strip_ansi_escapes < "$2" |
+        grep -E -- "(^|[^A-Za-z0-9_.-])$1(\.patch)?([^A-Za-z0-9_.-]|$)" >/dev/null
 }
 
 # The scope half of the board patch guarantee, run before the kernel is
@@ -159,17 +223,17 @@ assert_board_patches_applied() {
     # A different patch directory means the patches in this tree were never in
     # scope. Report it as its own failure: the log would otherwise look fine,
     # because Armbian happily patches whatever directory it was told to use.
-    if ! grep -Fq "Using kernel patch dir:" "${log_file}" \
-        || ! grep -Fq "${expected_dir}" "${log_file}"; then
+    if ! log_contains "${log_file}" "Using kernel patch dir:" \
+        || ! log_contains "${log_file}" "${expected_dir}"; then
         log_error "Armbian did not report using patch dir '${expected_dir}'; the board patch set was never in scope"
         log_error "Expected patches live in ${patch_dir} and apply only when KERNELPATCHDIR resolves to ${expected_dir}"
         return 1
     fi
 
-missing=()
-applied=0
-for patch_name in "${expected_patches[@]}"; do
-        if grep -Fq "${patch_name}" "${log_file}"; then
+    missing=()
+    applied=0
+    for patch_name in "${expected_patches[@]}"; do
+        if log_has_patch "${patch_name%.patch}" "${log_file}"; then
             applied=$((applied + 1))
         else
             missing+=("${patch_name}")

@@ -86,6 +86,19 @@ _log_init_colour
 _log_init_level
 LOG_START_SECONDS=${SECONDS}
 
+# Point the mirror at a file after this module has already been sourced.
+#
+# _LOG_FILE is captured from BUILD_LOG_FILE at source time, which is before the
+# build knows what it is doing. build_main is where the path gets decided, and
+# it happens later, so setting only the environment variable there would be a
+# silent no-op: every line would render and the file would stay absent. That
+# would read as "no readable build log", which is exactly the wrong symptom for
+# "the build did not mirror its log". Set both, so the two cannot disagree.
+log_use_file() {
+    BUILD_LOG_FILE="$1"
+    _LOG_FILE="$1"
+}
+
 # Human-readable size for a single regular file. stat(1) is preferred over du(1)
 # because du reports the allocated block count: on a sparse or hardlinked
 # artifact the two disagree, and du also walks the file a second time when the

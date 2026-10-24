@@ -96,7 +96,12 @@ Two checks run, one per half of the problem, because they have different costs:
 - `assert_board_patches_applied` runs after the compile. It reads the build log and
   fails naming any patch the log does not mention, and it repeats the scope comparison
   against the version the artifacts actually carry, so a disagreement between the
-  configured series and what was built is caught too.
+  configured series and what was built is caught too. It depends on `BUILD_LOG_FILE`
+  naming a file the run is actually writing, because that is the only place
+  `run_armbian_build` copies Armbian's own output; with no log the check fails rather
+  than passing, so the set stays unverified instead of silently assumed applied.
+  `build_main` sets that path (`logs/<target>.log`) when the caller did not, so a local
+  run gets the same guarantee as CI.
 
 Both fail, rather than pass, when `TARGET_BOARD_PATCHES` names a directory that does not
 exist — Armbian would apply nothing and finish green. Both are no-ops for a target that

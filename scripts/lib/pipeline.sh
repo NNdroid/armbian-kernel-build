@@ -12,6 +12,18 @@ build_main() {
 
     load_build_target
 
+    # Mirror the log to a file for the whole run, not as a debug convenience but
+    # because assert_board_patches_applied refuses to declare a patch set applied
+    # from memory: it re-reads the log to prove it. This used to be optional,
+    # which made the check unsatisfiable in CI -- it could only fail, and it did,
+    # after an hour of compiling. Decided here rather than in the workflow so a
+    # local run gets the same guarantee, and kept out of build/ because step 3
+    # runs `git clean -fd` there and would delete the file mid-run.
+    if [[ -z "${BUILD_LOG_FILE:-}" ]]; then
+        mkdir -p -- logs
+        log_use_file "logs/${BUILD_TARGET}.log"
+    fi
+
     # Echo the resolved configuration before anything can fail. When a build
     # produces the wrong artifact -- the classic version of this bug -- the
     # question is always "which profile, which board, which branch did it
