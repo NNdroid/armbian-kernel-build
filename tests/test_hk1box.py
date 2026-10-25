@@ -109,6 +109,53 @@ class TargetTests(unittest.TestCase):
         return (f'BUILD_TARGET={target}; source scripts/build_targets.sh; '
                 f'load_build_target || exit 1; source scripts/package_ophub_tar.sh')
 
+    def test_ophub_tar_dispatch_reaches_deb_discovery(self):
+        # Every other test in this file reaches the packaging code by sourcing
+        # the script with load_build_target already run, which pre-declares each
+        # container field in TARGET_SCHEMA. This test runs the script the way
+        # scripts/targets.sh actually runs it -- the dispatch at the bottom, as
+        # a child process -- so the profile is sourced directly and no one
+        # declares those containers for it.
+        #
+        # hk1box pins no series on purpose: it tracks the Armbian branch and
+        # derives its series from the version it just built. That leaves
+        # TARGET_SERIES never declared at all, so the dynamic subscript
+        # "${TARGET_SERIES[edge]}" is read by bash as the name of a variable to
+        # expand. "edge" is not a variable, so set -u aborts before a single
+        # artifact is packaged. Separately, ${version%%.*} stripped the longest
+        # .suffix from 7.3.0, yielding 7 -- not a series -- and aborted there
+        # instead. Both were reachable only once a build had actually reached
+        # packaging, which is why neither surfaced until it did.
+        #
+        # Reaching the deb lookup is the assertion: it proves the profile was
+        # sourced and the series derived, so a regression in either shows up as
+        # the wrong error rather than as a missing bundle.
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            (repo / 'scripts').mkdir()
+            shutil.copy(
+                ROOT / 'scripts' / 'package_ophub_tar.sh',
+                repo / 'scripts' / 'package_ophub_tar.sh')
+            profile = repo / 'userpatches' / 'config' / 'build-targets' / 'hk1box.conf'
+            profile.parent.mkdir(parents=True)
+            shutil.copy(
+                ROOT / 'userpatches' / 'config' / 'build-targets' / 'hk1box.conf', profile)
+            (repo / 'build' / 'output' / 'debs').mkdir(parents=True)
+            marker = repo / 'build' / 'marker'
+            marker.write_text('')
+
+            result = self.run_bash(
+                'set -Eeuo pipefail\n'
+                'cd "$CASE_REPO"\n'
+                'bash scripts/package_ophub_tar.sh edge "$CASE_MARKER" 7.3.0',
+                CASE_REPO=repo.as_posix(), CASE_MARKER=marker.as_posix(),
+                BUILD_TARGET='hk1box')
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Expected one fresh hk1box image DEB, got 0', result.stderr)
+        self.assertNotIn('unbound variable', result.stderr)
+        self.assertNotIn('Cannot derive a major.minor series', result.stderr)
+
     def test_rockchip_defaults_unchanged(self):
         result = self.run_bash('source scripts/build_targets.sh; load_build_target; '
                                'printf "%s|%s|%s" "$BUILD_BOARD" "$BUILD_FAMILY" "${branch_list[*]}"')

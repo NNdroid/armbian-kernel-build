@@ -20,6 +20,19 @@ if [[ ! -f "${target_profile}" ]]; then
     exit 1
 fi
 # shellcheck disable=SC1090
+#
+# load_build_target normally pre-declares every container field before a profile
+# is sourced, so a profile that leaves one alone still has an empty container to
+# read from. This script sources the profile directly, so that does not happen:
+# a target that pins no series leaves TARGET_SERIES never declared at all, and
+# the dynamic subscript "${TARGET_SERIES[branch]}" is then read by bash as the
+# name of a variable to expand -- "edge" is not a variable, so set -u aborts
+# here before a single artifact is packaged. Declare the containers ourselves.
+# Keep this in step with the map/list kinds in TARGET_SCHEMA in
+# scripts/lib/targets.sh.
+unset TARGET_SERIES TARGET_BRANCHES TARGET_REQUIRED_Y TARGET_DTB_MMC_ALIASES
+declare -A TARGET_SERIES=()
+declare -a TARGET_BRANCHES=() TARGET_REQUIRED_Y=() TARGET_DTB_MMC_ALIASES=()
 source "${target_profile}"
 
 # The series lock is optional. When the profile declares one it is authoritative
@@ -271,7 +284,11 @@ package_ophub_tar() (
             return 1
         }
     else
-        series="${version%%.*}"
+        # Take the first two components. ${version%%.*} is wrong here: it strips
+        # the longest .suffix, so 7.3.0 becomes 7 rather than 7.3, which is not a
+        # series and reads as a build the profile could not have wanted. Field
+        # selection keeps a two-component version intact as well.
+        series="$(printf '%s' "${version}" | cut -d. -f1-2)"
         [[ "${series}" =~ ^[0-9]+\.[0-9]+$ ]] || {
             printf '[ERROR] Cannot derive a major.minor series from built version %s for %s / %s\n' \
                 "${version:-missing}" "${BUILD_TARGET}" "${branch}" >&2
