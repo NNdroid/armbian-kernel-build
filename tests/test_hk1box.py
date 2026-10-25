@@ -156,6 +156,55 @@ class TargetTests(unittest.TestCase):
         self.assertNotIn('unbound variable', result.stderr)
         self.assertNotIn('Cannot derive a major.minor series', result.stderr)
 
+    def test_container_gets_every_package_variable_the_script_reads(self):
+        # The worker re-executes this script, so it walks the header before the
+        # dispatch: without BUILD_TARGET in the container it stops at the profile
+        # lookup with "BUILD_TARGET is required", after the compile is already
+        # done. Everything else the container body reads is deliberately prefixed
+        # PACKAGE_ and handed over one --env line at a time, so a variable that
+        # is read but never passed dies at runtime with no error naming it. That
+        # is how BUILD_TARGET got missed, and it is the failure mode a review
+        # keeps having to come back to.
+        #
+        # Rather than restate the list here, which would be the same bug again,
+        # this greps both sides of the boundary and fails on the gap. Every
+        # mandatory variable -- the ones written ${VAR:?...} -- must be handed
+        # over, and so must every PACKAGE_* variable read anywhere in the file.
+        command = r'''set -Eeuo pipefail
+text="$(cat "$CASE_SCRIPT")"
+declared="$(printf '%s\n' "$text" |
+    grep -oE -e '-env "[A-Za-z_][A-Za-z0-9_]*=' |
+    sed 's/-env "//; s/=$//')"
+required="$(printf '%s\n' "$text" |
+    grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*[:][?]' |
+    sed 's/^${//; s/[:][?]$//' | sort -u)"
+package_vars="$(printf '%s\n' "$text" |
+    grep -o '\$[{:]\{0,2\}PACKAGE_[A-Za-z0-9_]*' |
+    tr -dc 'A-Za-z_0-9\n' | sort -u)"
+echo "required: $(printf '%s\n' "$required" | tr '\n' ' ')"
+echo "package-vars: $(printf '%s\n' "$package_vars" | tr '\n' ' ')"
+rc=0
+for var in $required $package_vars; do
+    printf '%s\n' "$declared" | grep -qx "$var" || {
+        printf 'NOT PASSED TO CONTAINER: %s\n' "$var"
+        rc=1
+    }
+done
+exit "$rc"'''
+
+        result = self.run_bash(
+            command,
+            CASE_SCRIPT=(ROOT / 'scripts' / 'package_ophub_tar.sh').as_posix(),
+            BASH_ENV='')
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        # The scans have to actually be matching something, or the loop above is
+        # vacuous and this test would pass on an empty set.
+        self.assertIn('BUILD_TARGET', result.stdout)
+        for var in ('PACKAGE_DTB', 'PACKAGE_BOOT_APPEND', 'PACKAGE_SERIES',
+                    'PACKAGE_BOOT_CMD_SRC', 'PACKAGE_DTB_MMC_ALIASES'):
+            self.assertIn(var, result.stdout)
+
     def test_rockchip_defaults_unchanged(self):
         result = self.run_bash('source scripts/build_targets.sh; load_build_target; '
                                'printf "%s|%s|%s" "$BUILD_BOARD" "$BUILD_FAMILY" "${branch_list[*]}"')

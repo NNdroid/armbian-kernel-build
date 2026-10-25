@@ -350,7 +350,15 @@ package_ophub_tar() (
                 --env "PACKAGE_BOOT_CMD_SRC=/package-worker-boot.cmd")
         fi
     fi
+    # The worker re-executes this very script, so it walks the same header and
+    # needs BUILD_TARGET to find the profile before the dispatch sends it to
+    # package_worker. Everything else it reads is passed as PACKAGE_* below, which
+    # is deliberate: the worker is told not to re-read host data from the profile.
+    # BUILD_TARGET is not re-read data, it is the script's own entry parameter --
+    # and leaving it out makes that one line fail, after a 50-minute compile, with
+    # "BUILD_TARGET is required".
     docker run --rm --platform "linux/${TARGET_ARCH}" \
+        --env "BUILD_TARGET=${BUILD_TARGET}" \
         --env "PACKAGE_OWNER=$(id -u):$(id -g)" \
         --env "PACKAGE_TARGET=${BUILD_TARGET}" \
         --env "PACKAGE_ARCH=${TARGET_ARCH}" \
@@ -481,7 +489,12 @@ package_worker() {
     if [[ -n "${PACKAGE_BOOT_APPEND:-}" ]]; then
         build_boot_config_bundle "${stage}" "${release}" "/package/boot-config-${release}.tar.gz"
     fi
-    local kind name vendor="${TARGET_BOARD_DTB%%/*}"
+    local kind name vendor
+    # Take the vendor component from PACKAGE_DTB, the value the host already
+    # handed in, rather than from TARGET_BOARD_DTB. They are the same string --
+    # the profile was sourced for the header either way -- but only PACKAGE_* is
+    # what the container was told to rely on.
+    vendor="${PACKAGE_DTB%%/*}"
     for kind in boot dtb modules header; do
         name="${kind}-${release}.tar.gz"
         # ophub expects the vendor subdirectory name in the DTB bundle name.
