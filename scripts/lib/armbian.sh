@@ -6,6 +6,21 @@ run_armbian_build() {
 	local ansi_esc=$'\033'
 	shift
 
+	# The subshell below cds into the build root, which is not where the caller
+	# built its path. A relative BUILD_LOG_FILE would be reinterpreted under the
+	# build root, where its directory does not exist: tee dies on the first line,
+	# and under pipefail that failure is then reported only after the compile
+	# finishes, as "Armbian kernel build failed" with no reason in sight. Resolve
+	# it here, in the caller's cwd, before the cd. A path the caller already
+	# resolved is left alone, in either spelling of absolute -- /path and C:/path
+	# -- or it would be double-prefixed.
+	if [[ -n "${log_file}" \
+	    && "${log_file}" != /* \
+	    && "${log_file}" != \\* \
+	    && ! "${log_file}" =~ ^[A-Za-z]: ]]; then
+		log_file="$(pwd)/${log_file}"
+	fi
+
 	# Armbian's own output is the only place the evidence lives. assert_board_
 	# patches_applied greps it for "Using kernel patch dir:" and for one line per
 	# applied patch, so if that stream is not copied into BUILD_LOG_FILE the check

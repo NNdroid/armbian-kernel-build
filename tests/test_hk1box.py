@@ -595,6 +595,40 @@ assert_board_patches_applied 7.3.0
             self.assertIn('2 of 4 board patches were not applied', result.stderr)
             self.assertIn('0003-amlogic-legacy-text-offset.patch', result.stderr)
 
+    def test_build_log_path_survives_the_cd_into_the_build_root(self):
+        # build_main picks "logs/<target>.log", relative to the repo root, and
+        # run_armbian_build cds into the Armbian checkout before it tee's. That
+        # reinterprets the path under the checkout, where logs/ does not exist:
+        # tee dies on the first line, and because build.sh sets pipefail the
+        # failure surfaces only after the compile finishes -- a whole build
+        # discarded and reported as "Armbian kernel build failed" with nothing in
+        # the log to explain it. The mirror and the check both read the same path,
+        # so this failure also meant the patch check never ran.
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory) / 'repo'
+            (repo / 'build').mkdir(parents=True)
+            (repo / 'logs').mkdir()
+            (repo / 'build' / 'build_with_diy.sh').write_text(
+                '#!/usr/bin/env bash\n'
+                'printf "002/100: 0001-hk1box-mainline-dtb(:1) (+256/-0)\\n"\n')
+            (repo / 'build' / 'build_with_diy.sh').chmod(0o755)
+
+            result = self.run_bash('''
+set -euo pipefail
+BUILD_SCRIPT_LIB_ONLY=yes source build.sh
+cd "$CASE_REPO"
+log_use_file "logs/run.log"
+run_armbian_build ./build
+test -f "$CASE_REPO/logs/run.log"
+''', CASE_REPO=repo.as_posix())
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('0001-hk1box-mainline-dtb',
+                          (repo / 'logs' / 'run.log').read_text())
+            # And not under the build root, where the path used to be taken.
+            self.assertFalse((repo / 'build' / 'logs').exists(),
+                             'the log must not have been written under the '
+                             'Armbian checkout')
+
     def test_hk1box_boot_modes_override_module_requests(self):
         result = self.run_bash('''
 set -e
