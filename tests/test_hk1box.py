@@ -205,6 +205,38 @@ exit "$rc"'''
                     'PACKAGE_BOOT_CMD_SRC', 'PACKAGE_DTB_MMC_ALIASES'):
             self.assertIn(var, result.stdout)
 
+    def test_worker_path_does_not_need_the_profile_or_the_repo(self):
+        # The worker re-executes this script inside a container that has the
+        # script but no access to the repo or the profile tree. The script
+        # resolves repo from its own path (/package-worker.sh -> //), so the
+        # profile lookup fails with "requires a target profile: ///userpatches/
+        # config/build-targets/hk1box.conf" -- after a 50-minute compile. The
+        # header must therefore not load the profile on the worker path at all:
+        # every profile-derived value it reads is handed in as PACKAGE_* and
+        # rehydrated by _package_load_knobs.
+        #
+        # Run the worker with no profile tree present, which is what the
+        # container sees. Any failure other than the profile lookup proves the
+        # header no longer depends on the repo being there.
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            (repo / 'scripts').mkdir()
+            shutil.copy(
+                ROOT / 'scripts' / 'package_ophub_tar.sh',
+                repo / 'scripts' / 'package_ophub_tar.sh')
+
+            result = self.run_bash(
+                'set -Eeuo pipefail\n'
+                'cd "$CASE_REPO"\n'
+                'bash scripts/package_ophub_tar.sh --worker',
+                CASE_REPO=repo.as_posix(), BUILD_TARGET='hk1box', BASH_ENV='')
+
+        self.assertNotEqual(result.returncode, 0)
+        # Without the fix the worker path stops here, and that is the regression
+        # this pins: nothing on the worker path may re-source the profile.
+        self.assertNotIn('requires a target profile', result.stderr)
+        self.assertNotIn('BUILD_TARGET is required', result.stderr)
+
     def test_rockchip_defaults_unchanged(self):
         result = self.run_bash('source scripts/build_targets.sh; load_build_target; '
                                'printf "%s|%s|%s" "$BUILD_BOARD" "$BUILD_FAMILY" "${branch_list[*]}"')
