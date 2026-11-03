@@ -272,6 +272,38 @@ jobs:
             "${build_state}" "${effective_exit_code}" > "${live_dir}/status.json"
           exit "${effective_exit_code}"
 
+      - name: Sanitize durable build logs
+        if: always()
+        env:
+          # The durable log (logs/<target>.log) mirrors the rendered build log
+          # verbatim and is NOT redacted in transit, unlike the tee stream in the
+          # build step. Mask the same secret values the tee stream already masked
+          # so the uploaded artifact stays inside the redaction contract.
+          # GH_TOKEN is the only secret this job places in the build environment;
+          # other repository secrets are not present here and therefore cannot be
+          # redacted, so the build must never write them to BUILD_LOG_FILE.
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          shopt -s nullglob
+          for f in logs/*.log; do
+            if python3 -u scripts/redact_log_stream.py < "${f}" > "${f}.redacted"; then
+              mv -f -- "${f}.redacted" "${f}"
+            else
+              rm -f -- "${f}.redacted" || true
+            fi
+          done
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: build-logs-${{ inputs.target }}
+          path: |
+            logs/
+          if-no-files-found: ignore
+          retention-days: 5
+
       - name: Upload Artifacts Backup
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
