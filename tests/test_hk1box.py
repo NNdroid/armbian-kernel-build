@@ -1285,6 +1285,40 @@ validate_board_dtb fixture.dtb
             (root / f'boot/dtb-{release}/{dtb_rel}').unlink()
             self.assertNotEqual(self.run_bash(script, PACKAGE_DTB=dtb_rel).returncode, 0)
 
+    def test_worker_arch_check_normalizes_uname_machine_names(self):
+        """The arch gate must accept the machine name uname -m reports.
+
+        uname -m answers aarch64 inside an arm64 container while the profile's
+        TARGET_ARCH is arm64; comparing the two literals rejected every real
+        arm64 CI run after the full kernel compile, at the last packaging step,
+        which is why hk1box failed on schedule each day while the deb-adapter
+        target never exercised the check. The worker has to normalize the
+        machine name to the kernel/Debian naming and still refuse a container
+        that is genuinely a different machine.
+        """
+        dtb = self.profile_board_dtb()
+        script = self.source_packaging() + '''
+uname() { printf '%s\\n' "${FAKE_MACHINE:-aarch64}"; }
+_package_load_knobs
+'''
+        # aarch64 against arm64 is exactly what the native arm64 runner presents.
+        accepted = self.run_bash(script, PACKAGE_TARGET='hk1box', PACKAGE_ARCH='arm64', PACKAGE_DTB=dtb)
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        # The other naming pairs must normalize the same way, not just arm64.
+        self.assertEqual(self.run_bash(script, PACKAGE_TARGET='hk1box', PACKAGE_ARCH='amd64',
+                                       PACKAGE_DTB=dtb, FAKE_MACHINE='x86_64').returncode, 0)
+        self.assertEqual(self.run_bash(script, PACKAGE_TARGET='hk1box', PACKAGE_ARCH='armhf',
+                                       PACKAGE_DTB=dtb, FAKE_MACHINE='armv7l').returncode, 0)
+        for machine, arch, diagnostic in [
+                ('riscv64', 'arm64', 'does not match target arch arm64'),
+                ('aarch64', 'amd64', 'does not match target arch amd64'),
+                ('sparc64', 'arm64', 'does not map to a known target arch')]:
+            with self.subTest(machine=machine, arch=arch):
+                result = self.run_bash(script, PACKAGE_TARGET='hk1box', PACKAGE_ARCH=arch,
+                                       PACKAGE_DTB=dtb, FAKE_MACHINE=machine)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(diagnostic, result.stderr)
+
 
 class TargetExtensibilityTests(unittest.TestCase):
     """Adding a target must be a config change, not a code change.

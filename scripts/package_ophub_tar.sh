@@ -460,10 +460,27 @@ _package_load_knobs() {
         read -r -a TARGET_DTB_MMC_ALIASES <<< "${PACKAGE_DTB_MMC_ALIASES}"
     fi
     # ARCH must be the container's own architecture; a mismatch would silently
-    # produce a bundle for the wrong machine.
-    [[ "${PACKAGE_ARCH}" == "$(uname -m)" ]] || {
-        printf '[ERROR] Container architecture %s does not match target arch %s\n' \
-            "$(uname -m)" "${PACKAGE_ARCH}" >&2
+    # produce a bundle for the wrong machine. uname -m reports the machine name
+    # (aarch64, x86_64, armv7l, riscv64) while the profile's TARGET_ARCH uses
+    # the kernel/Debian naming (arm64, amd64, armhf, riscv64), so the machine
+    # name is normalized first: on a native arm64 runner the container is
+    # aarch64 and that is the same machine arm64 names, not a mismatch.
+    local container_machine container_arch
+    container_machine="$(uname -m)"
+    case "${container_machine}" in
+        aarch64)       container_arch=arm64 ;;
+        x86_64)        container_arch=amd64 ;;
+        armv7l|armv8l) container_arch=armhf ;;
+        riscv64)       container_arch=riscv64 ;;
+        *)
+            printf '[ERROR] Container machine %s does not map to a known target arch\n' \
+                "${container_machine}" >&2
+            return 1
+        ;;
+    esac
+    [[ "${PACKAGE_ARCH}" == "${container_arch}" ]] || {
+        printf '[ERROR] Container architecture %s (%s) does not match target arch %s\n' \
+            "${container_machine}" "${container_arch}" "${PACKAGE_ARCH}" >&2
         return 1
     }
 }
